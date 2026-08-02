@@ -79,6 +79,20 @@ const EMAIL_BOUNDARY_RE = /(?=^(?:From:|件名:|Subject:|To:|宛先:))/im;
 const SMT_HEADER_RE = /松竹マルチプレックスシアターズ|SMT\b|smt-cinema\.com/i;
 
 /**
+ * 判断一个文本段是否包含订票信息（日期 + 片名或影院）
+ * 用于过滤分隔线拆分后的假段落
+ * @param {string} segment
+ * @returns {boolean}
+ */
+function looksLikeBooking(segment) {
+  const hasDate = /\d{4}[\/\-年]\d{1,2}[\/\-月]\d{1,2}/.test(segment);
+  const hasTime = /\d{1,2}:\d{2}\s*[～〜]\s*\d{1,2}:\d{2}|開映(?:時間)?[：:]/.test(segment);
+  const hasTitle = /(?:作品名|映画名|タイトル)[：:]\s*.{2,}/.test(segment);
+  const hasCinema = /(?:劇場名?|上映劇場)[：:]/.test(segment);
+  return (hasDate || hasTime) && (hasTitle || hasCinema);
+}
+
+/**
  * 把粘贴文本按邮件边界拆分为若干段
  * @param {string} raw
  * @returns {string[]}
@@ -89,8 +103,13 @@ export function splitEmails(raw) {
   if (byHeader.length > 1) return byHeader;
 
   // 若无明显头部，按连续 4+ 横线分割（常见于邮件客户端复制粘贴）
+  // 但需过滤：只有 ≥2 段都像真实订票时才拆（避免 KINEZO 等内部多用分隔线的邮件被误拆）
   const byDivider = raw.split(/\n[-─━=]{4,}\n/).map((s) => s.trim()).filter(Boolean);
-  if (byDivider.length > 1) return byDivider;
+  if (byDivider.length > 1) {
+    const bookingSegments = byDivider.filter(looksLikeBooking);
+    if (bookingSegments.length >= 2) return bookingSegments;
+    // 只有 0 或 1 段像订票 → 整体当单封处理，不拆分
+  }
 
   // SMT 固有特征：重复出现发件方标识（必须用全局正则计数）
   const smtMatches = raw.match(SMT_HEADER_RE_G) || [];
@@ -265,6 +284,8 @@ export function parseScreeningSegment(segment) {
   if (SMT_HEADER_RE.test(segment)) ticketProvider = "SMT";
   else if (/toho-cinemas\.com|TOHOシネマズ/i.test(segment)) ticketProvider = "TOHO";
   else if (/aeoncinema\.com|イオンシネマ/i.test(segment)) ticketProvider = "AEON";
+  else if (/KINEZO|kinezo\.jp/i.test(segment)) ticketProvider = "KINEZO";
+  else if (/tjoy\.jp|T・ジョイ/i.test(segment)) ticketProvider = "TJOY";
 
   return {
     movieTitle,
@@ -387,10 +408,20 @@ export function draftViewingEvent(draft, workId, recordId = null) {
 
 /**
  * 把日期字符串和 HH:MM 组合为日本时区 ISO 8601 字符串
+ * 支持日本影院惯例：24:25 表示当天深夜 = 次日 00:25
  * @param {string} date  YYYY-MM-DD
- * @param {string} time  HH:MM
+ * @param {string} time  HH:MM（允许 H≥24）
  * @returns {string}
  */
 function toISO(date, time) {
-  return `${date}T${time.length === 4 ? "0" + time : time}:00+09:00`;
+  const [hStr, mStr = "00"] = time.split(":");
+  const h = parseInt(hStr, 10);
+  const m = parseInt(mStr, 10);
+  if (h >= 24) {
+    // 24:25 → 次日 00:25；使用 Date.UTC 安全处理月末溢出
+    const [y, mo, d] = date.split("-").map(Number);
+    const nextDay = new Date(Date.UTC(y, mo - 1, d + 1)).toISOString().slice(0, 10);
+    return `${nextDay}T${String(h - 24).padStart(2, "0")}:${String(m).padStart(2, "0")}:00+09:00`;
+  }
+  return `${date}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00+09:00`;
 }

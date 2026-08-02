@@ -290,3 +290,101 @@ describe("draftViewingEvent", () => {
     assert.equal(event.viewing_context.seat_count, 2);
   });
 });
+
+// ─── KINEZO 格式（合成，含跨午夜时间与分隔线）──────────────────────────────
+
+const KINEZO_EMAIL = `
+【KINEZO予約について
+
+-------------------------------------------------------------------------------
+このたびは、ご利用頂きましてありがとうございます。
+是非アンケートにご協力をお願いいたします。
+https://forms.example.com/survey
+
+-------------------------------------------------------------------------------
+
+≪ ご入場に関して ≫
+
+発券せずに会員QRコードでそのままご入場いただけます。
+https://tjoy.jp/t-joy_kyoto/guide/ticketless
+
+≪ チケット発券方法に関して ≫
+
+https://tjoy.jp/t-joy_kyoto/guide/howtoget
+※発券用パスワードは生年月日の月日４桁です。
+-------------------------------------------------------------------------------
+予約番号：0805743383
+劇場：T・ジョイ京都
+日時：2026-08-05 21:45 ～ 24:25
+タイトル：【SCREENX with DolbyAtmos・字幕】スパイダーマン：ブランド・ニュー・デイ
+シアター名：シアター９
+座席：J-16　購入枚数：1枚
+購入金額：￥2,300
+決済方法：クレジットカード
+
+＜注意事項＞
+■本上映回は、全席指定・定員入替制です。
+■転売を目的としたご購入はお断りいたします。
+-------------------------------------------------------------------------------
+ご不明の点がありましたら、T・ジョイ京都 お問い合わせ先まで。
+
+オンライン予約システム KINEZO】
+`.trim();
+
+describe("parseTicketText — KINEZO 单封邮件（含内部分隔线）", () => {
+  const result = parseTicketText(KINEZO_EMAIL);
+
+  it("不因内部分隔线产生多余场次", () => {
+    assert.equal(result.screenings.length, 1,
+      `应只解析出 1 个场次，实际为 ${result.screenings.length}`);
+  });
+
+  it("片名正确（已移除制式前缀）", () => {
+    assert.equal(result.screenings[0].movieTitle, "スパイダーマン：ブランド・ニュー・デイ");
+  });
+
+  it("影院名正确", () => {
+    assert.ok(result.screenings[0].cinemaName?.includes("T・ジョイ京都"),
+      `影院名应含 T・ジョイ京都，实际：${result.screenings[0].cinemaName}`);
+  });
+
+  it("放映制式正确", () => {
+    assert.ok(result.screenings[0].format?.includes("SCREENX"),
+      `制式应含 SCREENX，实际：${result.screenings[0].format}`);
+  });
+
+  it("座位正确", () => {
+    assert.deepEqual(result.screenings[0].seats, ["J-16"]);
+  });
+});
+
+describe("toISO — 24:xx 跨午夜时间处理", () => {
+  it("24:25 解析为次日 00:25", () => {
+    const result = parseTicketText(KINEZO_EMAIL);
+    const endsAt = result.screenings[0].screeningEndsAt;
+    assert.ok(endsAt, "应有结束时间");
+    const d = new Date(endsAt);
+    assert.ok(!isNaN(d.getTime()), `结束时间应是合法日期，实际：${endsAt}`);
+    // 次日 00:25 JST = T00:25+09:00 → UTC T15:25 前一天
+    assert.equal(d.getUTCDate(), 5,
+      `UTC 日期应为 5，实际：${d.getUTCDate()}（JST 次日 00:25 = UTC 前日 15:25）`);
+    assert.equal(d.getUTCHours(), 15,
+      `UTC 小时应为 15，实际：${d.getUTCHours()}`);
+    assert.equal(d.getUTCMinutes(), 25);
+  });
+
+  it("开始时间 21:45 正常解析", () => {
+    const result = parseTicketText(KINEZO_EMAIL);
+    const startAt = result.screenings[0].screeningAt;
+    const d = new Date(startAt);
+    assert.ok(!isNaN(d.getTime()), `开始时间应是合法日期，实际：${startAt}`);
+  });
+});
+
+describe("splitEmails — 含内部分隔线的单封 KINEZO 不被拆分", () => {
+  it("返回长度为 1", () => {
+    const segments = splitEmails(KINEZO_EMAIL);
+    assert.equal(segments.length, 1,
+      `单封 KINEZO 邮件不应被拆分，实际拆成 ${segments.length} 段`);
+  });
+});

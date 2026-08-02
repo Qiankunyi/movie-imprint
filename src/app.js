@@ -623,37 +623,46 @@ function ticketPasteOverlay() {
   // 状态一：已解析，显示场次确认卡片
   if (result) {
     const screenings = result.screenings;
-    const confirmedIds = new Set(state.pendingViewingEvents.map((e) => e.id));
+    const selectedIndices = new Set(state.pendingViewingEvents.map((e) => e._draftIndex));
+    const selectedCount = selectedIndices.size;
+    const allSelected = selectedCount >= screenings.length;
+
+    const timeFmt = new Intl.DateTimeFormat("zh-CN", {
+      hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Tokyo"
+    });
+    const dateFmt = new Intl.DateTimeFormat("zh-CN", {
+      year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo"
+    });
 
     const cards = screenings.map((s, index) => {
-      const timeStr = s.screeningAt
-        ? new Date(s.screeningAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
-        : null;
-      const endStr = s.screeningEndsAt
-        ? new Date(s.screeningEndsAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
-        : null;
-      const timeRange = timeStr ? (endStr ? `${timeStr}–${endStr}` : timeStr) : null;
-      const seatsStr = s.seats.length ? s.seats.join("、") : null;
-      const eventId = `ticket_draft_${index}`;
-      const confirmed = confirmedIds.has(eventId) ||
-        state.pendingViewingEvents.some((e) => e._draftIndex === index);
+      const selected = selectedIndices.has(index);
+      const dateStr = s.screeningAt ? dateFmt.format(new Date(s.screeningAt))
+        : s.viewedOn ? escapeHtml(s.viewedOn) : "";
+      const timeStr = s.screeningAt ? timeFmt.format(new Date(s.screeningAt)) : "";
+      const endStr = s.screeningEndsAt ? timeFmt.format(new Date(s.screeningEndsAt)) : "";
+      const timeRange = timeStr ? (endStr ? `${timeStr}–${endStr}` : timeStr) : "";
+      const seatsStr = s.seats.length ? s.seats.join("、") : "";
 
-      return `<div class="ticket-card ${confirmed ? "confirmed" : ""}" data-index="${index}">
-        <div class="ticket-card-title">${escapeHtml(s.movieTitle)}</div>
-        <div class="ticket-card-meta">
-          ${s.viewedOn ? `<span>${escapeHtml(s.viewedOn)}</span>` : ""}
-          ${timeRange ? `<span>${escapeHtml(timeRange)}</span>` : ""}
+      return `<button type="button" class="ticket-card ${selected ? "selected" : ""}" data-action="toggle-ticket" data-index="${index}" aria-pressed="${selected}">
+        <div class="ticket-card-select-indicator" aria-hidden="true">${selected ? "✓" : ""}</div>
+        <div class="ticket-card-body">
+          <div class="ticket-card-title">${escapeHtml(s.movieTitle)}</div>
+          <div class="ticket-card-meta">
+            ${dateStr ? `<span>${escapeHtml(dateStr)}</span>` : ""}
+            ${timeRange ? `<span>${escapeHtml(timeRange)}</span>` : ""}
+          </div>
+          <div class="ticket-card-meta">
+            ${s.cinemaName ? `<span>${escapeHtml(s.cinemaName)}</span>` : ""}
+            ${s.format ? `<span>${escapeHtml(s.format)}</span>` : ""}
+          </div>
+          ${seatsStr ? `<div class="ticket-card-seats">座位：${escapeHtml(seatsStr)}</div>` : ""}
         </div>
-        <div class="ticket-card-meta">
-          ${s.cinemaName ? `<span>${escapeHtml(s.cinemaName)}</span>` : ""}
-          ${s.format ? `<span>${escapeHtml(s.format)}</span>` : ""}
-        </div>
-        ${seatsStr ? `<div class="ticket-card-seats">座位：${escapeHtml(seatsStr)}</div>` : ""}
-        ${confirmed ? `<div class="ticket-confirmed-badge">✓ 已加入</div>` : ""}
-      </div>`;
+      </button>`;
     }).join("");
 
-    const allConfirmed = state.pendingViewingEvents.length >= screenings.length;
+    const ctaLabel = selectedCount > 0
+      ? `加入 ${selectedCount} 个场次`
+      : "请点击上方卡片选择场次";
 
     return `<div class="overlay" data-testid="ticket-paste">
       <button class="overlay-backdrop" type="button" data-action="close-ticket-overlay" aria-label="返回记录层"></button>
@@ -669,9 +678,8 @@ function ticketPasteOverlay() {
         <p class="ticket-privacy-note">敏感信息已本地移除：姓名、邮箱、QR 取票码<br>原始邮件不保存</p>
         <div class="ticket-cards">${cards}</div>
         <div class="ticket-actions">
-          ${!allConfirmed
-            ? `<button type="button" class="sheet-done" data-action="confirm-all-tickets">确认全部加入</button>`
-            : `<button type="button" class="sheet-done" data-action="close-ticket-overlay">完成</button>`}
+          <button type="button" class="sheet-done" data-action="close-ticket-overlay" ${selectedCount === 0 ? "disabled" : ""}>${escapeHtml(ctaLabel)}</button>
+          ${!allSelected && screenings.length > 1 ? `<button type="button" class="text-action" data-action="select-all-tickets">全选</button>` : ""}
           <button type="button" class="text-action" data-action="repaste-ticket">重新粘贴</button>
         </div>
       </section>
@@ -1037,6 +1045,7 @@ app.addEventListener("click", async (event) => {
     focusComposer();
   } else if (action === "repaste-ticket") {
     state.ticketParseResult = null;
+    state.pendingViewingEvents = [];
     render();
     requestAnimationFrame(() => document.querySelector("#ticket-input")?.focus());
   } else if (action === "parse-ticket") {
@@ -1050,30 +1059,54 @@ app.addEventListener("click", async (event) => {
       if (state.ticketParseResult.screenings.length === 0) {
         announce("未能识别出场次，请检查粘贴内容");
         state.ticketParseResult = null;
+      } else {
+        // 解析完成后默认全选（用户可逐个取消）
+        const workId = state.draft ? `work_draft_${state.draft.id}` : `work_temp_${Date.now()}`;
+        state.pendingViewingEvents = state.ticketParseResult.screenings.map((s, index) => {
+          const event = draftViewingEvent(s, workId);
+          event._draftIndex = index;
+          return event;
+        });
       }
     } catch {
       announce("解析失败，请检查粘贴内容");
     }
     render();
-  } else if (action === "confirm-all-tickets") {
+  } else if (action === "toggle-ticket") {
     const result = state.ticketParseResult;
     if (!result) return;
-    // 用当前 draft 对应的 work（尚未确认的记录先用占位 ID）
+    const index = parseInt(trigger.dataset.index, 10);
+    const existing = state.pendingViewingEvents.findIndex((e) => e._draftIndex === index);
+    if (existing >= 0) {
+      // 取消选择
+      state.pendingViewingEvents = state.pendingViewingEvents.filter((_, i) => i !== existing);
+    } else {
+      // 重新选择
+      const workId = state.draft ? `work_draft_${state.draft.id}` : `work_temp_${Date.now()}`;
+      const event = draftViewingEvent(result.screenings[index], workId);
+      event._draftIndex = index;
+      state.pendingViewingEvents = [...state.pendingViewingEvents, event]
+        .sort((a, b) => (a._draftIndex ?? 0) - (b._draftIndex ?? 0));
+    }
+    render();
+  } else if (action === "select-all-tickets") {
+    const result = state.ticketParseResult;
+    if (!result) return;
     const workId = state.draft ? `work_draft_${state.draft.id}` : `work_temp_${Date.now()}`;
-    const events = result.screenings.map((s, index) => {
+    const selectedIndices = new Set(state.pendingViewingEvents.map((e) => e._draftIndex));
+    const missing = result.screenings
+      .map((s, index) => ({ s, index }))
+      .filter(({ index }) => !selectedIndices.has(index));
+    const newEvents = missing.map(({ s, index }) => {
       const event = draftViewingEvent(s, workId);
       event._draftIndex = index;
-      event.confirmed_at = new Date().toISOString();
-      event.status = "confirmed";
       return event;
     });
-    state.pendingViewingEvents = events;
-    try {
-      await db.putViewingEvents(events);
-      announce(`已加入 ${events.length} 个观影场次`);
-    } catch (err) {
-      announce("场次保存失败：" + err.message);
-    }
+    state.pendingViewingEvents = [...state.pendingViewingEvents, ...newEvents]
+      .sort((a, b) => (a._draftIndex ?? 0) - (b._draftIndex ?? 0));
+    render();
+  } else if (action === "confirm-all-tickets") {
+    // 向后兼容保留；现在 parse-ticket 已默认全选，此 action 不再挂到按钮
     render();
   } else if (action === "open-compose" || action === "resume-draft") {
     state.returnScrollY = scrollY;
