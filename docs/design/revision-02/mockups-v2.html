@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>电影印记 · 交互视觉样张 v2</title>
+  <link rel="stylesheet" href="../tokens-v2.css">
+  <link rel="stylesheet" href="mockups-v2.css">
+</head>
+<body>
+  <main id="app" class="phone"></main>
+  <script>
+    const icon = (name) => {
+      const paths = {
+        menu: '<path d="M4 7h16M4 12h12M4 17h16"/>',
+        search: '<circle cx="10.5" cy="10.5" r="6.3"/><path d="m15.2 15.2 4.4 4.4"/>',
+        back: '<path d="m15 5-7 7 7 7"/>',
+        more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+        ticket: '<path d="M4 7.5A2.5 2.5 0 0 0 6.5 10 2.5 2.5 0 0 0 4 12.5V17h16v-4.5a2.5 2.5 0 0 0 0-5V3H4z"/><path d="M13 5.5v1M13 9.5v1M13 13.5v1"/>',
+        image: '<rect x="3.5" y="4" width="17" height="16" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m5.5 17 4.2-4.2 3.1 3.1 2.2-2.2 3.5 3.3"/>',
+        send: '<path d="m6 12 4 4 8-9"/>',
+        close: '<path d="m7 7 10 10M17 7 7 17"/>',
+        edit: '<path d="m4 17-.5 3.5L7 20l10.7-10.7-3-3zM13.5 7.5l3 3"/>',
+        export: '<path d="M12 15V3m0 0L8 7m4-4 4 4"/><path d="M5 12v7h14v-7"/>',
+        link: '<path d="M9.5 14.5 14.5 9M7.2 17.1l-1 .9a3.6 3.6 0 1 1-5.1-5.1l3.1-3.1a3.6 3.6 0 0 1 5.1 0M16.8 6.9l1-.9a3.6 3.6 0 1 1 5.1 5.1l-3.1 3.1a3.6 3.6 0 0 1-5.1 0"/>',
+      };
+      return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || ''}</svg>`;
+    };
+
+    const statusBar = (inverse = false) => `<div class="status-bar ${inverse ? 'inverse' : ''}"><span>19:26</span><div class="status-icons"><span>5G</span><span class="signal">▮▮▮</span><span class="wifi">◒</span><span class="battery"></span></div></div>`;
+    const gesture = () => '<div class="gesture-bar"></div>';
+
+    const keyboard = () => {
+      const rows = [
+        ['Q','W','E','R','T','Y','U','I','O','P'],
+        ['A','S','D','F','G','H','J','K','L'],
+        ['⇧','Z','X','C','V','B','N','M','⌫']
+      ];
+      return `<div class="keyboard">${rows.map((row, ri) => `<div class="key-row">${row.map((key, ki) => `<span class="key ${(ri === 2 && (ki === 0 || ki === row.length - 1)) ? 'key-wide' : ''}">${key}</span>`).join('')}</div>`).join('')}<div class="key-row final-row"><span class="key key-wide">123</span><span class="key key-lang">中/英</span><span class="key key-space">空格</span><span class="key key-enter">换行</span></div>${gesture()}</div>`;
+    };
+
+    const feedCards = (compact = false) => `<div class="feed-cards ${compact ? 'compact' : ''}">
+      <article class="record-card">
+        <div class="record-head"><time>今天 18:42</time><button class="icon-button tiny">${icon('more')}</button></div>
+        <p class="record-copy"><span class="inline-tag">#穿越时空的少女</span> <span class="inline-tag">#电影院</span></p>
+        <p class="record-copy">重映这天再看，还是会被最后那句“未来で待ってる”击中。4K 的明暗细节很好，但后排一直说话，有点遗憾。</p>
+        <div class="record-foot"><span>正在整理</span><span class="quiet-dot"></span></div>
+      </article>
+      <article class="record-card second-card">
+        <div class="record-head"><time>7 月 29 日</time><button class="icon-button tiny">${icon('more')}</button></div>
+        <p class="record-copy"><span class="inline-tag">#剧场版链锯人蕾塞篇</span></p>
+        <p class="record-copy">像是真的被带进那场雨里。散场以后，脑子里还全是车站和烟花。</p>
+        <div class="record-foot"><span>喜欢 · 已整理</span></div>
+      </article>
+    </div>`;
+
+    const feedHeader = () => `<header class="feed-header"><button class="icon-button">${icon('menu')}</button><h1>电影印记</h1><button class="icon-button">${icon('search')}</button></header>`;
+    const backdrop = () => `<div class="backdrop-content">${feedHeader()}${feedCards(true)}</div><div class="scrim"></div>`;
+
+    const screens = {
+      empty: () => `${statusBar(true)}<section class="empty-hero"><div class="empty-brand">电影印记</div><button class="fab hero-fab" aria-label="开始记录">＋</button>${gesture()}</section>`,
+
+      feed: () => `${statusBar()}${feedHeader()}${feedCards()}<button class="fab" aria-label="开始记录">＋</button>${gesture()}`,
+
+      compose: () => `${statusBar()}${backdrop()}<section class="bottom-sheet composer-sheet"><div class="sheet-handle"></div><div class="compose-placeholder">用 # 标记作品，再写下看完后的想法<span>例如：#穿越时空的少女　#电影院</span></div><div class="compose-spacer"></div><div class="compose-tools"><button class="tool hash">#</button><button class="tool">${icon('ticket')}</button><span class="local-save">已存于本机</span><button class="finish-button">完成</button></div></section>${keyboard()}`,
+
+      ticket: () => `${statusBar()}${backdrop()}<section class="bottom-sheet ticket-sheet"><div class="sheet-handle"></div><div class="sheet-title-row"><div><h2>粘贴票务信息</h2><p>导入前会在本机移除姓名、邮箱和订单信息</p></div><button class="icon-button">${icon('close')}</button></div><div class="ticket-input"><p>【ご購入内容】</p><p>作品：時をかける少女</p><p>日時：2026/08/01 18:20</p><p>劇場：MOVIX京都　Dolby Cinema</p><span class="caret"></span></div><div class="ticket-actions"><span>原邮件不会保存</span><button class="compact-action">导入</button></div></section>${keyboard()}`,
+
+      attitude: () => `${statusBar()}<div class="detail-ghost"><div class="ghost-image"></div><div class="ghost-lines"><b>穿越时空的少女</b><span></span><span></span><span class="short"></span></div></div><div class="scrim strong"></div><section class="bottom-sheet attitude-sheet"><div class="sheet-handle"></div><div class="attitude-kicker">个人态度</div><h2>这次看完，心里更接近哪一种？</h2><p class="attitude-note">没有标准答案，也可以稍后再说</p><div class="attitude-axis"><div class="axis-line"></div>${['不喜欢','无感','喜欢','超喜欢'].map((label, i) => `<button class="attitude-point p${i + 1} ${label === '喜欢' ? 'selected' : ''}"><span class="node"></span><span class="point-label">${label}</span></button>`).join('')}</div><button class="mixed-choice"><span class="mixed-mark"><i></i><i></i></span><span><b>不好说</b><small>喜欢与不喜欢交织在一起</small></span></button><div class="suggestion"><span>文字倾向</span><b>喜欢</b></div><div class="recommend-block"><div class="recommend-head"><h3>会推荐给别人吗？</h3><span>由你决定</span></div><div class="recommend-choices"><button class="recommend-choice yes"><i>↗</i><span>会</span></button><button class="recommend-choice depends selected"><i></i><span>看对象</span></button><button class="recommend-choice no"><i>—</i><span>不会</span></button></div><button class="recommend-detail"><span>推荐给谁</span><b>喜欢青春动画的人</b><em>›</em></button></div></section>${gesture()}`,
+
+      detail: () => `${statusBar(true)}<header class="detail-top"><button class="icon-button inverse-button">${icon('back')}</button><div class="detail-actions"><button class="icon-button inverse-button" aria-label="导出与同步">${icon('export')}</button><button class="icon-button inverse-button" aria-label="更多">${icon('more')}</button></div></header><div class="detail-hero"></div><main class="detail-content"><div class="detail-title-row"><div><div class="detail-date">2026 年 8 月 1 日</div><h1>穿越时空的少女</h1></div><span class="attitude-badge">喜欢</span></div><p class="scene-line">MOVIX 京都 · Dolby Cinema · 重映</p><p class="recommend-line">看对象推荐 · 适合喜欢青春动画的人</p><p class="impression">重映这天再看，还是会被最后那句“未来で待ってる”击中。我原本以为自己已经忘记了第一次看的感觉，但千昭回头的时候，还是突然想起很多年前那个夏天。</p><div class="memory-heading"><h2>留下来的片段</h2><button class="add-card">＋ 添加卡片</button></div><div class="memory-rail"><article class="memory-card core"><div class="memory-type">被击中的瞬间</div><h3>那句来自未来的约定</h3><p>多年以后再听见，仍然会把第一次观看时的夏天一起带回来。</p><button class="card-edit">编辑</button></article></div><div class="page-dots"><span>1 / 3</span><i class="active"></i><i></i><i></i></div></main>${gesture()}`,
+    };
+
+    const params = new URLSearchParams(location.search);
+    const screen = params.get('screen') || 'empty';
+    const theme = params.get('theme') || 'light';
+    document.documentElement.dataset.theme = theme;
+    document.getElementById('app').className = `phone screen-${screen}`;
+    document.getElementById('app').innerHTML = (screens[screen] || screens.empty)();
+  </script>
+</body>
+</html>

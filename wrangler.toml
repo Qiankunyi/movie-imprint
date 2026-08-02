@@ -1,0 +1,6 @@
+name = "movie-imprint"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# 本地开发用：wrangler pages dev . --port 4173
+# 环境变量在 .dev.vars 文件中定义（不提交到 git）

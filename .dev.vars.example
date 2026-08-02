@@ -1,0 +1,19 @@
+# 本地开发环境变量示例（wrangler pages dev 使用）
+# 复制为 .dev.vars 并填入真实值，.dev.vars 不会提交到 git
+
+# AI 服务密钥（至少配置一个）
+GEMINI_API_KEY=
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+DEEPSEEK_API_KEY=
+MOONSHOT_API_KEY=
+
+# 可选：指定默认使用的 AI 提供商（gemini / openai / anthropic / deepseek / kimi）
+AI_PROVIDER=gemini
+
+# 可选：Bangumi API Token（提升搜索频率上限）
+BANGUMI_ACCESS_TOKEN=
+BANGUMI_USER_AGENT=qiankunyi/movie-imprint/0.1
+
+# 可选：访问密码保护（留空则不需要密码）
+ACCESS_PASSWORD=

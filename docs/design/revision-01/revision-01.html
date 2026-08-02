@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>电影印记 · 交互方向修订 01</title>
+  <link rel="stylesheet" href="revision-01.css">
+</head>
+<body>
+  <main id="app" class="phone"></main>
+  <script>
+    const ticketIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5A2.5 2.5 0 0 0 6.5 10 2.5 2.5 0 0 0 4 12.5V17h16v-4.5a2.5 2.5 0 0 0 0-5V3H4z"/><path d="M13 5.5v1M13 9.5v1M13 13.5v1"/></svg>';
+    const sendIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 12 4 4 8-9"/></svg>';
+    const searchIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2"/><path d="m15.1 15.1 4.5 4.5"/></svg>';
+
+    function statusBar(onImage = false) {
+      return `<div class="status-bar ${onImage ? 'on-image' : ''}"><span>9:41</span><span class="system"><span>▂▄▆</span><span>⌁</span><span class="battery"></span></span></div>`;
+    }
+
+    function keyboard() {
+      const rows = [
+        ['Q','W','E','R','T','Y','U','I','O','P'],
+        ['A','S','D','F','G','H','J','K','L'],
+        ['⇧','Z','X','C','V','B','N','M','⌫']
+      ];
+      return `<div class="keyboard">${rows.map((row, rowIndex) => `<div class="key-row">${row.map((key, index) => `<span class="key ${(rowIndex === 2 && (index === 0 || index === row.length - 1)) ? 'wide' : ''}">${key}</span>`).join('')}</div>`).join('')}<div class="key-row"><span class="key wide">123</span><span class="key wide">中/英</span><span class="key space">空格</span><span class="key enter">换行</span></div><div class="keyboard-gesture"></div></div>`;
+    }
+
+    const screens = {
+      'home-empty': () => `${statusBar(true)}<section class="hero-home phone"><div class="brand">电影印记</div><p class="hero-caption">有些电影结束以后，<br>还会在心里继续放映。</p><button class="fab" aria-label="开始记录">＋</button><div class="gesture"></div></section>`,
+
+      'home-feed': () => `${statusBar()}<header class="feed-header"><h1>电影印记</h1><button class="quiet-icon" aria-label="搜索">${searchIcon}</button></header><section class="feed"><div class="day-label">今天</div><article class="memo-card"><p class="memo-text"><span class="memo-tags">#穿越时空的少女 #电影院</span></p><p class="memo-text">重映这天再看，还是会被最后那句「未来で待ってる」击中。4K 的明暗细节很好，但后排观众一直说话，有点遗憾。</p><div class="memo-meta"><span>刚刚 · 已保存</span><span>等待整理</span></div></article><div class="day-label">7月29日</div><article class="memo-card"><p class="memo-text"><span class="memo-tags">#剧场版链锯人蕾塞篇</span></p><p class="memo-text">不知道怎么写。像是真的碰到了灵魂伴侣一样，散场以后脑子里还全是那场雨。</p><div class="memo-meta"><span>Dolby Cinema</span><span>超喜欢 · 已整理</span></div></article></section><button class="fab" aria-label="开始记录">＋</button><div class="gesture"></div>`,
+
+      'composer-empty': () => `${statusBar()}<header class="composer-top"><button class="close-button" aria-label="关闭">×</button><span class="save-state">空白草稿</span></header><section class="writing-canvas"><div class="placeholder"><strong>现在的想法是……</strong>可以先写作品名，再接着写任何想到的内容。<span class="hint">例如：<span class="tag-example">#穿越时空的少女</span><br>影院观看时，再写 <span class="tag-example">#电影院</span></span></div></section><div class="editor-tools"><button class="tool-button" aria-label="添加标签">#</button><div class="tool-spacer"></div><button class="send-button" aria-label="完成记录">${sendIcon}</button></div>${keyboard()}`,
+
+      'composer-writing': () => `${statusBar()}<header class="composer-top"><button class="close-button" aria-label="关闭">×</button><span class="save-state">已保存在本机</span></header><section class="writing-canvas"><div class="typed-copy"><span class="tag">#穿越时空的少女 #电影院</span>\n\n重映这天再看，还是会被最后那句「未来で待ってる」击中。\n\n我原本以为自己已经忘记了第一次看的感觉，但千昭回头的时候，还是突然想起很多年前那个夏天。4K 的明暗细节很好，人物跑起来时的风也更清楚了……</div></section><div class="context-tip">已识别影院记录 · 完成后可检查场次或粘贴票务</div><div class="editor-tools"><button class="tool-button" aria-label="添加标签">#</button><button class="tool-button ticket" aria-label="票务信息">${ticketIcon}</button><div class="tool-spacer"></div><button class="send-button" aria-label="完成记录">${sendIcon}</button></div>${keyboard()}`
+    };
+
+    const screen = new URLSearchParams(location.search).get('screen') || 'home-empty';
+    document.getElementById('app').outerHTML = `<main id="app" class="phone ${screen === 'home-empty' ? 'hero-home' : screen.startsWith('composer') ? 'composer' : ''}">${(screens[screen] || screens['home-empty'])()}</main>`;
+  </script>
+</body>
+</html>

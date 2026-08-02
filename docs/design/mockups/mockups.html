@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>电影印记视觉样张</title>
+  <link rel="stylesheet" href="mockups.css">
+</head>
+<body>
+  <main id="app" class="phone" aria-label="电影印记视觉样张"></main>
+  <div class="gesture-bar" aria-hidden="true"></div>
+  <script>
+    const icons = {
+      back: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 5 8.5 12l7 7"/></svg>',
+      search: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.7" cy="10.7" r="6.2"/><path d="m15.3 15.3 4.5 4.5"/></svg>',
+      settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.1"/><path d="M19.3 13.6v-3.2l-2-.7a7 7 0 0 0-.7-1.6l.9-1.9-2.3-2.3-1.9.9a7 7 0 0 0-1.6-.7l-.7-2H7.8l-.7 2a7 7 0 0 0-1.6.7l-1.9-.9-2.3 2.3.9 1.9a7 7 0 0 0-.7 1.6l-2 .7v3.2l2 .7a7 7 0 0 0 .7 1.6l-.9 1.9 2.3 2.3 1.9-.9a7 7 0 0 0 1.6.7l.7 2H11l.7-2a7 7 0 0 0 1.6-.7l1.9.9 2.3-2.3-.9-1.9a7 7 0 0 0 .7-1.6z" transform="translate(1) scale(.92)"/></svg>'
+    };
+
+    function statusBar() {
+      return `<div class="status-bar"><span>9:41</span><div class="system-icons"><span class="signal">▂▄▆</span><span>⌁</span><span class="battery"><span></span></span></div></div>`;
+    }
+
+    function appBar(title, options = {}) {
+      if (options.home) {
+        return `<header class="app-bar home-bar"><div class="app-title">${title}</div><button class="icon-button" aria-label="搜索">${icons.search}</button><button class="icon-button" aria-label="设置">${icons.settings}</button></header>`;
+      }
+      return `<header class="app-bar"><button class="back-button" aria-label="返回">${icons.back}</button><div class="app-title ${options.center ? 'center' : ''}">${title}</div><div class="step">${options.step || ''}</div></header>`;
+    }
+
+    function banner(type, icon, text) {
+      return `<div class="status-banner ${type}"><span class="status-icon">${icon}</span><span>${text}</span></div>`;
+    }
+
+    const screens = {
+      home(theme) {
+        const network = theme === 'light'
+          ? banner('offline', '↓', '<strong>离线模式</strong> · 原文仍会保存在本机')
+          : banner('success', '✓', '<strong>已安全连接</strong> · 上次同步于昨天 23:18');
+        return `${statusBar()}${appBar('电影印记', {home: true})}
+          <section class="content scroll">
+            <button class="primary-button"><span class="plus">＋</span>记录一部电影</button>
+            <div class="secondary-entry">记录影院特别放映 <span>›</span></div>
+            ${network}
+            <div class="section-row"><h2 class="section-title">草稿</h2><a class="section-link">1 条待处理</a></div>
+            <article class="draft-card">
+              <h3 class="card-title">你与烟花与约定</h3>
+              <div class="meta-line"><span class="meta">原文已保存 · 328 字</span><span class="inline-status offline">待整理</span></div>
+            </article>
+            <div class="section-row"><h2 class="section-title">最近记录</h2><a class="section-link">查看全部</a></div>
+            <div class="record-list">
+              <article class="record-row">
+                <div class="record-top"><h3 class="list-title">剧场版 链锯人 蕾塞篇</h3><time class="date">7月29日</time></div>
+                <div class="chip-row"><span class="chip compact ai">超喜欢</span><span class="chip compact">兴奋</span><span class="chip compact">浪漫</span><span class="inline-status success meta">已同步</span></div>
+              </article>
+              <article class="record-row">
+                <div class="record-top"><h3 class="list-title">劇場版 魔法少女まどか☆マギカ 前編 始まりの物語</h3><time class="date">7月18日</time></div>
+                <div class="chip-row"><span class="chip compact ai">喜欢</span><span class="chip compact">怀念</span><span class="chip compact">沉浸</span></div>
+              </article>
+            </div>
+          </section>`;
+      },
+
+      new(theme) {
+        const network = theme === 'dark'
+          ? banner('offline', '↓', '<strong>当前离线</strong> · 可继续写，联网后再整理')
+          : '';
+        const button = theme === 'dark' ? '保存并等待联网整理' : '开始整理';
+        return `${statusBar()}${appBar('新建电影')}
+          <section class="content scroll">
+            ${network}
+            <div class="field">
+              <label class="field-label">电影名 <span class="required">*</span></label>
+              <div class="field-box focused">穿越时空的少女</div>
+              <div class="field-helper saved">已匹配 · 時をかける少女 · 2006</div>
+            </div>
+            <div class="field">
+              <label class="field-label">原始感想 <span class="required">*</span></label>
+              <div class="field-box textarea">重映这天再看，还是会被最后那句「未来で待ってる」击中。<br><br>4K 的明暗细节很好，但后排观众一直说话，有点遗憾。</div>
+              <div class="field-helper saved">已在本机保存草稿 · 刚刚</div>
+            </div>
+            <div class="location-title">这次在哪里看？</div>
+            <div class="location-row"><span class="chip selected">电影院</span><span class="chip">家中</span><span class="chip">其他</span><span class="chip">先不填</span></div>
+            <div class="ticket-entry"><span>＋ 粘贴电影票信息</span><span>›</span></div>
+            <div class="more-row"><span>更多信息</span><span>作品类型、日期、来源　⌄</span></div>
+          </section>
+          <footer class="bottom-action"><button class="primary-button">${button}</button><div class="sub-action">只保存原文</div></footer>`;
+      },
+
+      ticket() {
+        return `${statusBar()}${appBar('检查场次')}
+          <section class="content scroll">
+            <div class="summary-strip"><strong>已识别 2 封邮件 · 2 场</strong><span class="privacy-count">✓ 已脱敏</span><span class="meta">已移除姓名、邮箱、QR 取票信息等 6 类内容</span></div>
+            <article class="ticket-card current">
+              <div class="ticket-index">① 当前作品</div>
+              <h2 class="ticket-title">劇場版 魔法少女まどか☆マギカ 前編 始まりの物語</h2>
+              <div class="ticket-grid"><span class="label">时间</span><span class="value">7月18日 09:50–12:10</span><span class="edit-link">编辑</span><span class="label">影院</span><span class="value">MOVIX京都</span><span></span><span class="label">制式 · 座位</span><span class="value">Dolby Cinema · K-11, K-12</span><span></span></div>
+            </article>
+            <article class="ticket-card">
+              <div class="ticket-index">② 另一部作品</div>
+              <h2 class="ticket-title">劇場版 魔法少女まどか☆マギカ 後編 永遠の物語</h2>
+              <div class="ticket-grid"><span class="label">时间</span><span class="value">7月18日 12:35–14:40</span><span class="edit-link">编辑</span><span class="label">影院</span><span class="value">MOVIX京都</span><span></span><span class="label">制式 · 座位</span><span class="value">Dolby Cinema · J-11, J-12</span><span></span></div>
+            </article>
+            ${banner('warning', '!', '<strong>两场对应不同作品。</strong> 另一场将保存为“待写感想”，不会与当前记录合并。')}
+          </section>
+          <footer class="bottom-action"><button class="primary-button">确认 2 个场次</button><div class="sub-action">原始邮件不会保存</div></footer>`;
+      },
+
+      confirm(theme) {
+        const issue = theme === 'dark'
+          ? banner('error', '!', '<strong>1 条依据无法定位。</strong> 该建议未选中，可返回原文检查。')
+          : '';
+        return `${statusBar()}${appBar('确认感想', {step: '1 / 5'})}<div class="progress-line"><span></span></div>
+          <section class="content scroll">
+            <h1 class="screen-heading">个人态度</h1>
+            <p class="screen-lead">先确认整体感受。AI 建议不会替你选中。</p>
+            <div class="raw-quote">“更被那份决心打动。也有几处太仓促，但最后还是很喜欢。”</div>
+            <div class="attitude-grid"><span class="chip">超喜欢</span><span class="chip selected">喜欢</span><span class="chip">无感</span><span class="chip">不喜欢</span><span class="chip">不好说</span></div>
+            <aside class="ai-panel">
+              <div class="ai-title"><span>AI 倾向：喜欢</span><span>高置信</span></div>
+              <p class="ai-quote">依据：“最后还是很喜欢”</p>
+              <a class="text-link">查看 2 处原文依据　›</a>
+              <div class="ai-note">这是建议；上方“喜欢”由你刚刚确认。</div>
+            </aside>
+            ${issue}
+          </section>
+          <footer class="bottom-action"><button class="primary-button">确认并继续</button><div class="sub-action">跳过本项</div></footer>`;
+      },
+
+      cards() {
+        return `${statusBar()}${appBar('添加记忆卡片')}
+          <section class="content scroll">
+            <div class="search-box"><span class="search-icon"></span><span>搜索类型，例如“影厅效果”</span></div>
+            <div class="section-row"><h2 class="section-title">最近使用</h2></div>
+            <div class="chip-row"><span class="chip ai">场景</span><span class="chip">个人感悟</span><span class="chip selected">影厅效果</span></div>
+            <div class="section-row"><h2 class="section-title">全部类型</h2><span class="meta">44 个预设</span></div>
+            <div class="category-list">
+              <div class="category-row"><span class="category-dot">故</span><span class="category-name">故事与表达</span><span class="category-count">8　›</span></div>
+              <div class="category-row"><span class="category-dot">人</span><span class="category-name">人物与表演</span><span class="category-count">4　›</span></div>
+              <div class="category-row"><span class="category-dot">视</span><span class="category-name">视觉与演出</span><span class="category-count">7　›</span></div>
+              <div class="category-row"><span class="category-dot">声</span><span class="category-name">声音与音乐</span><span class="category-count">4　›</span></div>
+              <div class="category-row"><span class="category-dot">我</span><span class="category-name">个人反应</span><span class="chevron">⌃</span></div>
+              <div class="category-expand"><div class="chip-row"><span class="chip compact">被击中的瞬间</span><span class="chip compact">遗憾／不满</span><span class="chip compact">个人感悟</span></div></div>
+              <div class="category-row"><span class="category-dot">联</span><span class="category-name">关联与语境</span><span class="category-count">6　›</span></div>
+              <div class="category-row"><span class="category-dot">映</span><span class="category-name">影院与现场体验</span><span class="category-count">6　›</span></div>
+            </div>
+            <div class="custom-row"><span>＋</span><span>自定义类型</span></div>
+          </section>`;
+      },
+
+      preview() {
+        return `${statusBar()}${appBar('最终预览')}
+          <section class="content scroll">
+            <h1 class="preview-title">哆啦A梦：大雄与云之王国</h1>
+            <div class="preview-meta"><span class="chip compact ai">喜欢</span><span class="chip compact">感动</span><span class="chip compact">意外</span><span class="chip compact">可爱</span></div>
+            <section class="preview-section"><div class="preview-section-head"><span class="preview-section-title">原始感想</span><span class="preview-count">684 字　›</span></div><p class="preview-text">云之王国本来是大雄他们认真造出来的，所以哆啦A梦最后亲手毁掉它时，那份决心特别重……</p></section>
+            <section class="preview-section"><div class="preview-section-head"><span class="preview-section-title">记忆卡片</span><span class="preview-count">5 张　›</span></div><div class="memory-item"><span class="memory-mark">★</span><div><div class="memory-title">哆啦A梦毁掉云之王国</div><div class="memory-type">被击中的瞬间 · 感动</div></div><span class="chevron">›</span></div><div class="memory-item"><span class="memory-mark">•</span><div><div class="memory-title">小树苗成为外交大使</div><div class="memory-type">系列联系 · 意外</div></div><span class="chevron">›</span></div></section>
+            <section class="preview-section"><div class="preview-section-head"><span class="preview-section-title">观看场景</span><span class="preview-count">电影院 · 7月26日　›</span></div></section>
+            <section class="preview-section"><div class="preview-section-head"><span class="preview-section-title">后续关系</span><span class="preview-count">想重看　›</span></div></section>
+            <section class="preview-section"><div class="preview-section-head"><span class="preview-section-title">推荐判断</span><span class="preview-count">看对象　›</span></div></section>
+          </section>
+          <footer class="bottom-action"><button class="primary-button">保存正式记录</button><div class="save-note">保存后才能导出或同步到 GitHub</div></footer>`;
+      }
+    };
+
+    const params = new URLSearchParams(location.search);
+    const screen = params.get('screen') || 'home';
+    const theme = params.get('theme') === 'dark' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = theme;
+    document.title = `电影印记 · ${screen} · ${theme}`;
+    document.getElementById('app').innerHTML = (screens[screen] || screens.home)(theme);
+  </script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+node_modules/
+.pnpm-store/
+playwright-report/
+test-results/
+*.log
+
+# 环境变量与密钥（绝对不能提交）
+.env
+.env.*
+.dev.vars
