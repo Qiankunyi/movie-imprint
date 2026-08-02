@@ -85,7 +85,8 @@ const state = {
   theme: "light",
   // C4：票务粘贴流程
   ticketParseResult: null,   // 解析结果，显示确认卡片
-  pendingViewingEvents: []   // 用户已确认、等待写入 DB 的场次列表
+  pendingViewingEvents: [],  // 用户已确认、等待写入 DB 的场次列表
+  viewingEvents: []          // 当前详情页关联的已保存场次
 };
 
 let carouselGesture = null;
@@ -442,6 +443,33 @@ function workMatchPanel(record) {
   </section>`;
 }
 
+function viewingEventsSection(events) {
+  if (!events || events.length === 0) return "";
+  const dtFmt = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo" });
+  const timeFmt = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Tokyo" });
+  const rows = events.map((e) => {
+    const ctx = e.viewing_context || {};
+    const dateStr = e.viewed_on ? dtFmt.format(new Date(e.viewed_on)) : (e.screening_at ? dtFmt.format(new Date(e.screening_at)) : "");
+    const startStr = e.screening_at ? timeFmt.format(new Date(e.screening_at)) : "";
+    const endStr = e.screening_ends_at ? timeFmt.format(new Date(e.screening_ends_at)) : "";
+    const timeRange = startStr && endStr ? `${startStr}–${endStr}` : startStr;
+    const seats = ctx.seats?.length ? ctx.seats.join("、") : "";
+    return `<div class="viewing-event-card">
+      ${ctx.cinema_name ? `<div class="ve-cinema">${escapeHtml(ctx.cinema_name)}</div>` : ""}
+      <div class="ve-meta">
+        ${dateStr ? `<span>${escapeHtml(dateStr)}</span>` : ""}
+        ${timeRange ? `<span>${escapeHtml(timeRange)}</span>` : ""}
+        ${ctx.format ? `<span>${escapeHtml(ctx.format)}</span>` : ""}
+        ${seats ? `<span>座位 ${escapeHtml(seats)}</span>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+  return `<section class="viewing-events-section" data-testid="viewing-events">
+    <h2 class="viewing-events-heading">观影场次</h2>
+    ${rows}
+  </section>`;
+}
+
 function renderDetail() {
   const record = currentRecord();
   if (!record) return renderHome();
@@ -464,6 +492,7 @@ function renderDetail() {
         <span class="judgement-summary-icon" aria-hidden="true">${icon("edit")}</span><span class="judgement-summary-copy"><small>个人态度与推荐 · ${record.attitude ? "点击修改" : "点击选择"}</small><b>${escapeHtml(attitudeLabel(record.attitude))} · ${recommendation}</b></span>${icon("chevron")}
       </button>`}
       <p class="impression">${escapeHtml(record.rawText)}</p>
+      ${viewingEventsSection(state.viewingEvents)}
       ${record.status === "raw_only_confirmed" ? "" : `<div class="memory-heading"><h2>留下来的片段</h2><button class="text-action add-card" type="button" data-action="add-card">＋ 添加卡片</button></div>${memoryCard(record)}`}
     </article>
   </main>`;
@@ -743,6 +772,19 @@ async function finishCompose() {
   record.workId = `work_${record.id}`;
   const work = createLocalWork(record);
   await db.putRecordWithWork(record, work);
+  if (state.pendingViewingEvents.length > 0) {
+    const confirmedAt = new Date().toISOString();
+    const eventsToSave = state.pendingViewingEvents.map((e) => ({
+      ...e,
+      work_id: work.id,
+      record_id: record.id,
+      confirmed_at: e.confirmed_at || confirmedAt,
+      status: "confirmed"
+    }));
+    await db.putViewingEvents(eventsToSave);
+    state.viewingEvents = eventsToSave;
+    state.pendingViewingEvents = [];
+  }
   await db.delete("drafts", activeDraftId);
   state.draft = null;
   state.records.unshift(record);
@@ -892,20 +934,33 @@ async function updateRecord(mutator) {
   await db.put("records", record);
 }
 
-function openRecord(recordId) {
+async function openRecord(recordId) {
   state.returnScrollY = scrollY;
   state.activeRecordId = recordId;
   state.activeCardIndex = 0;
   state.view = "detail";
+  state.viewingEvents = [];
   history.pushState({ recordId }, "", `#record=${encodeURIComponent(recordId)}`);
   render();
   scrollTo(0, 0);
+  // 异步加载该记录关联的观影场次，加载完成后刷新详情页
+  const record = state.records.find((r) => r.id === recordId);
+  if (record?.workId) {
+    try {
+      const events = await db.getViewingEventsByWork(record.workId);
+      if (state.activeRecordId === recordId && state.view === "detail") {
+        state.viewingEvents = events;
+        if (events.length > 0) renderPreservingScroll();
+      }
+    } catch (_) { /* 场次加载失败不影响详情页其他内容 */ }
+  }
 }
 
 function goHome({ replace = false } = {}) {
   state.view = "home";
   state.activeRecordId = null;
   state.overlay = null;
+  state.viewingEvents = [];
   if (replace) history.replaceState({}, "", location.pathname + location.search);
   else history.pushState({}, "", location.pathname + location.search);
   render();

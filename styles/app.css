@@ -1760,3 +1760,40 @@ svg {
     padding-left: var(--space-4);
   }
 }
+
+/* ── 观影场次区块（详情页） ─────────────────────────────────── */
+.viewing-events-section {
+  margin: 0 0 var(--space-8);
+}
+
+.viewing-events-heading {
+  margin: 0 0 var(--space-3);
+  font: var(--type-card-title);
+  color: var(--ink);
+}
+
+.viewing-event-card {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  margin-bottom: var(--space-2);
+}
+
+.viewing-event-card:last-child {
+  margin-bottom: 0;
+}
+
+.ve-cinema {
+  margin-bottom: var(--space-1);
+  font: var(--type-label);
+  color: var(--ink);
+}
+
+.ve-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
