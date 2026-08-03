@@ -841,7 +841,8 @@ svg {
   animation: sheet-in var(--motion-standard) cubic-bezier(0.2, 0, 0, 1);
 }
 
-.wallpaper-settings {
+.wallpaper-settings,
+.export-sheet {
   padding-bottom: calc(var(--space-5) + env(safe-area-inset-bottom));
 }
 

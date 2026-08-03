@@ -21,6 +21,19 @@ import {
   reconcileLocalWorkTitle,
   recommendationLabel
 } from "./domain.js?v=11";
+import {
+  MIME_TYPES,
+  copyExportText,
+  deliverExport,
+  downloadExport,
+  exportAllFilename,
+  exportAllJSON,
+  exportAllMarkdown,
+  exportFilename,
+  exportJSON,
+  exportMarkdown,
+  exportTXT
+} from "./export.js?v=1";
 
 const app = document.querySelector("#app");
 const liveRegion = document.querySelector("#live-region");
@@ -99,8 +112,13 @@ const icons = {
   sun: '<circle cx="12" cy="12" r="3.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   edit: '<path d="m4 17-.5 3.5L7 20l10.7-10.7-3-3zM13.5 7.5l3 3"/>',
   export: '<path d="M12 15V3m0 0L8 7m4-4 4 4"/><path d="M5 12v7h14v-7"/>',
-  chevron: '<path d="m9 5 7 7-7 7"/>'
+  chevron: '<path d="m9 5 7 7-7 7"/>',
+  share: '<path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v13"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'
 };
+
+// 单条记录导出：文件扩展名与 MIME 类型映射
+const EXPORT_EXT = { json: "json", markdown: "md", txt: "txt" };
 
 function icon(name) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name] || ""}</svg>`;
@@ -342,10 +360,40 @@ function detailHeader(record) {
   return `<header class="detail-header">
     <button class="icon-button inverse" type="button" data-action="go-home" aria-label="返回记录流">${icon("back")}</button>
     <div class="detail-header-actions">
-      <button class="icon-button inverse" type="button" aria-label="导出与同步（尚未接入）" disabled>${icon("export")}</button>
+      <button class="icon-button inverse" type="button" data-action="open-export" aria-label="导出这条记录">${icon("export")}</button>
       <button class="icon-button inverse" type="button" aria-label="更多（尚未接入）" disabled>${icon("more")}</button>
     </div>
   </header>`;
+}
+
+function exportOverlay(record) {
+  const work = currentWork(record);
+  return `<div class="overlay" data-testid="export-sheet">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭导出面板"></button>
+    <section class="bottom-sheet export-sheet" role="dialog" aria-modal="true" aria-labelledby="export-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">这条记录</span><h2 id="export-title">导出</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+
+      <h3 class="settings-section-title">分享</h3>
+      <div class="settings-actions">
+        <button type="button" data-action="export-share" data-testid="export-share"><span><b>分享…</b><small>发到微信、备忘录、文件 App 等，手机上比"下载"更方便找到</small></span>${icon("share")}</button>
+      </div>
+
+      <h3 class="settings-section-title">复制文本</h3>
+      <div class="settings-actions">
+        <button type="button" data-action="export-copy" data-format="markdown" data-testid="export-copy-markdown"><span><b>复制 Markdown</b><small>带标题与分节格式</small></span>${icon("copy")}</button>
+        <button type="button" data-action="export-copy" data-format="txt" data-testid="export-copy-txt"><span><b>复制纯文本</b><small>适合直接粘贴阅读</small></span>${icon("copy")}</button>
+      </div>
+
+      <h3 class="settings-section-title">下载文件</h3>
+      <div class="settings-actions">
+        <button type="button" data-action="export-download" data-format="markdown" data-testid="export-download-markdown"><span><b>Markdown</b><small>.md 文件</small></span>${icon("export")}</button>
+        <button type="button" data-action="export-download" data-format="txt" data-testid="export-download-txt"><span><b>纯文本</b><small>.txt 文件</small></span>${icon("export")}</button>
+        <button type="button" data-action="export-download" data-format="json" data-testid="export-download-json"><span><b>JSON</b><small>完整结构化数据，适合备份</small></span>${icon("export")}</button>
+      </div>
+      <p class="settings-note">不含 AI 密钥或票务敏感字段${work?.title ? `；文件名会带上《${escapeHtml(work.title)}》` : ""}。</p>
+    </section>
+  </div>`;
 }
 
 function memoryCard(record) {
@@ -565,6 +613,11 @@ function wallpaperSettingsOverlay() {
       </div>
       <h3 class="settings-section-title">云端同步</h3>
       ${syncSettingsSection()}
+      <h3 class="settings-section-title">数据导出</h3>
+      <div class="settings-actions">
+        <button type="button" data-action="export-all-share" ${state.records.length ? "" : "disabled"}><span><b>分享全部记录（Markdown 合集）</b><small>${state.records.length ? `共 ${state.records.length} 条，一次分享` : "还没有可导出的记录"}</small></span>${icon("share")}</button>
+        <button type="button" data-action="export-all-download" ${state.records.length ? "" : "disabled"}><span><b>下载全部记录（JSON 备份）</b><small>结构化数据，适合长期存档</small></span>${icon("export")}</button>
+      </div>
       <p class="settings-note">偏好只保存在本机，不会修改已有作品记录。</p>
     </section>
   </div>`;
@@ -735,6 +788,8 @@ function render() {
       ? attitudeOverlay(record)
       : state.overlay === "card" && record
         ? cardEditorOverlay(record)
+      : state.overlay === "export" && record
+        ? exportOverlay(record)
         : "";
   app.innerHTML = `${base}${overlay}`;
   document.body.classList.toggle("overlay-open", Boolean(state.overlay));
@@ -955,6 +1010,17 @@ async function updateRecord(mutator) {
   mutator(record);
   record.updatedAt = new Date().toISOString();
   await db.put("records", record);
+}
+
+async function buildAllExportEntries() {
+  return Promise.all(state.records.map(async (record) => {
+    const work = state.works.find((item) => item.id === record.workId) || null;
+    let viewingEvents = [];
+    if (record.workId) {
+      try { viewingEvents = await db.getViewingEventsByWork(record.workId); } catch (_) { /* 单条场次加载失败不影响整体导出 */ }
+    }
+    return { record, work, viewingEvents };
+  }));
 }
 
 async function openRecord(recordId) {
@@ -1324,6 +1390,60 @@ app.addEventListener("click", async (event) => {
     showMemoryCard(state.activeCardIndex - 1);
   } else if (action === "next-card") {
     showMemoryCard(state.activeCardIndex + 1);
+  } else if (action === "open-export") {
+    state.overlay = "export";
+    render();
+  } else if (action === "export-share") {
+    const record = currentRecord();
+    if (!record) return;
+    const work = currentWork(record);
+    const content = exportMarkdown(record, work, state.viewingEvents);
+    const filename = exportFilename(work, record, "md");
+    try {
+      const result = await deliverExport({ content, filename, mimeType: MIME_TYPES.markdown, shareTitle: work?.title || record.title });
+      if (result.method === "cancelled") return;
+      announce(result.method === "download" ? "已下载这条记录" : "已打开分享面板");
+    } catch (error) {
+      announce(`分享失败：${error.message}`);
+    }
+  } else if (action === "export-copy") {
+    const record = currentRecord();
+    if (!record) return;
+    const work = currentWork(record);
+    const format = trigger.dataset.format;
+    const content = format === "txt" ? exportTXT(record, work, state.viewingEvents) : exportMarkdown(record, work, state.viewingEvents);
+    try {
+      await copyExportText(content);
+      announce("已复制到剪贴板");
+    } catch (_) {
+      announce("复制失败，这个浏览器可能不支持剪贴板权限");
+    }
+  } else if (action === "export-download") {
+    const record = currentRecord();
+    if (!record) return;
+    const work = currentWork(record);
+    const format = trigger.dataset.format;
+    const content = format === "json" ? exportJSON(record, work, state.viewingEvents)
+      : format === "txt" ? exportTXT(record, work, state.viewingEvents)
+      : exportMarkdown(record, work, state.viewingEvents);
+    downloadExport(content, exportFilename(work, record, EXPORT_EXT[format]), MIME_TYPES[format]);
+    announce("已下载文件");
+  } else if (action === "export-all-share") {
+    if (!state.records.length) { announce("还没有可导出的记录"); return; }
+    const entries = await buildAllExportEntries();
+    const content = exportAllMarkdown(entries);
+    try {
+      const result = await deliverExport({ content, filename: exportAllFilename("md"), mimeType: MIME_TYPES.markdown, shareTitle: "电影印记 · 全部记录" });
+      if (result.method === "cancelled") return;
+      announce(result.method === "download" ? "已下载全部记录合集" : "已打开分享面板");
+    } catch (error) {
+      announce(`分享失败：${error.message}`);
+    }
+  } else if (action === "export-all-download") {
+    if (!state.records.length) { announce("还没有可导出的记录"); return; }
+    const entries = await buildAllExportEntries();
+    downloadExport(exportAllJSON(entries), exportAllFilename("json"), MIME_TYPES.json);
+    announce("已下载全部记录的 JSON 备份");
   }
 });
 

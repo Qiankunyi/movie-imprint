@@ -1,5 +1,8 @@
 # 任务：为「电影印记」接入 Cloudflare D1 云端同步
 
+> **状态：已完成（2026-08-03）**
+> 完整实现记录见 `docs/DEPLOYMENT_AND_RELEASE_PLAN.md` → 「云端同步实现说明」章节。
+
 ## 背景
 
 此 app 目前所有数据（观影记录、草稿、壁纸偏好等）全部存储在浏览器本地的 IndexedDB。
@@ -401,12 +404,15 @@ npx wrangler pages dev . --port 4173
 
 ## 执行检查清单
 
-- [ ] `wrangler.toml` 末尾加了 `[[d1_databases]]` binding
-- [ ] `functions/api/sync/_schema.sql` 已创建
-- [ ] `functions/api/sync/[store].js` 已创建（含 GET 和 POST）
-- [ ] `functions/api/sync/[store]/[id].js` 已创建（含 GET、PUT、DELETE）
-- [ ] `functions/api/sync/put-record-with-work.js` 已创建
-- [ ] `functions/api/sync/viewing-events-by-work.js` 已创建
-- [ ] `functions/api/sync/clear.js` 已创建
-- [ ] `src/db.js` 已用新版本完整替换
-- [ ] `src/app.js` 第 1 行 import 版本号从 `v=8` 改为 `v=9`
+- [x] `wrangler.toml` 末尾加了 `[[d1_databases]]` binding
+- [x] `functions/api/sync/_schema.sql` 已创建
+- [x] `functions/api/sync/[store].js` 已创建（含 GET 和 POST）
+- [x] `functions/api/sync/[store]/[id].js` 已创建（含 GET、PUT、DELETE）
+- [x] `functions/api/sync/put-record-with-work.js` 已创建
+- [x] `functions/api/sync/viewing-events-by-work.js` 已创建
+- [x] `functions/api/sync/clear.js` 已创建
+- [x] `functions/api/sync/status.js` 已创建（诊断端点，追加）
+- [x] `src/db.js` 已替换为混合双模式（D1 + IndexedDB 降级），含 `migrateLocalToCloud()`
+- [x] `src/app.js` 偏好设置加云端同步区块，去掉 prompt()，版本号升至 v=12
+- [x] `styles/app.css` 加 `.settings-sync-row` 样式
+- [x] `functions/_middleware.js` 修复：只拦截 `/api/*`，不拦截页面和静态资源
