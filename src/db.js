@@ -279,6 +279,28 @@ export const db = {
       },
       () => idb.getViewingEventsByWork(workId)
     );
+  },
+
+  // ─── R1：merged_from 感知的查询 ───────────────────────────────────────────
+  // 复用现有的 getAll("works")/getAll("records")，D1 与 IndexedDB 两条路径
+  // 天然共用同一份逻辑，不需要为它们单独开云端接口。
+
+  async getWorkById(workId) {
+    const works = await db.getAll("works");
+    return (
+      works.find((work) => work.id === workId) ||
+      works.find((work) => (work.merged_from || []).includes(workId))
+    );
+  },
+
+  async getRecordsByWork(workId) {
+    const [records, works] = await Promise.all([db.getAll("records"), db.getAll("works")]);
+    const target =
+      works.find((work) => work.id === workId) ||
+      works.find((work) => (work.merged_from || []).includes(workId));
+    const canonicalId = target?.id || workId;
+    const validIds = new Set([canonicalId, ...(target?.merged_from || [])]);
+    return records.filter((record) => validIds.has(record.work_id || record.workId));
   }
 };
 

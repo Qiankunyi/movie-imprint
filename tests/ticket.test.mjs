@@ -5,6 +5,7 @@ import {
   splitEmails,
   extractFormatAndTitle,
   parseTicketText,
+  parseTicketPrice,
   draftViewingEvent
 } from "../src/ticket.js";
 
@@ -67,10 +68,29 @@ describe("redactSensitiveInfo", () => {
     assert.ok(!result.includes("テスト太郎"), "姓名应被移除");
   });
 
-  it("移除票价", () => {
+  it("保留票价（R1 红线变更：不再脱敏）", () => {
     const result = redactSensitiveInfo("料金：¥1,900");
-    assert.ok(!result.includes("1,900"), "票价应被移除");
-    assert.ok(result.includes("[PRICE_REDACTED]"), "应有占位符");
+    assert.ok(result.includes("1,900"), "票价应保留");
+    assert.ok(!result.includes("[PRICE_REDACTED]"), "不应再有票价占位符");
+  });
+
+  it("移除支付方式说明", () => {
+    const result = redactSensitiveInfo("決済方法：クレジットカード");
+    assert.ok(!result.includes("クレジットカード"), "支付方式应被移除");
+    assert.ok(result.includes("[PAYMENT_METHOD_REDACTED]"), "应有占位符");
+  });
+
+  it("移除卡号（合成测试卡号，非真实数据）", () => {
+    const result = redactSensitiveInfo("カード番号：4111-1111-1111-1111");
+    assert.ok(!result.includes("4111-1111-1111-1111"), "卡号应被移除");
+    assert.ok(result.includes("[CARD_NUMBER_REDACTED]"), "应有占位符");
+  });
+
+  it("移除邮箱与姓名（回归保护，票价红线变更不应影响其他脱敏规则）", () => {
+    const result = redactSensitiveInfo("購入者：テスト太郎 様\nメール：testuser@example.com\n料金：¥1,900");
+    assert.ok(!result.includes("テスト太郎"), "姓名仍应移除");
+    assert.ok(!result.includes("testuser@example.com"), "邮箱仍应移除");
+    assert.ok(result.includes("1,900"), "票价仍应保留");
   });
 
   it("保留片名与影院名", () => {
@@ -131,6 +151,13 @@ describe("extractFormatAndTitle", () => {
     assert.equal(format, null);
     assert.equal(movieTitle, "劇場版 鬼滅の刃");
   });
+
+  it("制式与活动分流：【IMAX】【舞台挨拶付き】各自归位，片名干净", () => {
+    const { movieTitle, format, eventTypes } = extractFormatAndTitle("【IMAX】【舞台挨拶付き】劇場版○○");
+    assert.equal(format, "IMAX");
+    assert.deepEqual(eventTypes, ["stage_greeting"]);
+    assert.equal(movieTitle, "劇場版○○");
+  });
 });
 
 // ─── 完整解析：SMT 单封 ──────────────────────────────────────────────────────
@@ -189,11 +216,11 @@ describe("parseTicketText — SMT 单封邮件", () => {
     assert.equal(result.screenings[0].ticketProvider, "SMT");
   });
 
-  it("敏感字段类型列表完整", () => {
+  it("敏感字段类型列表完整，且不再包含票价", () => {
     const removed = result.sensitiveDataRemoved;
     assert.ok(removed.includes("recipient_email"), "应声明移除邮箱");
     assert.ok(removed.includes("ticket_qr_url"), "应声明移除 QR URL");
-    assert.ok(removed.includes("ticket_price"), "应声明移除票价");
+    assert.ok(!removed.includes("ticket_price"), "票价不应再被列为脱敏字段（R1 红线变更）");
   });
 });
 
@@ -289,6 +316,32 @@ describe("draftViewingEvent", () => {
   it("座位数量正确", () => {
     assert.equal(event.viewing_context.seat_count, 2);
   });
+
+  it("duration_minutes 由起止时间正确派生", () => {
+    assert.equal(event.duration_minutes, 140, "09:50–12:10 应为 140 分钟");
+  });
+
+  it("duration_minutes 任一缺失则为 null", () => {
+    const partial = draftViewingEvent({ screeningAt: "2026-01-01T09:50:00+09:00", screeningEndsAt: null }, "work_x");
+    assert.equal(partial.duration_minutes, null);
+    const partial2 = draftViewingEvent({ screeningAt: null, screeningEndsAt: "2026-01-01T12:10:00+09:00" }, "work_x");
+    assert.equal(partial2.duration_minutes, null);
+  });
+
+  it("source 标记为 ticket_paste", () => {
+    assert.equal(event.source, "ticket_paste");
+  });
+
+  it("ticket_price 由票务文本正确解析并保留（R1 红线变更）", () => {
+    // SMT_EMAIL_1 本身不含票价字段，这里换用含票价的 KINEZO 场次单独验证
+    const kinezoResult = parseTicketText(KINEZO_EMAIL);
+    const kinezoEvent = draftViewingEvent(kinezoResult.screenings[0], "work_test123");
+    assert.deepEqual(kinezoEvent.ticket_price, { amount: 2300, currency: "JPY" });
+  });
+
+  it("viewing_context.event_types 默认为空数组（不是 null）", () => {
+    assert.deepEqual(event.viewing_context.event_types, []);
+  });
 });
 
 // ─── KINEZO 格式（合成，含跨午夜时间与分隔线）──────────────────────────────
@@ -355,6 +408,32 @@ describe("parseTicketText — KINEZO 单封邮件（含内部分隔线）", () =
 
   it("座位正确", () => {
     assert.deepEqual(result.screenings[0].seats, ["J-16"]);
+  });
+
+  it("票价被正确解析（R1 红线变更：不再脱敏）", () => {
+    assert.deepEqual(result.screenings[0].ticketPrice, { amount: 2300, currency: "JPY" });
+  });
+
+  it("支付方式仍被移除，不出现在解析结果附近文本中", () => {
+    const redacted = redactSensitiveInfo(KINEZO_EMAIL);
+    assert.ok(!redacted.includes("クレジットカード"));
+  });
+
+  it("event_types 为空数组（这封邮件没有活动信息）", () => {
+    assert.deepEqual(result.screenings[0].eventTypes, []);
+  });
+});
+
+describe("parseTicketPrice", () => {
+  it("支持 ￥2,000 / 2000円 / ¥2000 等常见写法", () => {
+    assert.deepEqual(parseTicketPrice("料金：￥2,000"), { amount: 2000, currency: "JPY" });
+    assert.deepEqual(parseTicketPrice("2000円"), { amount: 2000, currency: "JPY" });
+    assert.deepEqual(parseTicketPrice("¥2000"), { amount: 2000, currency: "JPY" });
+  });
+
+  it("无价格信息时返回 null", () => {
+    assert.equal(parseTicketPrice("没有价格的文本"), null);
+    assert.equal(parseTicketPrice(""), null);
   });
 });
 

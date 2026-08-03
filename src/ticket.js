@@ -5,7 +5,13 @@
  *   浏览器本地拆分邮件 → 本地脱敏 → 确定性模板解析 → 输出 screenings 数组
  *
  * 票务原文默认不保存，不发给 AI，不进入导出或 GitHub。
+ *
+ * R1 红线变更（2026-08-03，见 docs/RESTRUCTURE_PLAN_R1-R5.md §9.1）：
+ * 票价不再脱敏，作为观影事实解析并保留；姓名、邮箱、手机号、订单号、取票码、
+ * 二维码令牌、会员登录 URL、支付方式与卡号仍然强制移除。票价不得进入 AI 请求体。
  */
+
+import { classifyBracketContent, extractEventTypes } from "./event-types.js";
 
 // ─── 1. 敏感信息模式 ────────────────────────────────────────────────────────
 
@@ -31,16 +37,27 @@ const REDACTION_RULES = [
     pattern: /\+81[-\s]?\d{2,3}[-\s]?\d{4}[-\s]?\d{4}/g,
     replacement: "[PHONE_REDACTED]"
   },
+  // 支付方式说明（決済方法／支払方法：クレジットカード 等）——票价是观影事实，
+  // 支付信息是金融信息，两者不同，支付信息仍强制移除
+  {
+    pattern: /(?:決済方法|支払方法|お支払い方法|支払い方法)[：:]\s*[^\n]+/g,
+    replacement: "[PAYMENT_METHOD_REDACTED]"
+  },
+  // 银行卡号（13–19 位，允许空格或短横分隔，含卡号后四位标注）
+  {
+    pattern: /\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{1,7}\b/g,
+    replacement: "[CARD_NUMBER_REDACTED]"
+  },
+  {
+    pattern: /(?:カード番号)?(?:末尾|下)\s*4\s*桁[：:]\s*\d{3,4}/g,
+    replacement: "[CARD_NUMBER_REDACTED]"
+  },
   // SMT / 一般购票系统的订单号（8–20 位纯数字，独立出现）
   {
     pattern: /(?<!\d)\d{8,20}(?!\d)/g,
     replacement: "[ORDER_REDACTED]"
   },
-  // 票价（日元，有¥／円）
-  {
-    pattern: /[¥￥][\d,]+|[\d,]+\s*円/g,
-    replacement: "[PRICE_REDACTED]"
-  },
+  // 注意：票价（¥／円）不再脱敏（R1 红线变更），由 parseTicketPrice 正常解析保留
   // 姓名行：「様」「さま」「殿」前的片假名 / 汉字姓名（2–8 字）
   {
     pattern: /[゠-ヿ一-鿿]{2,8}\s*(?:様|さま|殿)/g,
@@ -133,21 +150,63 @@ export function splitEmails(raw) {
 const SMT_HEADER_RE_G = /松竹マルチプレックスシアターズ|SMT\b|smt-cinema\.com/gi;
 
 /**
- * 已知放映制式前缀（用于从电影名称中剥离）
+ * 已知放映制式／活动前缀（用于从电影名称中剥离，可能连续多个【】）
  * 以日文全角方括号包裹为主
  */
-const FORMAT_PREFIX_RE = /^[\s　]*【[^】]*】[\s　]*/u;
+const FORMAT_PREFIX_RE = /^[\s　]*(?:【[^】]*】[\s　]*)+/u;
 
 /**
- * 从邮件中提取的原始片名中分离制式前缀与片名
- * @param {string} raw 例如 "【DolbyCinema】劇場版 魔法少女まどか☆マギカ 前編"
- * @returns {{ movieTitle: string, format: string | null }}
+ * 从邮件中提取的原始片名中分离制式前缀、活动前缀与片名。
+ *
+ * 提案 I：制式（硬件规格，如 IMAX/Dolby Cinema/4DX）与活动（这一场的性质，如舞台挨拶／
+ * 応援上映）是两类东西，必须分流——不能像旧实现那样把片名里的【...】一律当作制式。
+ *
+ * @param {string} raw 例如 "【IMAX】【舞台挨拶付き】劇場版○○"
+ * @returns {{ movieTitle: string, format: string | null, eventTypes: string[] }}
  */
 export function extractFormatAndTitle(raw) {
-  const match = raw.match(/【([^】]*)】/u);
-  const format = match ? match[1].trim() : null;
+  const brackets = [...raw.matchAll(/【([^】]*)】/gu)].map((m) => m[1].trim());
+  let format = null;
+  const eventTypes = [];
+  for (const content of brackets) {
+    const classification = classifyBracketContent(content);
+    if (classification.kind === "format") {
+      if (!format) format = classification.value;
+    } else if (classification.kind === "event") {
+      if (!eventTypes.includes(classification.key)) eventTypes.push(classification.key);
+    } else if (!format) {
+      // 无法判定 → 保守写入 format，保持旧行为，避免信息丢失
+      format = classification.value;
+    }
+  }
   const movieTitle = raw.replace(FORMAT_PREFIX_RE, "").trim();
-  return { movieTitle, format };
+  return { movieTitle, format, eventTypes };
+}
+
+/**
+ * 从一段文本中解析票价。支持「￥2,000」「2000円」「¥2000」等常见写法。
+ * 多个数值时取合计不可得时的各项之和；只有一个数值时即为合计。
+ * @param {string} segment
+ * @returns {{ amount: number, currency: "JPY" } | null}
+ */
+export function parseTicketPrice(segment) {
+  if (!segment) return null;
+  const matches = [...segment.matchAll(/[¥￥]\s?([\d,]+)|([\d,]+)\s*円/g)];
+  if (!matches.length) return null;
+  const amounts = matches
+    .map((m) => Number((m[1] || m[2]).replace(/,/g, "")))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (!amounts.length) return null;
+  const amount = amounts.length === 1 ? amounts[0] : amounts.reduce((sum, n) => sum + n, 0);
+  return { amount, currency: "JPY" };
+}
+
+function computeDurationMinutes(startIso, endIso) {
+  if (!startIso || !endIso) return null;
+  const start = new Date(startIso).getTime();
+  const end = new Date(endIso).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return Math.round((end - start) / 60000);
 }
 
 // ─── 4. 单段邮件字段解析 ─────────────────────────────────────────────────────
@@ -155,8 +214,9 @@ export function extractFormatAndTitle(raw) {
 /**
  * 从日文 SMT 购票邮件中提取放映场次字段
  *
- * 支持字段：作品名、观影日期、开始/结束时间、影院、制式、座位
- * 不提取：姓名、邮箱、订单号、QR、票价（这些已在脱敏阶段移除）
+ * 支持字段：作品名、观影日期、开始/结束时间、影院、制式、活动、座位、票价
+ * 不提取：姓名、邮箱、订单号、QR、支付信息（这些已在脱敏阶段移除）
+ * 票价通过 parseTicketPrice 单独提取并保留（R1 红线变更：票价不再脱敏）
  *
  * @param {string} segment 已脱敏的单段邮件文本
  * @returns {ScreeningDraft | null}
@@ -188,7 +248,7 @@ export function parseScreeningSegment(segment) {
   }
   if (!rawTitle) return null;
 
-  const { movieTitle, format: formatFromTitle } = extractFormatAndTitle(rawTitle);
+  const { movieTitle, format: formatFromTitle, eventTypes: eventTypesFromTitle } = extractFormatAndTitle(rawTitle);
 
   // ── 日期与时間 ────────────────────────────────────────────────────────────
   // 格式：2026/7/18、2026-07-18、2026年7月18日
@@ -287,6 +347,13 @@ export function parseScreeningSegment(segment) {
   else if (/KINEZO|kinezo\.jp/i.test(segment)) ticketProvider = "KINEZO";
   else if (/tjoy\.jp|T・ジョイ/i.test(segment)) ticketProvider = "TJOY";
 
+  // ── 活动（提案 I）───────────────────────────────────────────────────────────
+  // 不只看片名【】前缀——舞台挨拶等信息常出现在正文
+  const eventTypes = [...new Set([...(eventTypesFromTitle || []), ...extractEventTypes(segment)])];
+
+  // ── 票价（R1 红线变更：不再脱敏，正常解析保留）────────────────────────────
+  const ticketPrice = parseTicketPrice(segment);
+
   return {
     movieTitle,
     rawTitle,
@@ -296,9 +363,11 @@ export function parseScreeningSegment(segment) {
     cinemaName,
     city,
     format: screeningFormat,
+    eventTypes,
     seats,
     seatCount: seats.length,
-    ticketProvider
+    ticketProvider,
+    ticketPrice
   };
 }
 
@@ -314,9 +383,11 @@ export function parseScreeningSegment(segment) {
  * @property {string|null}   cinemaName       影院名
  * @property {string|null}   city             城市（推断值，可修改）
  * @property {string|null}   format           放映制式
+ * @property {string[]}      eventTypes       活动类型 key 数组（舞台挨拶／応援上映等，与制式分流）
  * @property {string[]}      seats            座位列表
  * @property {number}        seatCount        座位数
  * @property {string|null}   ticketProvider   票务提供商标识
+ * @property {{amount:number,currency:"JPY"}|null} ticketPrice 票价（R1 起不再脱敏）
  */
 
 /**
@@ -361,7 +432,8 @@ export function parseTicketText(rawInput) {
       "ticket_qr_url",
       "ticket_qr_token",
       "member_login_url",
-      "ticket_price"
+      "payment_method",
+      "card_number"
     ],
     screenings,
     rawTicketTextSaved: false
@@ -387,9 +459,12 @@ export function draftViewingEvent(draft, workId, recordId = null) {
     viewed_on: draft.viewedOn,
     screening_at: draft.screeningAt,
     screening_ends_at: draft.screeningEndsAt,
-    viewing_relation: null,      // 首看/重看 由用户选择
+    duration_minutes: computeDurationMinutes(draft.screeningAt, draft.screeningEndsAt),
+    viewing_relation: null,      // 首看/重看 由系统按时间顺序推定（assignViewingRelations），此处不预设
     watch_index: null,
     location_type: "cinema",
+    ticket_price: draft.ticketPrice || null,   // R1 红线变更：票价不再脱敏，正常记录
+    source: "ticket_paste",
     screened_content: { kind: "full_movie", episode_start: null, episode_end: null, display_label: null },
     viewing_context: {
       cinema_name: draft.cinemaName,
@@ -397,7 +472,9 @@ export function draftViewingEvent(draft, workId, recordId = null) {
       format: draft.format,
       seats: draft.seats,
       seat_count: draft.seatCount,
-      ticket_provider: draft.ticketProvider
+      ticket_provider: draft.ticketProvider,
+      event_types: draft.eventTypes || [],
+      bonus_note: null   // 特典描述格式过于自由，R1 只建字段，留给 R2 确认卡手填
     },
     confirmed_at: null,          // 用户确认后填入
     status: "pending_confirmation"

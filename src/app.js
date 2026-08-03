@@ -1,7 +1,23 @@
 import { db, clearLocalData, migrateLocalToCloud } from "./db.js?v=12";
 import { parseTicketText, draftViewingEvent } from "./ticket.js";
-import { applyBangumiCandidateToWork, buildWorkSearchQuery, chooseDailyWallpaper, chooseNextWallpaper, wallpaperCandidates } from "./bangumi.js?v=10";
+import { buildWorkSearchQuery, chooseDailyWallpaper, chooseNextWallpaper, wallpaperCandidates } from "./bangumi.js?v=10";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
+import { runMigrationIfNeeded } from "./migrate.js?v=1";
+import { EVENT_TYPES } from "./event-types.js?v=1";
+import { readClipboardTicketHint } from "./clipboard.js?v=1";
+import {
+  captureTransition,
+  toggleEventType,
+  updateEventTicketTags,
+  updateBonusNote,
+  tentativeViewingRelation,
+  buildManualViewingEvent,
+  captureWorkTitle,
+  finalizeCaptureRecord,
+  toggleEventSelection,
+  selectAllEvents,
+  selectedPendingEvents
+} from "./capture.js?v=2";
 import {
   ATTITUDES,
   ATTITUDE_DESCRIPTIONS,
@@ -9,18 +25,20 @@ import {
   CARD_TYPES,
   RECOMMENDATIONS,
   RECOMMENDATION_PRESETS,
+  assignViewingRelations,
   attitudeLabel,
-  createLocalWork,
-  createRawOnlyRecord,
   createId,
   deterministicAnalysis,
   emptyRecommendationDetails,
   formatDate,
   isRecommendationAllowed,
+  mergeWorks,
   parseDraft,
+  promoteWorkToMatched,
   reconcileLocalWorkTitle,
-  recommendationLabel
-} from "./domain.js?v=11";
+  recommendationLabel,
+  resolveWork
+} from "./domain.js?v=12";
 import {
   MIME_TYPES,
   copyExportText,
@@ -92,15 +110,41 @@ const state = {
   saveTimer: null,
   saveState: "saved",
   theme: "light",
-  // C4：票务粘贴流程
-  ticketParseResult: null,   // 解析结果，显示确认卡片
-  pendingViewingEvents: [],  // 用户已确认、等待写入 DB 的场次列表
+  // R2：记录入口重排——先认场景再写。
+  // captureFlowState 是 docs/handoff/R2_CAPTURE_FLOW.md 状态机里的抽象状态名
+  // （idle / capture:entry / capture:ticket-confirm / capture:scene-choice / capture:compose），
+  // 由 src/capture.js 的 captureTransition 纯函数驱动；state.overlay 是它在 UI 层的具体呈现。
+  captureFlowState: "idle",
+  captureContext: null,          // 与 state.draft 一起持久化；Step 3 中断后据此恢复
+  clipboardTicketDetected: false, // 只存"是否命中"，不存剪贴板原文
+  captureTagsExpanded: new Set(), // 运行时 UI 态：哪些卡片的活动标签行已展开，不持久化
   viewingEvents: [],         // 当前详情页关联的已保存场次
   syncMigrateStatus: null   // "running" | "done" | "error" | null
 };
 
 let carouselGesture = null;
 let toastTimer = null;
+
+// ─── R2：捕获流程状态机的 UI 呈现 ─────────────────────────────────────────────
+// state.captureFlowState 用的是 captureTransition 里的抽象状态名；
+// state.overlay 是渲染 render() 时实际读取的具体层名。两者用这张表对应起来，
+// 这样状态机的转移规则始终只在 capture.js 里定义一份，app.js 不重新发明判断逻辑。
+const CAPTURE_STATE_TO_OVERLAY = {
+  idle: null,
+  "capture:entry": "capture-entry",
+  "capture:ticket-confirm": "ticket-confirm",
+  "capture:scene-choice": "scene-choice",
+  "capture:compose": "compose"
+};
+
+function applyCaptureTransition(action) {
+  state.captureFlowState = captureTransition(state.captureFlowState, action, { source: state.captureContext?.source || null });
+  state.overlay = CAPTURE_STATE_TO_OVERLAY[state.captureFlowState] ?? null;
+}
+
+// 剪贴板原文只放在内存里，绝不写入 state（避免被渲染或被草稿持久化捕获到原文）。
+let pendingClipboardText = null;
+let sceneTitleMatchTimer = null;
 
 const icons = {
   back: '<path d="m15 5-7 7 7 7"/>',
@@ -172,6 +216,10 @@ function publicSeedRecords() {
       recommendationNote: ""
     }
   ];
+  // R1：种子数据也走 resolveWork 去重，不再无条件给每条记录建一张独立档案卡——
+  // 这批演示数据目前彼此都是不同电影，实际不会触发合并，但保持路径一致，
+  // 避免留一条"仍在用旧建卡方式"的代码分支。
+  const works = [];
   return samples.map((sample, index) => {
     const analysis = deterministicAnalysis(sample.rawText);
     const record = {
@@ -193,8 +241,16 @@ function publicSeedRecords() {
         : emptyRecommendationDetails(),
       cards: analysis.cards
     };
-    record.workId = `work_${record.id}`;
-    return { record, work: createLocalWork(record) };
+    const { work, isNew } = resolveWork(works, {
+      title: analysis.inputHints?.workTitle || sample.title,
+      subjectId: null,
+      aliases: []
+    });
+    if (isNew) works.push(work);
+    record.work_id = work.id;
+    record.workId = work.id;
+    record.record_kind = "viewing";
+    return { record, work };
   });
 }
 
@@ -206,16 +262,35 @@ async function ensureSeedData() {
 }
 
 async function ensureWorkLinks(records) {
+  // R1：只有"记录还没有关联到任何 Work"（旧数据缺口）才会走到新建这一步，
+  // 且新建统一通过 resolveWork 去重，不再无条件按 1:1 建一张新档案卡——
+  // 否则一旦这条路径被触发，会重新制造"一部电影多张档案卡"的老问题。
+  const works = await db.getAll("works");
   for (const record of records) {
-    const workId = record.workId || `work_${record.id}`;
-    const existingWork = await db.get("works", workId);
-    if (record.workId && existingWork) {
+    const linkedId = record.work_id || record.workId;
+    const existingWork = linkedId ? works.find((item) => item.id === linkedId) : null;
+    if (linkedId && existingWork) {
       const reconciled = reconcileLocalWorkTitle(existingWork, record);
-      if (reconciled !== existingWork) await db.put("works", reconciled);
+      if (reconciled !== existingWork) {
+        await db.put("works", reconciled);
+        Object.assign(existingWork, reconciled);
+      }
+      if (record.work_id !== existingWork.id || record.workId !== existingWork.id) {
+        record.work_id = existingWork.id;
+        record.workId = existingWork.id;
+        await db.put("records", record);
+      }
       continue;
     }
-    record.workId = workId;
-    await db.putRecordWithWork(record, existingWork || createLocalWork(record));
+    const { work, isNew } = resolveWork(works, {
+      title: record.inputHints?.workTitle || record.title,
+      subjectId: null,
+      aliases: []
+    });
+    if (isNew) works.push(work);
+    record.work_id = work.id;
+    record.workId = work.id;
+    await db.putRecordWithWork(record, work);
   }
 }
 
@@ -239,6 +314,10 @@ async function loadState() {
   state.works = await db.getAll("works");
   await resolveDailyWallpaper();
   state.records.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  // R2：草稿必须连同 captureContext 一起恢复——Step 3 中断后再打开 App，
+  // 应该能直接从"继续写"回到 Step 3，而不是重走 Step 1/2。
+  state.captureContext = state.draft?.captureContext || null;
+  state.captureFlowState = state.captureContext ? "capture:compose" : "idle";
   const targetId = location.hash.startsWith("#record=") ? decodeURIComponent(location.hash.slice(8)) : null;
   if (targetId && state.records.some((record) => record.id === targetId)) {
     state.view = "detail";
@@ -370,7 +449,7 @@ function renderHome() {
       ${draftCard}
       ${cards || `<div class="empty-copy"><p>电影散场以后，<br>先把还没消失的感觉留下来。</p></div>`}
     </section>
-    <button class="fab" type="button" data-action="open-compose" aria-label="开始记录" data-testid="add-record">＋</button>
+    <button class="fab" type="button" data-action="open-capture" aria-label="开始记录" data-testid="add-record">＋</button>
   </main>`;
 }
 
@@ -562,6 +641,27 @@ function renderDetail() {
   </main>`;
 }
 
+/**
+ * R2 Step 3 顶部上下文条：不可编辑，弱化灰字，点击回到 Step 2（ticket-confirm 或 scene-choice）。
+ * 没有 captureContext 的旧草稿（兼容期）不展示这一行。
+ */
+function captureContextBar(ctx) {
+  if (!ctx) return "";
+  const firstEvent = ctx.pendingEvents?.[0];
+  const dateStr = firstEvent?.viewed_on
+    ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo" }).format(new Date(firstEvent.viewed_on))
+    : "";
+  const parts = [`《${ctx.workTitle?.trim() || "未命名作品"}》`];
+  if (dateStr) parts.push(dateStr);
+  if (ctx.locationType === "home") {
+    parts.push("在家观看");
+  } else {
+    if (ctx.cinemaName) parts.push(ctx.cinemaName);
+    if (ctx.format) parts.push(ctx.format);
+  }
+  return `<button type="button" class="capture-context-bar" data-action="edit-capture-context" data-testid="capture-context-bar">${parts.map(escapeHtml).join(" · ")}</button>`;
+}
+
 function composerOverlay() {
   const value = state.draft?.text || "";
   const hint = seriesHintContent(value);
@@ -570,8 +670,9 @@ function composerOverlay() {
     <section class="bottom-sheet composer" role="dialog" aria-modal="true" aria-labelledby="compose-title">
       <div class="sheet-handle" aria-hidden="true"></div>
       <h2 id="compose-title" class="sr-only">随手记录</h2>
-      <textarea id="composer-input" data-testid="composer-input" aria-describedby="compose-help" placeholder="用 # 标记作品，再写下看完后的想法\n例如：#穿越时空的少女  #电影院">${escapeHtml(value)}</textarea>
-      <div id="compose-help" class="sr-only">输入会即时保存在此设备。使用井号标记作品名。也可以用斜线临时提示系列与作品，或使用列表按钮插入有序和无序清单。</div>
+      ${captureContextBar(state.captureContext)}
+      <textarea id="composer-input" data-testid="composer-input" aria-describedby="compose-help" placeholder="看完之后，先把还没消失的感觉写下来">${escapeHtml(value)}</textarea>
+      <div id="compose-help" class="sr-only">输入会即时保存在此设备。也可以用斜线临时提示系列与作品，或使用列表按钮插入有序和无序清单。</div>
       <div class="series-hint" data-testid="series-hint" ${hint ? "" : "hidden"}>${hint}</div>
       <div class="list-format-menu" data-testid="list-format-menu" hidden>
         <span>列表格式</span>
@@ -579,9 +680,8 @@ function composerOverlay() {
         <button type="button" data-action="apply-list" data-style="unordered">- 无序</button>
       </div>
       <div class="compose-tools">
-        <button type="button" class="tool-button hash-button" data-action="insert-hash" aria-label="插入作品标签">#</button>
+        <button type="button" class="tool-button hash-button" data-action="insert-hash" aria-label="插入强调标记">#</button>
         <button type="button" class="tool-button list-button" data-action="toggle-list-menu" aria-label="列表格式" aria-expanded="false">${icon("list")}</button>
-        <button type="button" class="tool-button ticket-button ${state.pendingViewingEvents.length ? "has-ticket" : ""}" data-action="open-ticket-paste" aria-label="粘贴票务邮件">${icon("ticket")}${state.pendingViewingEvents.length ? `<span class="ticket-badge">${state.pendingViewingEvents.length}</span>` : ""}</button>
         <span class="save-indicator" data-testid="save-status">${state.saveState === "saving" ? "正在保存…" : "已存于本机"}</span>
         <button type="button" class="finish-button" data-action="finish-compose" ${value.trim() ? "" : "disabled"} data-testid="finish-record">完成</button>
       </div>
@@ -705,92 +805,175 @@ function cardEditorOverlay(record) {
   </div>`;
 }
 
-function ticketPasteOverlay() {
-  const result = state.ticketParseResult;
-
-  // 状态一：已解析，显示场次确认卡片
-  if (result) {
-    const screenings = result.screenings;
-    const selectedIndices = new Set(state.pendingViewingEvents.map((e) => e._draftIndex));
-    const selectedCount = selectedIndices.size;
-    const allSelected = selectedCount >= screenings.length;
-
-    const timeFmt = new Intl.DateTimeFormat("zh-CN", {
-      hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Tokyo"
-    });
-    const dateFmt = new Intl.DateTimeFormat("zh-CN", {
-      year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo"
-    });
-
-    const cards = screenings.map((s, index) => {
-      const selected = selectedIndices.has(index);
-      const dateStr = s.screeningAt ? dateFmt.format(new Date(s.screeningAt))
-        : s.viewedOn ? escapeHtml(s.viewedOn) : "";
-      const timeStr = s.screeningAt ? timeFmt.format(new Date(s.screeningAt)) : "";
-      const endStr = s.screeningEndsAt ? timeFmt.format(new Date(s.screeningEndsAt)) : "";
-      const timeRange = timeStr ? (endStr ? `${timeStr}–${endStr}` : timeStr) : "";
-      const seatsStr = s.seats.length ? s.seats.join("、") : "";
-
-      return `<button type="button" class="ticket-card ${selected ? "selected" : ""}" data-action="toggle-ticket" data-index="${index}" aria-pressed="${selected}">
-        <div class="ticket-card-select-indicator" aria-hidden="true">${selected ? "✓" : ""}</div>
-        <div class="ticket-card-body">
-          <div class="ticket-card-title">${escapeHtml(s.movieTitle)}</div>
-          <div class="ticket-card-meta">
-            ${dateStr ? `<span>${escapeHtml(dateStr)}</span>` : ""}
-            ${timeRange ? `<span>${escapeHtml(timeRange)}</span>` : ""}
-          </div>
-          <div class="ticket-card-meta">
-            ${s.cinemaName ? `<span>${escapeHtml(s.cinemaName)}</span>` : ""}
-            ${s.format ? `<span>${escapeHtml(s.format)}</span>` : ""}
-          </div>
-          ${seatsStr ? `<div class="ticket-card-seats">座位：${escapeHtml(seatsStr)}</div>` : ""}
-        </div>
-      </button>`;
-    }).join("");
-
-    const ctaLabel = selectedCount > 0
-      ? `加入 ${selectedCount} 个场次`
-      : "请点击上方卡片选择场次";
-
-    return `<div class="overlay" data-testid="ticket-paste">
-      <button class="overlay-backdrop" type="button" data-action="close-ticket-overlay" aria-label="返回记录层"></button>
-      <section class="bottom-sheet ticket-sheet" role="dialog" aria-modal="true" aria-labelledby="ticket-sheet-title">
-        <div class="sheet-handle" aria-hidden="true"></div>
-        <div class="sheet-title-row">
-          <div>
-            <span class="sheet-kicker">票务导入</span>
-            <h2 id="ticket-sheet-title">识别到 ${screenings.length} 个场次</h2>
-          </div>
-          <button class="icon-button" type="button" data-action="close-ticket-overlay" aria-label="返回">${icon("close")}</button>
-        </div>
-        <p class="ticket-privacy-note">敏感信息已本地移除：姓名、邮箱、QR 取票码<br>原始邮件不保存</p>
-        <div class="ticket-cards">${cards}</div>
-        <div class="ticket-actions">
-          <button type="button" class="sheet-done" data-action="close-ticket-overlay" ${selectedCount === 0 ? "disabled" : ""}>${escapeHtml(ctaLabel)}</button>
-          ${!allSelected && screenings.length > 1 ? `<button type="button" class="text-action" data-action="select-all-tickets">全选</button>` : ""}
-          <button type="button" class="text-action" data-action="repaste-ticket">重新粘贴</button>
-        </div>
-      </section>
-    </div>`;
+/**
+ * R2 活动标签行：解析出的活动预选展示；没有任何活动时收起为一个「＋ 添加活动」小按钮。
+ * @param {string[]} selected 当前已选中的 event_types
+ * @param {string|number} key 用于区分是票务确认卡的第几场（"event-0"…）还是场景二选一（"scene"），
+ *   既是展开状态的 key，也写进 data-tag-key 供点击处理定位
+ */
+function eventTypeTagsRow(selected, key) {
+  const expanded = state.captureTagsExpanded.has(key) || selected.length > 0;
+  if (!expanded) {
+    return `<button type="button" class="add-event-tag" data-action="expand-event-tags" data-tag-key="${key}">＋ 添加活动</button>`;
   }
+  return `<div class="event-tags-row" role="group" aria-label="活动类型">
+    ${EVENT_TYPES.map(([typeKey, label]) => `<button type="button" class="event-tag-chip ${selected.includes(typeKey) ? "selected" : ""}" data-action="toggle-event-tag" data-tag-key="${key}" data-key="${typeKey}" aria-pressed="${selected.includes(typeKey)}">${selected.includes(typeKey) ? "✓ " : ""}${escapeHtml(label)}</button>`).join("")}
+  </div>`;
+}
 
-  // 状态零：粘贴输入界面
-  return `<div class="overlay" data-testid="ticket-paste">
-    <button class="overlay-backdrop" type="button" data-action="close-ticket-overlay" aria-label="返回记录层"></button>
-    <section class="bottom-sheet ticket-sheet" role="dialog" aria-modal="true" aria-labelledby="ticket-sheet-title">
+/**
+ * R2 Step 1 · 场景识别层。替换旧的「点＋直接进 composer」。
+ * 剪贴板命中时才出现横幅（不展示原文）；大面积粘贴区；「没有票，直接写」次要入口。
+ * W13 的截图 OCR 在这里预留位置，本窗口不实现、也不显示占位按钮。
+ */
+function captureEntryOverlay() {
+  return `<div class="overlay" data-testid="capture-entry">
+    <button class="overlay-backdrop" type="button" data-action="close-capture" aria-label="收起"></button>
+    <section class="bottom-sheet capture-entry" role="dialog" aria-modal="true" aria-labelledby="capture-entry-title">
       <div class="sheet-handle" aria-hidden="true"></div>
-      <div class="sheet-title-row">
-        <div>
-          <span class="sheet-kicker">票务导入</span>
-          <h2 id="ticket-sheet-title">粘贴购票邮件</h2>
-        </div>
-        <button class="icon-button" type="button" data-action="close-ticket-overlay" aria-label="返回">${icon("close")}</button>
+      <h2 id="capture-entry-title" class="sr-only">这次看的是什么</h2>
+      ${state.clipboardTicketDetected ? `<button type="button" class="clipboard-hint-banner" data-action="use-clipboard-ticket" data-testid="clipboard-ticket-banner">
+        <span>检测到票务信息 · 一键使用</span>${icon("chevron")}
+      </button>` : ""}
+      <label class="capture-paste-area" for="capture-paste-input">
+        <textarea id="capture-paste-input" data-testid="capture-paste-input" placeholder="粘贴票务信息" rows="4"></textarea>
+      </label>
+      <button type="button" class="capture-skip-link" data-action="skip-to-scene" data-testid="skip-to-scene">没有票，直接写 →</button>
+    </section>
+  </div>`;
+}
+
+/**
+ * R2 Step 2A · 票务确认卡（粘贴分支）。一屏一个「确认」按钮，不是工作台。
+ * 海报／作品匹配、活动标签、初看重看都在这一层内联编辑，不设独立的「检查场次」页。
+ */
+function ticketConfirmOverlay() {
+  const ctx = state.captureContext;
+  if (!ctx) return "";
+  const match = ctx.bangumiMatch || { status: "idle", candidates: [] };
+  const dateFmt = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "short", timeZone: "Asia/Tokyo" });
+  const timeFmt = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Tokyo" });
+
+  const posterBlock = match.status === "searching"
+    ? `<div class="ticket-confirm-poster skeleton" aria-hidden="true" data-testid="capture-match-skeleton"></div>`
+    : ctx.subjectId
+      ? `<img class="ticket-confirm-poster" src="${apiBangumiImageUrl(ctx.subjectId)}" alt="" data-testid="capture-match-poster" onerror="this.hidden=true" />`
+      : "";
+
+  const candidatesBlock = ctx.showMatchCandidates ? `<div class="work-candidates" data-testid="capture-match-candidates">
+    ${(match.candidates || []).slice(0, 3).map((c) => `<button type="button" class="work-candidate" data-action="select-capture-candidate" data-subject-id="${c.subjectId}">
+      <b>${escapeHtml(c.title)}</b><span>${escapeHtml(c.originalTitle || "")}</span>
+    </button>`).join("")}
+    <label class="manual-title-fallback"><span>都不是，手动输入片名</span><input type="text" id="capture-manual-title-input" data-testid="capture-manual-title-input" value="${escapeHtml(ctx.workTitle || "")}" /></label>
+  </div>` : "";
+
+  const allEvents = ctx.pendingEvents || [];
+  const selectedCount = selectedPendingEvents(allEvents).length;
+  const allSelected = selectedCount >= allEvents.length;
+
+  const cards = allEvents.map((event, index) => {
+    const selected = event.selected !== false;
+    const ec = event.viewing_context || {};
+    const dateStr = event.viewed_on ? dateFmt.format(new Date(`${event.viewed_on}T00:00:00`)) : "";
+    const startStr = event.screening_at ? timeFmt.format(new Date(event.screening_at)) : "";
+    const endStr = event.screening_ends_at ? timeFmt.format(new Date(event.screening_ends_at)) : "";
+    const timeRange = startStr ? (endStr ? `${startStr}–${endStr}` : startStr) : "";
+    const seatsStr = ec.seats?.length ? ec.seats.join("、") : "";
+    const priceStr = event.ticket_price?.amount ? `￥${Number(event.ticket_price.amount).toLocaleString("ja-JP")}` : "";
+    const tentative = tentativeViewingRelation(ctx.existingHistoryCount || 0, index);
+    const currentRelation = event.viewing_relation || tentative;
+
+    // 场次数量 > 1 时才需要"是否采纳这一场"的开关——只有一场时没有可排除的对象。
+    const selectionToggle = allEvents.length > 1 ? `<button type="button" class="ticket-confirm-select ${selected ? "selected" : ""}" data-action="toggle-ticket-event-selection" data-event-index="${index}" aria-pressed="${selected}">
+      <span class="ticket-confirm-select-indicator" aria-hidden="true">${selected ? "✓" : ""}</span>
+      <span>${selected ? "已加入" : "不使用这场"}</span>
+    </button>` : "";
+
+    return `<div class="ticket-confirm-card ${selected ? "" : "excluded"}" data-testid="ticket-confirm-card" data-event-index="${index}">
+      ${selectionToggle}
+      <div class="ticket-confirm-meta">
+        ${ec.cinema_name ? `<span>${escapeHtml(ec.cinema_name)}</span>` : ""}
+        ${dateStr ? `<span>${escapeHtml(dateStr)}</span>` : ""}
+        ${timeRange ? `<span>${escapeHtml(timeRange)}</span>` : ""}
       </div>
-      <p class="ticket-hint">支持一次粘贴多封邮件。<br>姓名、邮箱、QR 码和票价将在本地自动移除，不会发给任何服务器。</p>
-      <textarea id="ticket-input" class="ticket-textarea" placeholder="在这里粘贴购票确认邮件的全文…" rows="8"></textarea>
+      <div class="ticket-confirm-meta secondary">
+        ${ec.format ? `<span>${escapeHtml(ec.format)}</span>` : ""}
+        ${event.duration_minutes ? `<span>${event.duration_minutes}分</span>` : ""}
+        ${seatsStr ? `<span>座位 ${escapeHtml(seatsStr)}</span>` : ""}
+        ${priceStr ? `<span>${escapeHtml(priceStr)}</span>` : ""}
+      </div>
+      ${selected ? `${eventTypeTagsRow(ec.event_types || [], `event-${index}`)}
+      ${(ec.event_types || []).includes("bonus_distribution") ? `<label class="bonus-note-input"><span>特典</span><input type="text" data-field="bonus-note" data-event-index="${index}" value="${escapeHtml(ec.bonus_note || "")}" placeholder="如：第3週 色紙" /></label>` : ""}
+      ${ctx.hasHistory ? `<div class="relation-toggle" role="group" aria-label="初看或重看">
+        <button type="button" class="relation-choice ${currentRelation === "first" ? "selected" : ""}" data-action="set-relation" data-event-index="${index}" data-value="first">初看</button>
+        <button type="button" class="relation-choice ${currentRelation === "rewatch" ? "selected" : ""}" data-action="set-relation" data-event-index="${index}" data-value="rewatch">重看 · 第 ${(ctx.existingHistoryCount || 0) + index + 1} 次</button>
+      </div>` : ""}` : ""}
+    </div>`;
+  }).join("");
+
+  const ctaLabel = allEvents.length > 1
+    ? (selectedCount > 0 ? `确认（${selectedCount} 个场次）` : "请至少选择一个场次")
+    : "确认";
+
+  return `<div class="overlay" data-testid="ticket-confirm">
+    <button class="overlay-backdrop" type="button" data-action="close-capture" aria-label="关闭"></button>
+    <section class="bottom-sheet ticket-confirm-sheet" role="dialog" aria-modal="true" aria-labelledby="ticket-confirm-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      ${posterBlock}
+      <div class="ticket-confirm-title-row">
+        <h2 id="ticket-confirm-title">《${escapeHtml(ctx.workTitle || "未命名作品")}》</h2>
+        <button type="button" class="text-action" data-action="toggle-capture-match-candidates" data-testid="change-capture-match">更换</button>
+      </div>
+      ${candidatesBlock}
+      <div class="ticket-confirm-cards">${cards}</div>
+      ${!allSelected && allEvents.length > 1 ? `<button type="button" class="text-action" data-action="select-all-ticket-events" data-testid="select-all-ticket-events">全选</button>` : ""}
+      <p class="ticket-privacy-note">姓名、邮箱、取票码已本地移除，原始邮件不保存</p>
       <div class="ticket-actions">
-        <button type="button" class="sheet-done" data-action="parse-ticket" data-testid="parse-ticket">识别场次</button>
+        <button type="button" class="sheet-done" data-action="confirm-ticket-capture" data-testid="confirm-ticket-capture" ${selectedCount === 0 ? "disabled" : ""}>${escapeHtml(ctaLabel)}</button>
+        <button type="button" class="text-action" data-action="repaste-ticket-capture">重新粘贴</button>
       </div>
+    </section>
+  </div>`;
+}
+
+const CINEMA_FORMAT_OPTIONS = ["2D", "3D", "IMAX", "IMAXレーザー", "Dolby Cinema", "4DX", "MX4D", "ScreenX", "其他"];
+
+/**
+ * R2 Step 2B · 场景二选一（跳过分支）。初看／重看与观看地点完全正交——
+ * 两条分支共用同一套「该作品已有历史才显示选择器」逻辑，不做「影院＝初看」之类的假设。
+ */
+function sceneChoiceOverlay() {
+  const ctx = state.captureContext || {};
+  const locationType = ctx.locationType || null;
+  const match = ctx.bangumiMatch || { status: "idle", candidates: [] };
+  const eventTypes = ctx.eventTypes || [];
+  const canConfirm = Boolean(locationType) && Boolean(ctx.workTitle?.trim());
+  return `<div class="overlay" data-testid="scene-choice">
+    <button class="overlay-backdrop" type="button" data-action="close-capture" aria-label="关闭"></button>
+    <section class="bottom-sheet scene-choice-sheet" role="dialog" aria-modal="true" aria-labelledby="scene-choice-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <h2 id="scene-choice-title">这次是在哪看的？</h2>
+      <div class="location-choice" role="group" aria-label="观看地点">
+        <button type="button" class="location-option ${locationType === "home" ? "selected" : ""}" data-action="select-location" data-value="home" data-testid="location-home">在家／线上</button>
+        <button type="button" class="location-option ${locationType === "cinema" ? "selected" : ""}" data-action="select-location" data-value="cinema" data-testid="location-cinema">在影院</button>
+      </div>
+      ${locationType === "cinema" ? `<div class="cinema-fields">
+        <label><span>影院名</span><input type="text" id="scene-cinema-name-input" data-testid="scene-cinema-name-input" value="${escapeHtml(ctx.cinemaName || "")}" placeholder="影院名称" /></label>
+        <label><span>制式</span><select id="scene-format-select" data-testid="scene-format-select">
+          ${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${ctx.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}
+        </select></label>
+        ${eventTypeTagsRow(eventTypes, "scene")}
+        ${eventTypes.includes("bonus_distribution") ? `<label class="bonus-note-input"><span>特典</span><input type="text" data-field="bonus-note" data-event-index="scene" value="${escapeHtml(ctx.bonusNote || "")}" placeholder="如：第3週 色紙" /></label>` : ""}
+      </div>` : ""}
+      <label class="scene-work-title"><span>作品</span><input type="text" id="scene-work-title-input" data-testid="scene-work-title-input" value="${escapeHtml(ctx.workTitle || "")}" placeholder="作品名" /></label>
+      ${match.status === "candidates" ? `<div class="work-candidates" data-testid="scene-match-candidates">
+        ${match.candidates.slice(0, 3).map((c) => `<button type="button" class="work-candidate" data-action="select-scene-candidate" data-subject-id="${c.subjectId}"><b>${escapeHtml(c.title)}</b><span>${escapeHtml(c.originalTitle || "")}</span></button>`).join("")}
+      </div>` : ""}
+      ${ctx.hasHistory ? `<div class="relation-toggle" role="group" aria-label="初看或重看">
+        <button type="button" class="relation-choice ${(ctx.relationOverride || tentativeViewingRelation(ctx.existingHistoryCount || 0, 0)) === "first" ? "selected" : ""}" data-action="set-scene-relation" data-value="first">初看</button>
+        <button type="button" class="relation-choice ${(ctx.relationOverride || tentativeViewingRelation(ctx.existingHistoryCount || 0, 0)) === "rewatch" ? "selected" : ""}" data-action="set-scene-relation" data-value="rewatch">重看 · 第 ${(ctx.existingHistoryCount || 0) + 1} 次</button>
+      </div>` : ""}
+      <button type="button" class="sheet-done" data-action="confirm-scene-choice" data-testid="confirm-scene-choice" ${canConfirm ? "" : "disabled"}>确认</button>
     </section>
   </div>`;
 }
@@ -798,10 +981,14 @@ function ticketPasteOverlay() {
 function render() {
   const base = state.view === "detail" ? renderDetail() : renderHome();
   const record = currentRecord();
-  const overlay = state.overlay === "compose"
-    ? composerOverlay()
-    : state.overlay === "ticket"
-      ? ticketPasteOverlay()
+  const overlay = state.overlay === "capture-entry"
+    ? captureEntryOverlay()
+    : state.overlay === "ticket-confirm"
+      ? ticketConfirmOverlay()
+    : state.overlay === "scene-choice"
+      ? sceneChoiceOverlay()
+    : state.overlay === "compose"
+      ? composerOverlay()
     : state.overlay === "wallpaper"
       ? wallpaperSettingsOverlay()
     : state.overlay === "attitude" && record
@@ -845,7 +1032,13 @@ async function saveDraft(text, immediate = false) {
   document.querySelector("[data-testid='save-status']")?.replaceChildren("正在保存…");
   const persist = async () => {
     const previousRevision = state.draft?.revision || 0;
-    state.draft = { id: activeDraftId, text, revision: previousRevision + 1, updatedAt: new Date().toISOString() };
+    state.draft = {
+      id: activeDraftId,
+      text,
+      revision: previousRevision + 1,
+      updatedAt: new Date().toISOString(),
+      captureContext: state.captureContext || null // R2：草稿必须连同 captureContext 一起持久化
+    };
     try {
       await db.put("drafts", state.draft);
       state.saveState = "saved";
@@ -866,28 +1059,60 @@ async function finishCompose() {
   if (!text.trim()) return;
   await saveDraft(text, true);
   const now = new Date().toISOString();
-  const record = createRawOnlyRecord(text, now);
-  record.workId = `work_${record.id}`;
-  const work = createLocalWork(record);
+  const record = finalizeCaptureRecord(text, now);
+
+  // R2：作品标题来自 captureContext（票务解析出的片名，或场景二选一里手填/匹配的标题），
+  // 不再要求用户输入 #；仍兼容没有 captureContext 的旧草稿（回退到 # 解析）。
+  const resolvedTitle = captureWorkTitle(text, state.captureContext);
+  record.title = resolvedTitle;
+  record.inputHints = { ...(record.inputHints || {}), workTitle: resolvedTitle };
+
+  // R1：同一部电影无论写几条感想，只解析出一个 Work（按标题/别名查重，不新建 1:1 Work）
+  const { work } = resolveWork(state.works, {
+    title: resolvedTitle,
+    subjectId: state.captureContext?.subjectId ?? null,
+    aliases: []
+  });
+  record.work_id = work.id;
+  record.workId = work.id;              // 兼容期保留，供旧读取点过渡
+  record.record_kind = "viewing";
+  record.viewing_event_id = null;       // 有 Event 时下方回填
+
   await db.putRecordWithWork(record, work);
-  if (state.pendingViewingEvents.length > 0) {
+
+  const pendingEvents = state.captureContext?.pendingEvents || [];
+  if (pendingEvents.length > 0) {
     const confirmedAt = new Date().toISOString();
-    const eventsToSave = state.pendingViewingEvents.map((e) => ({
+    const newEvents = pendingEvents.map((e) => ({
       ...e,
       work_id: work.id,
       record_id: record.id,
       confirmed_at: e.confirmed_at || confirmedAt,
       status: "confirmed"
     }));
-    await db.putViewingEvents(eventsToSave);
-    state.viewingEvents = eventsToSave;
-    state.pendingViewingEvents = [];
+    // 每次写入 ViewingEvent 后，都要对该 work 下全部事件重跑初看/重看推定并整体回写，
+    // 不能只给新事件递增编号——补录更早的一次观看时，原来的"初看"要正确变成"重看"。
+    let existingEvents = [];
+    try { existingEvents = await db.getViewingEventsByWork(work.id); } catch (_) { /* 首次记录该作品，允许为空 */ }
+    const newEventIds = new Set(newEvents.map((e) => e.id));
+    const allEvents = assignViewingRelations([...existingEvents.filter((e) => !newEventIds.has(e.id)), ...newEvents]);
+    await db.putViewingEvents(allEvents);
+    state.viewingEvents = allEvents;
+    // 票务粘贴通常一次确认一场；多场时取第一场回填到 record.viewing_event_id
+    const firstNew = allEvents.find((e) => newEventIds.has(e.id));
+    if (firstNew) {
+      record.viewing_event_id = firstNew.id;
+      await db.put("records", record);
+    }
   }
+
+  applyCaptureTransition("finish");
+  state.captureContext = null;
+  state.captureTagsExpanded = new Set();
   await db.delete("drafts", activeDraftId);
   state.draft = null;
   state.records.unshift(record);
-  state.works.push(work);
-  state.overlay = null;
+  if (!state.works.some((item) => item.id === work.id)) state.works.push(work);
   render();
   requestAnimationFrame(() => scrollTo({ top: state.returnScrollY, behavior: "instant" }));
   announce("原文已保存在本机");
@@ -1007,11 +1232,53 @@ async function confirmWorkMatch(subjectId) {
   const work = currentWork(record);
   const candidate = work?.match?.candidates?.find((item) => item.subjectId === subjectId);
   if (!record || !work || !candidate) return;
-  Object.assign(work, applyBangumiCandidateToWork(work, candidate));
-  await db.put("works", work);
+
+  // R1：local work 匹配到 Bangumi 后升格；若升格后的 id 与某个已存在的 work 冲突
+  // （同一部电影之前已有另一条已匹配记录），合并二者，并把所有指向旧 id 的
+  // record 与 viewing event 改指到合并后的 id——保证"同一部电影只有一个 Work"。
+  const promoted = promoteWorkToMatched(work, subjectId, {
+    title: candidate.title,
+    originalTitle: candidate.originalTitle,
+    type: candidate.type,
+    releaseDate: candidate.releaseDate
+  });
+  const oldId = work.id;
+  const conflictingWork = promoted.id !== oldId
+    ? state.works.find((item) => item.id === promoted.id)
+    : null;
+  const finalWork = conflictingWork ? mergeWorks(conflictingWork, [promoted]) : promoted;
+
+  await db.put("works", finalWork);
+
+  const staleIds = [...new Set([oldId, conflictingWork?.id].filter((id) => id && id !== finalWork.id))];
+  if (staleIds.length) {
+    for (const item of state.records) {
+      if (staleIds.includes(item.work_id || item.workId)) {
+        item.work_id = finalWork.id;
+        item.workId = finalWork.id;
+        await db.put("records", item);
+      }
+    }
+    const staleEventGroups = await Promise.all(
+      staleIds.map((id) => db.getViewingEventsByWork(id).catch(() => []))
+    );
+    const staleEvents = staleEventGroups.flat().map((event) => ({ ...event, work_id: finalWork.id }));
+    if (staleEvents.length) {
+      let currentEvents = [];
+      try { currentEvents = await db.getViewingEventsByWork(finalWork.id); } catch (_) { /* 忽略 */ }
+      const currentIds = new Set(currentEvents.map((event) => event.id));
+      const merged = assignViewingRelations([...currentEvents, ...staleEvents.filter((event) => !currentIds.has(event.id))]);
+      await db.putViewingEvents(merged);
+      if (state.activeRecordId) state.viewingEvents = merged.filter((event) => event.work_id === finalWork.id);
+    }
+  }
+
+  state.works = state.works.filter((item) => item.id !== oldId && item.id !== conflictingWork?.id);
+  state.works.push(finalWork);
+
   await resolveDailyWallpaper();
   render();
-  announce(`已确认作品：${work.title}`);
+  announce(`已确认作品：${finalWork.title}`);
 }
 
 async function dismissWorkMatch() {
@@ -1022,6 +1289,108 @@ async function dismissWorkMatch() {
   await db.put("works", work);
   render();
   announce(keepConfirmed ? "已保留当前作品匹配" : "已保留为本地作品");
+}
+
+// ─── R2：捕获流程的异步辅助函数（剪贴板、票务解析、Bangumi 匹配、历史判断）─────
+
+/**
+ * 打开 Step 1 时静默尝试读取剪贴板。权限被拒或不支持时 readClipboardTicketHint
+ * 已经处理为返回 null，这里不弹任何提示、不影响流程。命中后只记一个布尔值，
+ * 原文缓存在模块级变量里，绝不写入 state（state 会被渲染，也可能被草稿持久化）。
+ */
+async function peekClipboardForTicket() {
+  const hint = await readClipboardTicketHint();
+  if (!hint || !hint.looksLikeTicket) return;
+  if (state.overlay !== "capture-entry") return; // 用户已经离开这一层，不再打扰
+  pendingClipboardText = hint.text;
+  state.clipboardTicketDetected = true;
+  render();
+}
+
+/**
+ * 解析粘贴的票务文本，成功则转入 Step 2A（ticket-confirm）。
+ * 失败或没有识别到场次时只提示，不影响用户已经打的字（此时还没有任何文字输入）。
+ */
+function handleCapturePaste(rawText) {
+  if (!rawText || !rawText.trim()) return;
+  let result;
+  try {
+    result = parseTicketText(rawText);
+  } catch (_) {
+    announce("解析失败，请检查粘贴内容");
+    return;
+  }
+  if (!result.screenings.length) {
+    announce("未能识别出场次，请检查粘贴内容");
+    return;
+  }
+  // 默认全选，但每场都保留 selected 标记——用户可以单独排除误识别的场次，
+  // 不必因为一场解析错了就整体重新粘贴。
+  const pendingEvents = result.screenings.map((s) => ({ ...draftViewingEvent(s, "work_capture_pending"), selected: true }));
+  const workTitle = result.screenings[0]?.movieTitle || "";
+  state.captureContext = {
+    source: "ticket_paste",
+    locationType: "cinema",
+    workTitle,
+    subjectId: null,
+    showMatchCandidates: false,
+    bangumiMatch: { status: "idle", candidates: [], query: workTitle },
+    hasHistory: false,
+    existingHistoryCount: 0,
+    pendingEvents
+  };
+  state.captureTagsExpanded = new Set();
+  applyCaptureTransition("paste-ticket");
+  render();
+  void runCaptureBangumiMatch(workTitle);
+  void refreshCaptureHistoryFlag();
+}
+
+/**
+ * 用捕获上下文当前的作品标题去搜 Bangumi，结果写进 captureContext.bangumiMatch。
+ * 与 requestWorkMatch 的区别：这里操作的是还没有落库的 Work，只是给确认卡展示用。
+ */
+async function runCaptureBangumiMatch(query) {
+  const ctx = state.captureContext;
+  if (!ctx || !query?.trim()) return;
+  ctx.bangumiMatch = { status: "searching", candidates: [], query };
+  render();
+  try {
+    const response = await apiFetch(`/api/bangumi/search?q=${encodeURIComponent(query)}`, { headers: { accept: "application/json" } });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.message || "作品匹配暂不可用");
+    if (state.captureContext !== ctx) return; // 用户已经离开或重新开始
+    ctx.bangumiMatch = payload.candidates?.length
+      ? { status: "candidates", candidates: payload.candidates, query }
+      : { status: "none", candidates: [], query };
+  } catch (error) {
+    if (state.captureContext !== ctx) return;
+    ctx.bangumiMatch = { status: "unavailable", candidates: [], query, message: error.message };
+  }
+  render();
+}
+
+/**
+ * 判断当前捕获上下文对应的作品是否已有历史观影记录——只有这样才展示初看/重看选择器。
+ * 用 resolveWork 做只读试探（不落库），不新建 work，也不影响 state.works。
+ */
+async function refreshCaptureHistoryFlag() {
+  const ctx = state.captureContext;
+  if (!ctx) return;
+  const title = ctx.workTitle;
+  if (!title?.trim()) { ctx.hasHistory = false; ctx.existingHistoryCount = 0; render(); return; }
+  const { work, isNew } = resolveWork(state.works, { title, subjectId: ctx.subjectId, aliases: [] });
+  if (isNew) { ctx.hasHistory = false; ctx.existingHistoryCount = 0; render(); return; }
+  try {
+    const events = await db.getViewingEventsByWork(work.id);
+    if (state.captureContext !== ctx) return;
+    ctx.hasHistory = events.length > 0;
+    ctx.existingHistoryCount = events.length;
+  } catch (_) {
+    ctx.hasHistory = false;
+    ctx.existingHistoryCount = 0;
+  }
+  render();
 }
 
 async function updateRecord(mutator) {
@@ -1168,93 +1537,161 @@ app.addEventListener("click", async (event) => {
     await db.put("meta", state.aiPreference);
     render();
     announce(`已选择${trigger.textContent.trim()}作为整理服务`);
-  } else if (action === "open-ticket-paste") {
-    // 保存当前 composer 草稿文字，再切换到票务层
-    const composerInput = document.querySelector("#composer-input");
-    if (composerInput) await saveDraft(composerInput.value, true);
-    state.overlay = "ticket";
-    render();
-    requestAnimationFrame(() => document.querySelector("#ticket-input")?.focus());
-  } else if (action === "close-ticket-overlay") {
-    state.overlay = "compose";
-    render();
-    focusComposer();
-  } else if (action === "repaste-ticket") {
-    state.ticketParseResult = null;
-    state.pendingViewingEvents = [];
-    render();
-    requestAnimationFrame(() => document.querySelector("#ticket-input")?.focus());
-  } else if (action === "parse-ticket") {
-    const raw = document.querySelector("#ticket-input")?.value || "";
-    if (!raw.trim()) {
-      announce("请先粘贴购票邮件内容");
-      return;
-    }
-    try {
-      state.ticketParseResult = parseTicketText(raw);
-      if (state.ticketParseResult.screenings.length === 0) {
-        announce("未能识别出场次，请检查粘贴内容");
-        state.ticketParseResult = null;
-      } else {
-        // 解析完成后默认全选（用户可逐个取消）
-        const workId = state.draft ? `work_draft_${state.draft.id}` : `work_temp_${Date.now()}`;
-        state.pendingViewingEvents = state.ticketParseResult.screenings.map((s, index) => {
-          const event = draftViewingEvent(s, workId);
-          event._draftIndex = index;
-          return event;
-        });
-      }
-    } catch {
-      announce("解析失败，请检查粘贴内容");
-    }
-    render();
-  } else if (action === "toggle-ticket") {
-    const result = state.ticketParseResult;
-    if (!result) return;
-    const index = parseInt(trigger.dataset.index, 10);
-    const existing = state.pendingViewingEvents.findIndex((e) => e._draftIndex === index);
-    if (existing >= 0) {
-      // 取消选择
-      state.pendingViewingEvents = state.pendingViewingEvents.filter((_, i) => i !== existing);
-    } else {
-      // 重新选择
-      const workId = state.draft ? `work_draft_${state.draft.id}` : `work_temp_${Date.now()}`;
-      const event = draftViewingEvent(result.screenings[index], workId);
-      event._draftIndex = index;
-      state.pendingViewingEvents = [...state.pendingViewingEvents, event]
-        .sort((a, b) => (a._draftIndex ?? 0) - (b._draftIndex ?? 0));
-    }
-    render();
-  } else if (action === "select-all-tickets") {
-    const result = state.ticketParseResult;
-    if (!result) return;
-    const workId = state.draft ? `work_draft_${state.draft.id}` : `work_temp_${Date.now()}`;
-    const selectedIndices = new Set(state.pendingViewingEvents.map((e) => e._draftIndex));
-    const missing = result.screenings
-      .map((s, index) => ({ s, index }))
-      .filter(({ index }) => !selectedIndices.has(index));
-    const newEvents = missing.map(({ s, index }) => {
-      const event = draftViewingEvent(s, workId);
-      event._draftIndex = index;
-      return event;
-    });
-    state.pendingViewingEvents = [...state.pendingViewingEvents, ...newEvents]
-      .sort((a, b) => (a._draftIndex ?? 0) - (b._draftIndex ?? 0));
-    render();
-  } else if (action === "confirm-all-tickets") {
-    // 向后兼容保留；现在 parse-ticket 已默认全选，此 action 不再挂到按钮
-    render();
-  } else if (action === "open-compose" || action === "resume-draft") {
+  } else if (action === "open-capture") {
+    // R2 Step 1：点＋不再直接进 composer，先认场景。
     state.returnScrollY = scrollY;
+    state.captureContext = null;
+    state.captureTagsExpanded = new Set();
+    state.clipboardTicketDetected = false;
+    pendingClipboardText = null;
+    applyCaptureTransition("open-capture");
+    render();
+    void peekClipboardForTicket();
+  } else if (action === "resume-draft") {
+    // 继续写：captureContext 已在 loadState() 时从草稿里恢复，直接回到 Step 3。
+    state.returnScrollY = scrollY;
+    state.captureFlowState = state.captureContext ? "capture:compose" : "idle";
     state.overlay = "compose";
     render();
     focusComposer();
+  } else if (action === "close-capture") {
+    // Step 1/2A/2B 的背景点击：还没有产生任何记录，直接丢弃这次捕获上下文。
+    state.captureContext = null;
+    state.captureTagsExpanded = new Set();
+    applyCaptureTransition("close");
+    render();
+  } else if (action === "use-clipboard-ticket") {
+    handleCapturePaste(pendingClipboardText || "");
+  } else if (action === "skip-to-scene") {
+    state.captureContext = {
+      source: "manual",
+      locationType: null,
+      workTitle: "",
+      cinemaName: null,
+      format: null,
+      eventTypes: [],
+      bonusNote: null,
+      subjectId: null,
+      bangumiMatch: { status: "idle", candidates: [] },
+      hasHistory: false,
+      existingHistoryCount: 0,
+      relationOverride: null,
+      relationLocked: false
+    };
+    state.captureTagsExpanded = new Set();
+    applyCaptureTransition("skip");
+    render();
+  } else if (action === "repaste-ticket-capture") {
+    state.captureContext = null;
+    state.captureTagsExpanded = new Set();
+    applyCaptureTransition("repaste");
+    render();
+  } else if (action === "toggle-capture-match-candidates") {
+    if (!state.captureContext) return;
+    state.captureContext.showMatchCandidates = !state.captureContext.showMatchCandidates;
+    render();
+  } else if (action === "select-capture-candidate") {
+    const ctx = state.captureContext;
+    if (!ctx) return;
+    const candidate = ctx.bangumiMatch?.candidates?.find((c) => c.subjectId === Number(trigger.dataset.subjectId));
+    if (!candidate) return;
+    ctx.workTitle = candidate.title;
+    ctx.subjectId = candidate.subjectId;
+    ctx.showMatchCandidates = false;
+    render();
+    void refreshCaptureHistoryFlag();
+  } else if (action === "toggle-event-tag") {
+    const ctx = state.captureContext;
+    if (!ctx) return;
+    const tagKey = trigger.dataset.tagKey;
+    const eventTypeKey = trigger.dataset.key;
+    if (tagKey === "scene") {
+      ctx.eventTypes = toggleEventType(ctx.eventTypes, eventTypeKey);
+      ctx.bonusNote = ctx.eventTypes.includes("bonus_distribution") ? ctx.bonusNote : null;
+    } else {
+      const index = Number(tagKey.replace("event-", ""));
+      const nextTypes = toggleEventType(ctx.pendingEvents[index].viewing_context.event_types, eventTypeKey);
+      ctx.pendingEvents[index] = updateEventTicketTags(ctx.pendingEvents[index], nextTypes);
+    }
+    render();
+  } else if (action === "expand-event-tags") {
+    state.captureTagsExpanded.add(trigger.dataset.tagKey);
+    render();
+  } else if (action === "set-relation") {
+    const ctx = state.captureContext;
+    const index = Number(trigger.dataset.eventIndex);
+    if (!ctx?.pendingEvents?.[index]) return;
+    ctx.pendingEvents[index] = { ...ctx.pendingEvents[index], viewing_relation: trigger.dataset.value, relation_locked: true };
+    render();
+  } else if (action === "toggle-ticket-event-selection") {
+    // 用户逐场次排除误识别的场次——不强制采纳解析出的全部内容，也不必整体重新粘贴。
+    const ctx = state.captureContext;
+    const index = Number(trigger.dataset.eventIndex);
+    if (!ctx?.pendingEvents) return;
+    ctx.pendingEvents = toggleEventSelection(ctx.pendingEvents, index);
+    render();
+  } else if (action === "select-all-ticket-events") {
+    const ctx = state.captureContext;
+    if (!ctx?.pendingEvents) return;
+    ctx.pendingEvents = selectAllEvents(ctx.pendingEvents);
+    render();
+  } else if (action === "set-scene-relation") {
+    if (!state.captureContext) return;
+    state.captureContext.relationOverride = trigger.dataset.value;
+    state.captureContext.relationLocked = true;
+    render();
+  } else if (action === "confirm-ticket-capture") {
+    const ctx = state.captureContext;
+    const selected = selectedPendingEvents(ctx?.pendingEvents);
+    if (!selected.length) return;
+    ctx.pendingEvents = selected; // 只把用户勾选的场次带进 compose，排除的场次彻底丢弃
+    applyCaptureTransition("confirm");
+    await saveDraft(state.draft?.text || "", true);
+    render();
+    focusComposer();
+  } else if (action === "select-location") {
+    if (!state.captureContext) return;
+    state.captureContext.locationType = trigger.dataset.value;
+    render();
+  } else if (action === "select-scene-candidate") {
+    const ctx = state.captureContext;
+    if (!ctx) return;
+    const candidate = ctx.bangumiMatch?.candidates?.find((c) => c.subjectId === Number(trigger.dataset.subjectId));
+    if (!candidate) return;
+    ctx.workTitle = candidate.title;
+    ctx.subjectId = candidate.subjectId;
+    render();
+    void refreshCaptureHistoryFlag();
+  } else if (action === "confirm-scene-choice") {
+    const ctx = state.captureContext;
+    if (!ctx?.locationType || !ctx.workTitle?.trim()) return;
+    const event = buildManualViewingEvent({
+      locationType: ctx.locationType,
+      cinemaName: ctx.cinemaName,
+      format: ctx.format,
+      eventTypes: ctx.eventTypes,
+      bonusNote: ctx.bonusNote
+    });
+    if (ctx.relationLocked && ctx.relationOverride) {
+      event.viewing_relation = ctx.relationOverride;
+      event.relation_locked = true;
+    }
+    ctx.pendingEvents = [event];
+    applyCaptureTransition("confirm");
+    await saveDraft(state.draft?.text || "", true);
+    render();
+    focusComposer();
+  } else if (action === "edit-capture-context") {
+    applyCaptureTransition("edit-context");
+    render();
   } else if (action === "close-overlay") {
     if (state.overlay === "compose") {
       const text = document.querySelector("#composer-input")?.value || "";
       await saveDraft(text, true);
+      applyCaptureTransition("close");
+    } else {
+      state.overlay = null;
     }
-    state.overlay = null;
     render();
   } else if (action === "insert-hash") {
     const input = document.querySelector("#composer-input");
@@ -1484,7 +1921,46 @@ app.addEventListener("input", (event) => {
     if (finish) finish.disabled = !event.target.value.trim();
   } else if (event.target.matches("[data-testid='recommendation-note']")) {
     updateRecord((record) => { record.recommendationNote = event.target.value; });
+  } else if (event.target.id === "scene-work-title-input" || event.target.id === "capture-manual-title-input") {
+    // R2：作品标题输入是"受控但不整页重渲染"——保留光标，只手动同步按钮可用态与防抖匹配。
+    if (!state.captureContext) return;
+    state.captureContext.workTitle = event.target.value;
+    const confirmButton = document.querySelector("[data-testid='confirm-scene-choice']");
+    if (confirmButton) confirmButton.disabled = !(state.captureContext.locationType && event.target.value.trim());
+    clearTimeout(sceneTitleMatchTimer);
+    const query = event.target.value.trim();
+    if (query.length >= 2) {
+      sceneTitleMatchTimer = setTimeout(() => {
+        void runCaptureBangumiMatch(query);
+        void refreshCaptureHistoryFlag();
+      }, 400);
+    }
+  } else if (event.target.id === "scene-cinema-name-input") {
+    if (state.captureContext) state.captureContext.cinemaName = event.target.value;
+  } else if (event.target.matches("[data-field='bonus-note']")) {
+    const ctx = state.captureContext;
+    if (!ctx) return;
+    const eventIndex = event.target.dataset.eventIndex;
+    if (eventIndex === "scene") {
+      ctx.bonusNote = event.target.value;
+    } else {
+      const idx = Number(eventIndex);
+      if (ctx.pendingEvents?.[idx]) ctx.pendingEvents[idx] = updateBonusNote(ctx.pendingEvents[idx], event.target.value);
+    }
   }
+});
+
+// R2 Step 1：大面积粘贴区不需要显式"识别"按钮——粘贴动作本身触发解析。
+// 用 paste 事件而非 input，避免用户手打文字时被误当票务文本解析。
+app.addEventListener("paste", (event) => {
+  if (event.target.id !== "capture-paste-input") return;
+  const fromClipboardData = event.clipboardData?.getData("text") || "";
+  if (fromClipboardData) {
+    handleCapturePaste(fromClipboardData);
+    return;
+  }
+  // 部分移动端浏览器的 paste 事件里读不到 clipboardData，退一步等默认粘贴动作完成后读取 value。
+  setTimeout(() => handleCapturePaste(event.target.value), 0);
 });
 
 app.addEventListener("error", (event) => {
@@ -1497,6 +1973,8 @@ app.addEventListener("change", async (event) => {
   if (event.target.matches("[data-testid='recommendation-note']")) {
     await updateRecord((record) => { record.recommendationNote = event.target.value.trim(); });
     announce("推荐说明已保存");
+  } else if (event.target.id === "scene-format-select") {
+    if (state.captureContext) state.captureContext.format = event.target.value;
   }
 });
 
@@ -1604,8 +2082,16 @@ window.addEventListener("keydown", async (event) => {
     return;
   }
   if (event.key !== "Escape" || !state.overlay) return;
-  if (state.overlay === "compose") await saveDraft(document.querySelector("#composer-input")?.value || "", true);
-  state.overlay = null;
+  if (state.overlay === "compose") {
+    await saveDraft(document.querySelector("#composer-input")?.value || "", true);
+    applyCaptureTransition("close");
+  } else if (state.overlay === "capture-entry" || state.overlay === "ticket-confirm" || state.overlay === "scene-choice") {
+    state.captureContext = null;
+    state.captureTagsExpanded = new Set();
+    applyCaptureTransition("close");
+  } else {
+    state.overlay = null;
+  }
   render();
 });
 
@@ -1629,7 +2115,15 @@ document.addEventListener("focusin", updateVisualViewport);
 document.addEventListener("focusout", () => setTimeout(updateVisualViewport, 180));
 window.addEventListener("pagehide", () => {
   const input = document.querySelector("#composer-input");
-  if (input) db.put("drafts", { id: activeDraftId, text: input.value, revision: (state.draft?.revision || 0) + 1, updatedAt: new Date().toISOString() });
+  if (input) {
+    db.put("drafts", {
+      id: activeDraftId,
+      text: input.value,
+      revision: (state.draft?.revision || 0) + 1,
+      updatedAt: new Date().toISOString(),
+      captureContext: state.captureContext || null // R2：切后台/刷新也要保住 captureContext
+    });
+  }
 });
 
 const serviceWorkerOriginAllowed = location.protocol === "https:"
@@ -1648,6 +2142,16 @@ if (new URLSearchParams(location.search).has("reset")) {
 }
 
 try {
+  // R1：三层数据模型迁移必须在任何数据读取之前完成一次。不新增界面元素——
+  // 迁移发生在首次 render() 之前，页面本来就还是空白，天然阻塞用户操作；
+  // 迁移失败时复用下方已有的 fatal-error 兜底文案，不引入新组件。
+  const migration = await runMigrationIfNeeded(db, {
+    exportBackup: async (payload, filename) => {
+      downloadExport(JSON.stringify(payload, null, 2), filename, MIME_TYPES.json);
+    }
+  });
+  if (!migration.ok) throw new Error(`数据整理未完成：${migration.error}`);
+
   await loadState();
   render();
 } catch (error) {

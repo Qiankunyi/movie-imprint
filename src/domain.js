@@ -1,3 +1,295 @@
+// ─── Work 标题归一化与 ID ────────────────────────────────────────────────────
+
+/**
+ * 归一化作品标题，用于查重比较（不用于展示）。
+ * 规则：去首尾空格、连续空格归一、全角英数字转半角、去掉【制式】前缀。
+ * 不做繁简转换（明确不实现）。
+ * 版本后缀（如「デジタルリマスター版」）暂不处理，留空实现。
+ * @param {string} title
+ * @returns {string}
+ */
+export function normalizeTitle(title) {
+  if (!title) return "";
+  let value = String(title).trim();
+  // 去掉开头的【制式】/【活动】前缀（可能连续多个）
+  value = value.replace(/^[\s　]*(?:【[^】]*】[\s　]*)+/u, "");
+  // 全角英数字与常见全角符号 → 半角
+  value = value.replace(/[！-～]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
+  // 全角空格 → 半角空格
+  value = value.replace(/　/g, " ");
+  // 连续空格归一
+  value = value.replace(/\s+/g, " ").trim();
+  return value;
+}
+
+function slugifyTitle(value) {
+  const base = String(value || "").trim();
+  if (!base) return `untitled_${Date.now().toString(36)}`;
+  const encoded = encodeURIComponent(base)
+    .replace(/%/g, "")
+    .replace(/[!'()*]/g, "")
+    .toLowerCase();
+  return encoded.slice(0, 80) || `untitled_${Date.now().toString(36)}`;
+}
+
+/**
+ * 计算 Work 的稳定 ID。
+ * @param {{ subjectId?: string|number|null, title?: string }} params
+ * @returns {string}
+ */
+export function workIdFor({ subjectId, title } = {}) {
+  if (subjectId !== undefined && subjectId !== null && subjectId !== "") {
+    return `work_bgm_${subjectId}`;
+  }
+  return `work_local_${slugifyTitle(normalizeTitle(title))}`;
+}
+
+// ─── Work 实体 ────────────────────────────────────────────────────────────────
+
+export function createLocalWork(record) {
+  const inputHints = record.inputHints || {};
+  const aliases = [record.title, inputHints.workTitle]
+    .filter(Boolean)
+    .filter((value, index, values) => values.indexOf(value) === index);
+  const workId = record.workId || `work_${record.id}`;
+  const firstRecordedAt = record.createdAt || record.first_recorded_at || new Date().toISOString();
+
+  return {
+    id: workId,
+    work_id: workId,
+    title: inputHints.workTitle || record.title,
+    original_title: null,
+    work_type: "unspecified",
+    aliases,
+    release_year: null,
+    release_dates: { jp: null, cn: null, other: [] },
+    external_refs: [],
+    identity_status: "local_only",
+    poster_subject_id: null,
+    merged_from: [],
+    first_recorded_at: firstRecordedAt,
+    match: {
+      status: "idle",
+      query: null,
+      candidates: [],
+      message: null
+    }
+  };
+}
+
+/**
+ * 按 RESTRUCTURE_PLAN §3.1 的查重顺序解析／创建 Work。
+ * 1. subjectId 命中 external_refs 或 id
+ * 2. aliases 精确匹配（双向）
+ * 3. normalizeTitle(title) 与已有 work 的 normalizeTitle(title) 或 normalizeTitle(alias) 相等
+ * 4. 都不命中 → 新建
+ * @param {object[]} works
+ * @param {{ title: string, subjectId?: string|number|null, aliases?: string[] }} params
+ * @returns {{ work: object, isNew: boolean }}
+ */
+export function resolveWork(works, { title, subjectId, aliases = [] } = {}) {
+  const list = Array.isArray(works) ? works : [];
+  const sid = subjectId !== undefined && subjectId !== null && subjectId !== "" ? String(subjectId) : null;
+
+  if (sid) {
+    const byId = list.find((work) =>
+      work.id === `work_bgm_${sid}` ||
+      (work.external_refs || []).some((ref) => ref.source === "bangumi" && String(ref.id) === sid)
+    );
+    if (byId) return { work: byId, isNew: false };
+  }
+
+  const candidateNames = [title, ...aliases].filter(Boolean);
+  if (candidateNames.length) {
+    const byAlias = list.find((work) => {
+      const workNames = [work.title, ...(work.aliases || [])].filter(Boolean);
+      return candidateNames.some((name) => workNames.includes(name));
+    });
+    if (byAlias) return { work: byAlias, isNew: false };
+  }
+
+  const normalized = normalizeTitle(title);
+  if (normalized) {
+    const byTitle = list.find((work) => {
+      const workNames = [work.title, ...(work.aliases || [])].filter(Boolean);
+      return workNames.some((name) => normalizeTitle(name) === normalized);
+    });
+    if (byTitle) return { work: byTitle, isNew: false };
+  }
+
+  const id = workIdFor({ subjectId: sid, title });
+  const work = createLocalWork({ id, workId: id, title, inputHints: { workTitle: title } });
+  work.aliases = [...new Set([title, ...aliases, ...work.aliases].filter(Boolean))];
+  if (sid) {
+    work.identity_status = "matched";
+    work.external_refs = [{ source: "bangumi", id: sid, url: `https://bangumi.tv/subject/${sid}` }];
+    work.poster_subject_id = Number(sid) || null;
+  }
+  return { work, isNew: true };
+}
+
+/**
+ * local work 匹配到 Bangumi 后升格为已匹配 work。
+ * @param {object} work
+ * @param {string|number} subjectId
+ * @param {{ title?: string, originalTitle?: string|null, type?: string, releaseDate?: string|null }} bangumiData
+ */
+export function promoteWorkToMatched(work, subjectId, bangumiData = {}) {
+  const sid = String(subjectId);
+  const newId = `work_bgm_${sid}`;
+  const aliases = [...new Set([
+    ...(work.aliases || []),
+    work.title,
+    bangumiData.title,
+    bangumiData.originalTitle
+  ].filter(Boolean))];
+
+  const releaseDateJp = typeof bangumiData.releaseDate === "string" && /^\d{4}/.test(bangumiData.releaseDate)
+    ? bangumiData.releaseDate
+    : null;
+  const releaseYear = releaseDateJp ? Number(releaseDateJp.slice(0, 4)) : (work.release_year ?? null);
+
+  const workType = bangumiData.type === "anime"
+    ? "animation_film"
+    : bangumiData.type === "real"
+      ? "live_action_film"
+      : (work.work_type || "unspecified");
+
+  const mergedFrom = [...new Set([
+    ...(work.merged_from || []),
+    ...(work.id !== newId ? [work.id] : [])
+  ])];
+
+  return {
+    ...work,
+    id: newId,
+    work_id: newId,
+    title: bangumiData.title || work.title,
+    original_title: bangumiData.originalTitle ?? work.original_title ?? null,
+    work_type: workType,
+    aliases,
+    release_year: releaseYear,
+    release_dates: {
+      jp: releaseDateJp || work.release_dates?.jp || null,
+      cn: work.release_dates?.cn || null,
+      other: work.release_dates?.other || []
+    },
+    poster_subject_id: Number(subjectId) || work.poster_subject_id || null,
+    external_refs: [{ source: "bangumi", id: sid, url: `https://bangumi.tv/subject/${sid}` }],
+    identity_status: "matched",
+    merged_from: mergedFrom,
+    match: {
+      status: "confirmed",
+      query: work.match?.query || null,
+      candidates: [],
+      message: null,
+      confirmedSubjectId: Number(subjectId)
+    }
+  };
+}
+
+/**
+ * 合并重复 Work。优先保留已匹配 Bangumi 的一方；别名并集去重；
+ * first_recorded_at 取最早；release_dates 各字段取非空值，冲突时以已匹配方为准。
+ * @param {object} primary
+ * @param {object[]} duplicates
+ * @returns {object}
+ */
+export function mergeWorks(primary, duplicates = []) {
+  const dupList = (Array.isArray(duplicates) ? duplicates : [duplicates]).filter(Boolean);
+  const allSources = [primary, ...dupList].filter(Boolean);
+  const matchedSource = allSources.find((work) => work.identity_status === "matched");
+  const base = matchedSource || primary;
+
+  const aliases = [...new Set(allSources.flatMap((work) => [work.title, ...(work.aliases || [])]).filter(Boolean))];
+
+  const mergedFrom = [...new Set([
+    ...(base.merged_from || []),
+    ...allSources.flatMap((work) => [work.id, ...(work.merged_from || [])])
+  ])].filter((id) => id && id !== base.id);
+
+  const firstRecordedAt = allSources
+    .map((work) => work.first_recorded_at)
+    .filter(Boolean)
+    .sort()[0] || base.first_recorded_at || null;
+
+  function pickReleaseDate(field) {
+    const values = allSources.map((work) => work.release_dates?.[field]).filter(Boolean);
+    if (!values.length) return null;
+    if (matchedSource?.release_dates?.[field]) return matchedSource.release_dates[field];
+    return values[0];
+  }
+
+  const releaseDates = {
+    jp: pickReleaseDate("jp"),
+    cn: pickReleaseDate("cn"),
+    other: [...new Set(allSources.flatMap((work) => work.release_dates?.other || []))]
+  };
+
+  return {
+    ...base,
+    aliases,
+    merged_from: mergedFrom,
+    first_recorded_at: firstRecordedAt,
+    release_dates: releaseDates,
+    release_year: base.release_year ?? allSources.map((work) => work.release_year).find((year) => year != null) ?? null
+  };
+}
+
+export function reconcileLocalWorkTitle(work, record) {
+  const workTitleHint = record.inputHints?.workTitle?.trim();
+  if (!workTitleHint || work.identity_status === "matched" || work.title === workTitleHint) return work;
+  return {
+    ...work,
+    title: workTitleHint,
+    aliases: [...(work.aliases || []), work.title, workTitleHint]
+      .filter(Boolean)
+      .filter((value, index, values) => values.indexOf(value) === index)
+  };
+}
+
+// ─── ViewingEvent：初看／重看推定 ─────────────────────────────────────────────
+
+/**
+ * 按时间顺序为同一 work_id 下的全部 ViewingEvent 推定 viewing_relation 与 watch_index。
+ * 纯函数，不修改入参，返回新数组。AI 不参与这个推定。
+ *
+ * 重要：只按时间排序，绝不读取 location_type —— 初看／重看与观看地点完全正交。
+ *
+ * @param {object[]} events
+ * @returns {object[]}
+ */
+export function assignViewingRelations(events) {
+  const list = Array.isArray(events) ? events : [];
+  const sortKey = (event) => event.screening_at || event.viewed_on || event.createdAt || "";
+
+  const sorted = list
+    .map((event, index) => ({ event, index }))
+    .sort((a, b) => {
+      const ka = sortKey(a.event);
+      const kb = sortKey(b.event);
+      if (ka < kb) return -1;
+      if (ka > kb) return 1;
+      return a.index - b.index;
+    })
+    .map(({ event }) => event);
+
+  return sorted.map((event, i) => {
+    const watchIndex = i + 1;
+    const timeRelation = watchIndex === 1 ? "first" : "rewatch";
+    const locked = event.relation_locked === true && !!event.viewing_relation;
+    const finalRelation = locked ? event.viewing_relation : timeRelation;
+    const conflict = locked && event.viewing_relation !== timeRelation;
+
+    const next = { ...event, watch_index: watchIndex, viewing_relation: finalRelation };
+    if (conflict) next.relation_conflict = true;
+    else delete next.relation_conflict;
+    return next;
+  });
+}
+
+// ─── 标签与草稿解析 ────────────────────────────────────────────────────────────
+
 export const ATTITUDES = [
   ["dislike", "不喜欢"],
   ["neutral", "无感"],
@@ -59,44 +351,6 @@ export const CARD_TYPES = [
 
 export function createId(prefix, now = Date.now()) {
   return `${prefix}_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-export function createLocalWork(record) {
-  const inputHints = record.inputHints || {};
-  const aliases = [record.title, inputHints.workTitle]
-    .filter(Boolean)
-    .filter((value, index, values) => values.indexOf(value) === index);
-  const workId = record.workId || `work_${record.id}`;
-
-  return {
-    id: workId,
-    work_id: workId,
-    title: inputHints.workTitle || record.title,
-    original_title: null,
-    work_type: "unspecified",
-    aliases,
-    release_year: null,
-    external_refs: [],
-    identity_status: "local_only",
-    match: {
-      status: "idle",
-      query: null,
-      candidates: [],
-      message: null
-    }
-  };
-}
-
-export function reconcileLocalWorkTitle(work, record) {
-  const workTitleHint = record.inputHints?.workTitle?.trim();
-  if (!workTitleHint || work.identity_status === "matched" || work.title === workTitleHint) return work;
-  return {
-    ...work,
-    title: workTitleHint,
-    aliases: [...(work.aliases || []), work.title, workTitleHint]
-      .filter(Boolean)
-      .filter((value, index, values) => values.indexOf(value) === index)
-  };
 }
 
 export function extractHashtags(text) {

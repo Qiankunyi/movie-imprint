@@ -1949,3 +1949,361 @@ svg {
   color: var(--ink-soft);
   font: var(--type-meta);
 }
+
+/* ── R2：记录入口重排——先认场景再写 ──────────────────────────────────────── */
+
+/* Step 3 顶部上下文条：不可编辑，弱化灰字，点击回到 Step 2 */
+.capture-context-bar {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-2) var(--space-3);
+  color: var(--ink-soft);
+  text-align: left;
+  border-bottom: 1px solid var(--outline-soft);
+  background: transparent;
+  font: var(--type-meta);
+  overflow-wrap: anywhere;
+}
+
+/* Step 1：场景识别层 */
+.capture-entry {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-bottom: calc(var(--space-6) + env(safe-area-inset-bottom));
+}
+
+.clipboard-hint-banner {
+  display: flex;
+  min-height: var(--touch);
+  padding: var(--space-3) var(--space-4);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--accent-strong);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-card);
+  background: var(--accent-container);
+  text-align: left;
+  font: var(--type-label);
+}
+
+.clipboard-hint-banner svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.capture-paste-area {
+  display: block;
+}
+
+.capture-paste-area textarea {
+  width: 100%;
+  min-height: 132px;
+  padding: var(--space-4);
+  border: 1.5px dashed var(--outline);
+  border-radius: var(--radius-card);
+  background: var(--surface-low);
+  color: var(--ink);
+  font: var(--type-body-large);
+  line-height: 1.5;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.capture-paste-area textarea::placeholder {
+  color: var(--ink-soft);
+}
+
+.capture-paste-area textarea:focus-visible {
+  border-style: solid;
+  border-color: var(--accent);
+  outline: 0;
+}
+
+.capture-skip-link {
+  align-self: flex-end;
+  min-height: var(--touch);
+  padding: 0 var(--space-2);
+  color: var(--ink-soft);
+  background: transparent;
+  font: var(--type-label);
+}
+
+/* Step 2A：票务确认卡 */
+.ticket-confirm-sheet {
+  padding-right: var(--space-5);
+  padding-bottom: calc(var(--space-5) + env(safe-area-inset-bottom));
+  padding-left: var(--space-5);
+}
+
+.ticket-confirm-poster {
+  display: block;
+  max-height: 180px;
+  margin: 0 auto var(--space-3);
+  border-radius: var(--radius-card);
+  object-fit: contain;
+}
+
+.ticket-confirm-poster.skeleton {
+  height: 96px;
+  margin-bottom: var(--space-3);
+  border-radius: var(--radius-card);
+  background: linear-gradient(90deg, var(--surface-high) 0%, var(--surface-low) 50%, var(--surface-high) 100%);
+  background-size: 200% 100%;
+  animation: capture-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes capture-skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.ticket-confirm-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.ticket-confirm-title-row h2 {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font: var(--type-title);
+}
+
+.manual-title-fallback {
+  display: grid;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.manual-title-fallback input {
+  min-height: var(--touch);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-tag);
+  background: var(--surface);
+  color: var(--ink);
+  font: var(--type-body);
+}
+
+.ticket-confirm-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: var(--space-2) 0 var(--space-4);
+}
+
+.ticket-confirm-card {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-card);
+  background: var(--surface-container);
+}
+
+.ticket-confirm-card.excluded {
+  opacity: 0.5;
+}
+
+/* 逐场次的采纳开关——只有解析出多个场次时才出现，让用户主动排除误识别的那一场 */
+.ticket-confirm-select {
+  display: flex;
+  min-height: 36px;
+  margin-bottom: var(--space-2);
+  padding: 0 var(--space-2) 0 0;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-soft);
+  background: transparent;
+  font: var(--type-meta);
+}
+
+.ticket-confirm-select.selected {
+  color: var(--accent-strong);
+}
+
+.ticket-confirm-select-indicator {
+  display: flex;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--outline-soft);
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--on-accent);
+  background: transparent;
+}
+
+.ticket-confirm-select.selected .ticket-confirm-select-indicator {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.ticket-confirm-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  color: var(--ink);
+  font: var(--type-label);
+}
+
+.ticket-confirm-meta.secondary {
+  margin-top: 2px;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+/* 活动标签行：与制式徽章视觉区分——活动用轮廓 chip，收起态是一个小的次要按钮 */
+.add-event-tag {
+  min-height: 36px;
+  margin-top: var(--space-2);
+  padding: 0 var(--space-3);
+  color: var(--accent-strong);
+  border: 1px dashed var(--outline);
+  border-radius: 999px;
+  background: transparent;
+  font: var(--type-meta);
+}
+
+.event-tags-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.event-tag-chip {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  color: var(--ink);
+  border: 1px solid var(--outline-soft);
+  border-radius: 999px;
+  background: var(--surface);
+  font: var(--type-meta);
+}
+
+.event-tag-chip.selected {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+  background: var(--accent-container);
+}
+
+.bonus-note-input {
+  display: grid;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.bonus-note-input input {
+  min-height: 40px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-tag);
+  background: var(--surface);
+  color: var(--ink);
+  font: var(--type-body);
+}
+
+/* 初看／重看：两选一，不预设——与 location_type 完全无关 */
+.relation-toggle {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.relation-choice {
+  min-height: 40px;
+  padding: 0 var(--space-3);
+  color: var(--ink-soft);
+  border: 1px solid var(--outline-soft);
+  border-radius: 999px;
+  background: var(--surface);
+  font: var(--type-meta);
+}
+
+.relation-choice.selected {
+  color: var(--on-accent);
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+/* Step 2B：场景二选一 */
+.scene-choice-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-right: var(--space-5);
+  padding-bottom: calc(var(--space-5) + env(safe-area-inset-bottom));
+  padding-left: var(--space-5);
+}
+
+.scene-choice-sheet h2 {
+  margin: 0;
+  font: var(--type-title);
+}
+
+.location-choice {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.location-option {
+  min-height: 56px;
+  padding: 0 var(--space-3);
+  color: var(--ink);
+  border: 1.5px solid var(--outline-soft);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  font: var(--type-label);
+}
+
+.location-option.selected {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+  background: var(--accent-container);
+}
+
+.cinema-fields {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.cinema-fields label,
+.scene-work-title {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.cinema-fields input,
+.cinema-fields select,
+.scene-work-title input {
+  min-height: var(--touch);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-tag);
+  background: var(--surface);
+  color: var(--ink);
+  font: var(--type-body);
+}
+
+@media (max-width: 412px) {
+  .ticket-confirm-sheet,
+  .scene-choice-sheet {
+    padding-right: var(--space-4);
+    padding-left: var(--space-4);
+  }
+}
