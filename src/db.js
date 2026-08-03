@@ -147,25 +147,42 @@ async function cloudOp(cloudFn, localFn) {
  * 将本机 IndexedDB 的全部数据一次性上传到 D1 云端。
  * 仅在云端同步已开启时可用。
  */
+/**
+ * 将本机 IndexedDB 的全部数据上传到 D1 云端。
+ * 策略：只上传 D1 里还没有的条目（跳过已存在的），避免旧数据覆盖新数据。
+ * 正确做法：先在数据最新的设备上传，再在其他设备上传补充缺失记录。
+ */
 export async function migrateLocalToCloud(onProgress) {
   if (!isCloudSyncEnabled()) throw new Error("请先开启云端同步");
 
   for (const store of STORES) {
-    onProgress?.(`正在上传 ${store}…`);
-    const items = await idb.getAll(store);
-    if (items.length === 0) continue;
+    onProgress?.(`正在检查 ${store}…`);
+    const localItems = await idb.getAll(store);
+    if (localItems.length === 0) continue;
+
+    // 获取 D1 里已有的 ID 集合
+    const cloudRes = await apiFetch(`/api/sync/${store}`);
+    if (!cloudRes.ok) throw new Error(`读取云端 ${store} 失败 (${cloudRes.status})`);
+    const cloudItems = await cloudRes.json();
+    const cloudIds = new Set(cloudItems.map((item) => item.id));
+
+    // 只上传 D1 里没有的
+    const toUpload = localItems.filter((item) => !cloudIds.has(item.id));
+    if (toUpload.length === 0) continue;
+
+    onProgress?.(`正在上传 ${store}（${toUpload.length} 条）…`);
 
     if (store === "viewingEvents") {
       const res = await apiFetch("/api/sync/viewingEvents", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(items)
+        body: JSON.stringify(toUpload)
       });
       if (!res.ok) throw new Error(`上传 ${store} 失败 (${res.status})`);
       continue;
     }
 
-    for (const item of items) {
+    for (const item of toUpload) {
       const res = await apiFetch(`/api/sync/${store}/${encodeURIComponent(item.id)}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },

@@ -1,4 +1,4 @@
-import { db, clearLocalData, migrateLocalToCloud } from "./db.js?v=11";
+import { db, clearLocalData, migrateLocalToCloud } from "./db.js?v=12";
 import { parseTicketText, draftViewingEvent } from "./ticket.js";
 import { applyBangumiCandidateToWork, buildWorkSearchQuery, chooseDailyWallpaper, chooseNextWallpaper, wallpaperCandidates } from "./bangumi.js?v=10";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
