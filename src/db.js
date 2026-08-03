@@ -135,10 +135,11 @@ async function cloudOp(cloudFn, localFn) {
     return await cloudFn();
   } catch (e) {
     if (e.message === "db_401") {
+      // 密码错误，清除密码并降级
       localStorage.removeItem(ACCESS_PASSWORD_KEY);
-      return localFn();
     }
-    throw e;
+    // 其他云端错误（500、网络故障等）也降级到本地，不崩溃
+    return localFn();
   }
 }
 
