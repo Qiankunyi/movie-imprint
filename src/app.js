@@ -1,4 +1,4 @@
-import { db, clearLocalData } from "./db.js?v=8";
+import { db, clearLocalData } from "./db.js?v=10";
 import { parseTicketText, draftViewingEvent } from "./ticket.js";
 import { applyBangumiCandidateToWork, buildWorkSearchQuery, chooseDailyWallpaper, chooseNextWallpaper, wallpaperCandidates } from "./bangumi.js?v=10";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
@@ -47,12 +47,7 @@ async function apiFetch(url, options = {}) {
   const response = await fetch(url, { ...options, headers });
 
   if (response.status === 401) {
-    // eslint-disable-next-line no-alert
-    const newPassword = prompt("请输入访问密码：");
-    if (!newPassword) throw new Error("访问被取消");
-    setAccessPassword(newPassword);
-    const retryHeaders = { ...(options.headers || {}), authorization: `Bearer ${newPassword}` };
-    return fetch(url, { ...options, headers: retryHeaders });
+    throw new Error("密码错误，请在偏好设置中重新配置访问密码");
   }
 
   return response;
@@ -525,6 +520,20 @@ function composerOverlay() {
   </div>`;
 }
 
+function syncSettingsSection() {
+  const enabled = !!(localStorage.getItem(ACCESS_PASSWORD_KEY));
+  if (enabled) {
+    return `<div class="settings-actions">
+      <button type="button" data-action="disconnect-sync"><span><b>已开启云端同步</b><small>数据同步至云端，点击断开连接</small></span>${icon("chevron")}</button>
+    </div>`;
+  }
+  return `<div class="settings-sync-row">
+    <input id="sync-password-input" type="password" placeholder="输入访问密码" autocomplete="current-password" />
+    <button type="button" data-action="save-sync-password">开启同步</button>
+  </div>
+  <p class="settings-note" style="margin-top:var(--space-2)">输入部署时设置的访问密码，开启后数据跨设备同步。无密码时数据仅保存在本机。</p>`;
+}
+
 function wallpaperSettingsOverlay() {
   const mode = state.wallpaperPreference?.mode || "daily";
   const candidates = wallpaperCandidates(state.works);
@@ -550,6 +559,8 @@ function wallpaperSettingsOverlay() {
       <div class="provider-options" data-testid="ai-provider-options">
         ${state.aiProviders.providers.map((provider) => `<button type="button" data-action="select-ai-provider" data-provider="${provider.id}" class="provider-option ${state.aiPreference?.provider === provider.id ? "selected" : ""}" ${provider.configured ? "" : "disabled"} aria-pressed="${state.aiPreference?.provider === provider.id}"><span><b>${escapeHtml(provider.label)}</b><small>${provider.configured ? escapeHtml(provider.model) : "尚未配置密钥"}</small></span>${state.aiPreference?.provider === provider.id ? "✓" : ""}</button>`).join("")}
       </div>
+      <h3 class="settings-section-title">云端同步</h3>
+      ${syncSettingsSection()}
       <p class="settings-note">偏好只保存在本机，不会修改已有作品记录。</p>
     </section>
   </div>`;
@@ -1027,6 +1038,18 @@ app.addEventListener("click", async (event) => {
     await db.put("meta", state.recordingPreference);
     render();
     announce(state.recordingPreference.autoAnalyze ? "已开启自动整理" : "新记录将只保存原文");
+  } else if (action === "save-sync-password") {
+    const input = document.querySelector("#sync-password-input");
+    const password = input?.value.trim() || "";
+    if (password) {
+      setAccessPassword(password);
+      render();
+      announce("云端同步已开启");
+    }
+  } else if (action === "disconnect-sync") {
+    localStorage.removeItem(ACCESS_PASSWORD_KEY);
+    render();
+    announce("已断开云端同步，数据保存在本机");
   } else if (action === "select-ai-provider") {
     state.aiPreference = { id: "ai-preference", provider: trigger.dataset.provider };
     await db.put("meta", state.aiPreference);

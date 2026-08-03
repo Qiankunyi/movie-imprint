@@ -9,7 +9,7 @@ import {
 } from "./ai.js";
 
 export const AI_PROVIDERS = {
-  gemini: { label: "Gemini", keyName: "GEMINI_API_KEY", modelName: "GEMINI_MODEL", defaultModel: "gemini-3.6-flash" },
+  gemini: { label: "Gemini", keyName: "GEMINI_API_KEY", modelName: "GEMINI_MODEL", defaultModel: "gemini-2.0-flash-lite" },
   openai: { label: "ChatGPT / OpenAI", keyName: "OPENAI_API_KEY", modelName: "OPENAI_MODEL", defaultModel: "gpt-5.6-sol" },
   anthropic: { label: "Claude", keyName: "ANTHROPIC_API_KEY", modelName: "ANTHROPIC_MODEL", defaultModel: "claude-sonnet-4-6" },
   deepseek: { label: "DeepSeek", keyName: "DEEPSEEK_API_KEY", modelName: "DEEPSEEK_MODEL", defaultModel: "deepseek-v4-flash" },

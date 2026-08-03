@@ -4,3 +4,8 @@ compatibility_flags = ["nodejs_compat"]
 
 # 本地开发用：wrangler pages dev . --port 4173
 # 环境变量在 .dev.vars 文件中定义（不提交到 git）
+
+[[d1_databases]]
+binding = "DB"
+database_name = "movie-imprint-db"
+database_id = "PLACEHOLDER"
