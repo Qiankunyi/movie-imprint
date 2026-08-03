@@ -1,4 +1,4 @@
-import { requestAiRecommendation } from "../../../src/ai-providers.js";
+import { requestAiRecommendation, describeAiError } from "../../../src/ai-providers.js";
 
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -47,7 +47,7 @@ export async function onRequest(context) {
           ? "当前推荐条件无法整理"
           : notConfigured
             ? "所选整理服务尚未配置"
-            : "推荐条件暂时没有整理完成"
+            : describeAiError(error, "推荐条件暂时没有整理完成")
       }
     );
   }

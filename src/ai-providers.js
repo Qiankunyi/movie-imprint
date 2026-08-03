@@ -173,6 +173,31 @@ async function callOpenAiCompatible(config, input, fetchImpl, provider, options)
   return { text, usage: { input_tokens: payload.usage?.prompt_tokens || null, output_tokens: payload.usage?.completion_tokens || null } };
 }
 
+/**
+ * 用户反馈：AI 密钥明明配置对了（Settings → AI 偏好 里也确认显示了具体模型名），
+ * 但整理一直不成功，而客户端看到的错误信息永远是"整理暂时没有完成"这句固定文案——
+ * 真正的上游错误（Google/OpenAI/... 接口返回的具体原因，比如密钥格式不对、模型名不存在、
+ * 配额用尽、schema 不被支持等）在 fetchJson() 里其实已经被捕获到 error.upstreamMessage /
+ * error.status 上了，只是从来没有从 functions/api/ai/*.js 传回给客户端——等于诊断信息
+ * 一直在，只是没人把它读出来。这里统一拼接成一句可读的诊断文案，不泄露密钥本身
+ * （密钥不会出现在任何上游错误信息里），只是把"上游到底说了什么"如实转述出来。
+ * @param {Error & {status?: number, upstreamMessage?: string}} error
+ * @param {string} fallbackMessage
+ */
+export function describeAiError(error, fallbackMessage) {
+  const detail = error?.upstreamMessage
+    ? `${error.status ? `HTTP ${error.status}：` : ""}${error.upstreamMessage}`
+    : typeof error?.status === "number"
+      ? `HTTP ${error.status}`
+      // 上游都没走到（网络错误、超时等），error.message 本身通常已经有诊断价值，
+      // 但排除掉我们自己在 fetchJson 里生成的占位符（"ai_upstream_400" 这种），避免
+      // 重复展示一句没有信息量的内部错误码。
+      : error?.message && !/^ai_upstream_\d+$/.test(error.message)
+        ? error.message.slice(0, 200)
+        : "";
+  return detail ? `${fallbackMessage}（${detail}）` : fallbackMessage;
+}
+
 export async function requestAiAnalysis({ provider, title, rawText, env = process.env, fetchImpl = fetch }) {
   if (typeof rawText !== "string" || !rawText.trim() || rawText.length > 20000) throw new Error("invalid_ai_input");
   const selected = provider || listAiProviders(env).active;

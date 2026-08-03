@@ -132,3 +132,79 @@
 ### 测试
 
 本轮改动同样是 CSS + app.js 无独立单测的部分，全量测试保持 254 pass / 0 fail（`node --check` 语法检查、CSS 花括号配对另行确认无误）。海报比例与"AI 建议卡片"按钮的实际观感仍需要你在真机上确认——这次换了完全不依赖 flex 循环推导的写法，理论上不应该再出现"越改越窄"的情况，但我这边还是没有浏览器可以自己截图验证。
+
+---
+
+## 补丁 1 第四轮（真机截图反馈：PC 正常、安卓上下拉伸变形；AI 密钥更新未生效）
+
+### #1：真正的根因找到了
+
+前三轮一直在"要不要靠 flex 从高度反推宽度"上打转，这轮才发现漏掉的是完全不同方向的一个问题：`.record-card-button` 上有 `align-items: stretch`，这个属性会**默认继承给所有子元素**，而 `.record-poster` 一直没有自己的 `align-self` 去覆盖它。所以即使第三轮把宽度改成固定 108px、用 `aspect-ratio: 2/3` 算出 162px 高度，父级的 `stretch` 还是会在布局时把海报的高度强行改写成"卡片实际有多高"，而宽度还锁死在 108px——比例因此被破坏，看起来就是"上下被拉伸"。
+
+为什么 PC 正常、手机不正常：桌面宽视口下文字不容易换行，卡片高度本来就接近 162px，拉伸幅度很小、不明显；手机窄视口下标题/场次/徽章更容易换行，卡片被撑得更高，同一个 108px 宽的盒子被拉伸得更厉害，问题才会明显地暴露出来——你的判断方向（"卡片长宽比在 PC 和手机上不一致"）是对的，只是不一致的原因是这个继承来的 `stretch`，不是响应式断点设置错了。
+
+修复：给 `.record-poster` 显式加上 `align-self: flex-start`，让它使用自己算好的 108×162 尺寸，不再被父级的 `stretch` 覆盖。现在无论卡片实际渲染多高、无论 PC 还是手机，海报的宽高比都是恒定的，不会再变形。
+
+### #2：AI 密钥更新为什么没生效
+
+先把你的猜测排除掉：**不是"APP 文件里记录的 Gemini API 没有一起更新"**——我搜了整个仓库，确认代码里任何地方都不存在硬编码的 API Key（`src/ai-providers.js` 里密钥只通过 `context.env.GEMINI_API_KEY` 这种方式，在每次请求时从 Cloudflare 的环境变量里现读，不会被写进代码、缓存或 IndexedDB）。所以密钥内容本身不可能"和文件不同步"。
+
+真正需要确认的是**改的地方对不对**。这个项目里有两个完全不同的 Cloudflare 配置区域，容易混淆：
+
+1. **D1** —— 只是这个 App 用来同步你的观影记录/作品数据的 SQL 数据库（`wrangler.toml` 里 `[[d1_databases]]` 那一块，`binding = "DB"`），和 AI 密钥完全无关，D1 的设置页面里不会有、也不应该有 Gemini API Key 这个东西。
+2. **环境变量 / Secrets** —— AI 密钥应该配置在这里，路径是 Cloudflare 控制台里你这个 Pages 项目的 **Settings → Environment variables**（不是 D1 的设置页）。变量名必须完全是 `GEMINI_API_KEY`（区分大小写，参考仓库里 `.dev.vars.example` 的命名），如果之前是加在别的名字下（比如漏了 `_API_KEY` 后缀、或者大小写不同），代码读不到就会一直显示"尚未配置"。
+
+如果名字和位置都确认没问题，还有两个常见的坑：
+- Cloudflare Pages 的环境变量通常分 **Production** 和 **Preview** 两套，你要改的是你实际访问的那个域名对应的那一套，改错了套用不上。
+- 少数情况下改了环境变量后需要**重新触发一次部署**才会应用到已经构建好的 Functions。
+
+最快的自查方法，不用等我：打开 App → 右上角 ⋯ → 设置 → "AI 偏好"，看 Gemini 那一行——如果显示的是模型名字（比如 `gemini-2.0-flash-lite`），说明服务端已经识别到密钥了，那问题就在别的环节（可以再叫我看）；如果还是显示"尚未配置密钥"，说明 Cloudflare 那边的环境变量还没生效，需要按上面几点重新检查。
+
+### 涉及文件（第四轮）
+
+| 文件 | 改动 |
+|---|---|
+| `styles/app.css` | `.record-poster` 补上 `align-self: flex-start`，不再被父级 `.record-card-button` 的 `align-items: stretch` 覆盖 |
+| `index.html`/`sw.js` | 版本号再次 bump：app.css v23→v24，Service Worker shell 缓存 v24→v25 |
+
+第 2 项是 Cloudflare 项目配置问题，不涉及代码改动；已在仓库里核实过没有硬编码密钥（`wrangler.toml`、`.dev.vars.example` 均已核对）。
+
+### 测试
+
+本轮只改了一处 CSS 属性，全量测试保持 254 pass / 0 fail，CSS 花括号配对确认无误。
+
+---
+
+## 补丁 1 第五轮（用户提供 Cloudflare 环境变量截图，证明第四轮的"配置位置"判断是错的）
+
+用户在 Cloudflare Pages 的 Variables and secrets 里明确展示了 `GEMINI_API_KEY` 已经配在正确的位置（不是 D1），App 的"AI 偏好"设置里也确实显示了具体的模型名字——说明第四轮"D1 和环境变量搞混了"这个判断是错的，问题出在别处。
+
+### 真正找到的问题：诊断信息一直存在，但从来没有传回给用户
+
+重新逐行核对 `src/ai-providers.js` → `functions/api/ai/analyze.js` 这条链路，发现一个实实在在的代码缺口：`fetchJson()`（`src/ai-providers.js`）在请求 Gemini/OpenAI/... 失败时，其实已经把上游接口返回的**具体状态码和错误信息**记在了 `error.status` / `error.upstreamMessage` 上（比如 Google 会返回"API key not valid"、"model not found"、"quota exceeded"这类具体原因）——但 `functions/api/ai/analyze.js` 的 catch 分支从来没有读过这两个字段，只要不是"格式错误"或"没配置"这两种已知情况，一律回一句固定文案"整理暂时没有完成，原文已经保留"。也就是说，即便请求失败的具体原因一直都被程序拿到了，也从来没有人把它写进最终返回给你的那句话里——上一轮我加的"显示 analysis_error"那个改动，看到的也只会是这句没有信息量的固定文案，帮不上真正的诊断。
+
+修复：新增 `describeAiError()`（`src/ai-providers.js`），把 `error.status`/`error.upstreamMessage`（或者网络层错误的 `error.message`）拼进最终返回给客户端的提示文案里，`functions/api/ai/analyze.js` 和 `functions/api/ai/recommendation.js` 都接入了这个函数。不会泄露密钥本身（密钥不会出现在任何上游错误信息里，这类错误信息本来就是"密钥无效/模型不存在/配额超限"这种诊断性文字）。
+
+**麻烦你现在再点一次"AI 建议卡片"或"重新整理"，把详情页里显示出来的具体错误文案发给我**——这次应该不再是"整理暂时没有完成"这句空话，而是类似"HTTP 400：API key not valid"这种具体原因，看到这句话基本就能确定真正卡在哪一步了。
+
+另外提醒一点（不确定，仅供你自己核对）：截图里 `GEMINI_API_KEY` 的值是以 `AQ.Ab8...` 开头的，我记忆中 Google 的 API Key 通常是 `AIza` 开头的一串；如果这个值其实是别的类型的凭证（比如 OAuth token）被误当成 API Key 填了进去，也会导致"密钥位置配对了、但内容本身无效"。这一点不确定是否已经变化，等这次的具体报错文案出来后可以互相印证。
+
+### 涉及文件（第五轮）
+
+| 文件 | 改动 |
+|---|---|
+| `src/ai-providers.js` | 新增 `describeAiError()`：把上游错误的状态码/具体信息拼接进最终提示文案 |
+| `functions/api/ai/analyze.js`、`functions/api/ai/recommendation.js` | catch 分支改用 `describeAiError()`，不再对所有上游失败都返回同一句固定文案 |
+| `tests/ai-providers.test.mjs` | 新建，5 条测试覆盖 `describeAiError()` 各种输入组合 |
+
+### 测试
+
+净增 5 条（`tests/ai-providers.test.mjs`），254 → 259，全部通过：
+
+```
+# tests 259
+# pass 259
+# fail 0
+```
+
+这一轮是后端 Cloudflare Functions 的改动，不涉及前端静态资源，未做 `index.html`/`sw.js` 的版本号 bump。

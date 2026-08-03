@@ -1,4 +1,4 @@
-import { requestAiAnalysis } from "../../../src/ai-providers.js";
+import { requestAiAnalysis, describeAiError } from "../../../src/ai-providers.js";
 
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -42,7 +42,9 @@ export async function onRequest(context) {
           ? "这条记录暂时无法整理"
           : notConfigured
             ? "所选整理服务尚未配置"
-            : "整理暂时没有完成，原文已经保留"
+            // 密钥配置对了但一直失败时，真正的原因（模型名不存在/配额用尽/schema 被拒绝等）
+            // 需要能传回客户端才诊断得出来，不能一直只显示这句兜底文案。
+            : describeAiError(error, "整理暂时没有完成，原文已经保留")
       }
     );
   }
