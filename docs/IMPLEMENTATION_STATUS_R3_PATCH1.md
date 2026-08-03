@@ -208,3 +208,41 @@
 ```
 
 这一轮是后端 Cloudflare Functions 的改动，不涉及前端静态资源，未做 `index.html`/`sw.js` 的版本号 bump。
+
+---
+
+## 补丁 1 第六轮（拿到具体报错后，真正的根因）
+
+上一轮加的诊断信息终于把真实原因暴露出来了：
+
+```
+HTTP 404：This model models/gemini-2.0-flash-lite is no longer available.
+Please update your code to use a newer model...
+```
+
+和你的猜测、和我之前怀疑的密钥格式都无关——**是代码里写死的默认模型名 `gemini-2.0-flash-lite` 被 Google 下线了**，不是配置问题，是这份代码本身过期了。用户没有单独设置 `GEMINI_MODEL` 环境变量，所以一直落到这个已经失效的默认值上。
+
+联网核实了一下现状（Google 2026 年中把 Interactions API 立为 Gemini 的主入口，`generateContent` 变成"legacy 但仍完全支持"，`gemini-2.0-flash-lite` 已经不在服务列表里；当前同档位、仍在正常服务的是 `gemini-3.5-flash-lite`）：
+
+- `src/ai-providers.js` 里 Gemini 的 `defaultModel` 从 `gemini-2.0-flash-lite` 改成 `gemini-3.5-flash-lite`——同一个"flash-lite"档位（便宜、快，适合这种结构化整理任务）的现行替代型号，继续走 `generateContent` 端点（这个端点本身没有下线，只是模型名字过期了），没有改去 Google 新推的 Interactions API——那是请求/响应结构完全不同的另一套契约（角色消息变成"typed steps"），为了修一个型号名过期的问题去重写整个契约不划算，风险和收益不成比例。
+- 顺带核实到 `gemini-3.5-flash-lite` 不支持自定义 `temperature`/`top-K`/`top-P`（现在传了会被静默忽略，官方文档写明未来世代会直接报 400），所以把 `callGemini()` 里原来写死的 `temperature: 0.1` 去掉了——原本靠它保证输出保守，现在完全靠 `AI_SYSTEM_PROMPT` 里那组"硬规则"（逐字证据、态度判定标准等）来保证，不依赖 temperature。
+
+**这轮改完之后，麻烦你再点一次"AI 建议卡片"确认能不能正常出结果。** OpenAI/Anthropic/DeepSeek/Kimi 那几个默认模型名这次没有联网逐一核实——你目前只配置了 Gemini 的密钥，其余几个没有实际调用到，如果以后切换到别的供应商发现同类报错，是同一个"默认模型名过期"的问题，思路一样。
+
+### 涉及文件（第六轮）
+
+| 文件 | 改动 |
+|---|---|
+| `src/ai-providers.js` | Gemini 默认模型 `gemini-2.0-flash-lite` → `gemini-3.5-flash-lite`；`callGemini()` 去掉不再支持的 `temperature` 参数 |
+
+### 测试
+
+未新增测试（这是一处纯配置值修正，没有可单测的新逻辑分支），全量测试保持 259 pass / 0 fail。
+
+### 参考来源
+
+- [Interactions API 总览 — Google AI for Developers](https://ai.google.dev/gemini-api/docs/interactions-overview)
+- [Migrating to the Interactions API — Google AI for Developers](https://ai.google.dev/gemini-api/docs/migrate-to-interactions)
+- [Gemini API 模型列表 — Google AI for Developers](https://ai.google.dev/gemini-api/docs/models)
+- [What's new in Gemini 3.5 Flash（temperature 参数限制）— Google AI for Developers](https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.5)
+- [Gemini 3.6 Flash & 3.5 Flash-Lite 开发者指南 — DEV Community](https://dev.to/googleai/gemini-36-flash-35-flash-lite-developer-guide-268i)

@@ -9,7 +9,12 @@ import {
 } from "./ai.js";
 
 export const AI_PROVIDERS = {
-  gemini: { label: "Gemini", keyName: "GEMINI_API_KEY", modelName: "GEMINI_MODEL", defaultModel: "gemini-2.0-flash-lite" },
+  // gemini-2.0-flash-lite 已被 Google 下线（2026-08 实测报错 HTTP 404 "no longer available"）。
+  // 换成同一档位（flash-lite，便宜/快，适合这种结构化整理任务）里目前仍在正常服务的
+  // gemini-3.5-flash-lite。仍然走 generateContent 端点（该端点本身尚未下线，只是模型
+  // 名字过期了），没有切到 Google 新推的 Interactions API——那是请求/响应结构完全不同的
+  // 另一套契约，为了修一个模型名过期的问题去重写整个请求契约，风险和改动量不成比例。
+  gemini: { label: "Gemini", keyName: "GEMINI_API_KEY", modelName: "GEMINI_MODEL", defaultModel: "gemini-3.5-flash-lite" },
   openai: { label: "ChatGPT / OpenAI", keyName: "OPENAI_API_KEY", modelName: "OPENAI_MODEL", defaultModel: "gpt-5.6-sol" },
   anthropic: { label: "Claude", keyName: "ANTHROPIC_API_KEY", modelName: "ANTHROPIC_MODEL", defaultModel: "claude-sonnet-4-6" },
   deepseek: { label: "DeepSeek", keyName: "DEEPSEEK_API_KEY", modelName: "DEEPSEEK_MODEL", defaultModel: "deepseek-v4-flash" },
@@ -86,8 +91,10 @@ async function callGemini(config, input, fetchImpl, options) {
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: contract.systemPrompt }] },
         contents: [{ role: "user", parts: [{ text: contract.inputText || userPayload(input) }] }],
+        // gemini-3.5-flash-lite 不支持自定义 temperature/top-K/top-P：现在传了会被静默忽略，
+        // 官方文档说未来的模型世代会直接报 400。索性不传——本来靠的也是 AI_SYSTEM_PROMPT
+        // 里那组"硬规则"（逐字证据、态度判定标准等）来保证输出保守/一致，不依赖 temperature。
         generationConfig: {
-          temperature: 0.1,
           maxOutputTokens: 4096,
           responseMimeType: "application/json",
           responseSchema: geminiSchema(contract.schema)
