@@ -246,3 +246,23 @@ Please update your code to use a newer model...
 - [Gemini API 模型列表 — Google AI for Developers](https://ai.google.dev/gemini-api/docs/models)
 - [What's new in Gemini 3.5 Flash（temperature 参数限制）— Google AI for Developers](https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.5)
 - [Gemini 3.6 Flash & 3.5 Flash-Lite 开发者指南 — DEV Community](https://dev.to/googleai/gemini-36-flash-35-flash-lite-developer-guide-268i)
+
+---
+
+## 补丁 1 第七轮（AI 能正常出结果之后发现的新缺口：原文没有编辑入口）
+
+用户反馈：卡片生成之后，感想原文（`record.rawText`）在详情页里一直是纯静态的 `<p>` 文字，没有任何入口能回去改——想加几句话都做不到。核实后确认是真实缺口，`src/app.js` 里之前确实没有任何路径能修改已保存的 `rawText`。
+
+处理：原文上方新增"编辑原文"按钮（`data-action="edit-impression"`），打开一个和记忆卡片编辑同风格的底部弹层（`impressionEditorOverlay()`），一个 textarea + 保存按钮。保存只更新 `rawText`，不会连带清空已经确认过的 `attitude`/`recommendation`/`cards`——这些是分开的字段，改几句原文不该把它们一起抹掉；弹层里加了一行提示，告诉用户如果这次改动比较大，保存后可以再点一次"AI 建议卡片"（上一轮加的入口）重新看一遍新原文。
+
+### 涉及文件（第七轮）
+
+| 文件 | 改动 |
+|---|---|
+| `src/app.js` | 新增 `impressionEditorOverlay()`；原文上方新增"编辑原文"按钮；`submit` 监听器拆分出 `impression-form` 分支；新增 `edit-impression` action 处理 |
+| `styles/app.css` | 复用 `.card-editor` 系列选择器样式给 `.impression-editor`；新增 `.impression-actions`、`.impression-editor-hint` |
+| `index.html`/`sw.js` | 版本号再次 bump：app.css v24→v25，app.js v24→v25，Service Worker shell 缓存 v25→v26 |
+
+### 测试
+
+未新增单测（app.js 无独立单测覆盖的 DOM 层），全量测试保持 259 pass / 0 fail，`node --check` 语法检查、CSS 花括号配对确认无误。

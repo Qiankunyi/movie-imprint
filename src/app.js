@@ -569,6 +569,7 @@ function renderDetail() {
       ${record.status === "raw_only_confirmed" ? `<section class="raw-only-status" data-testid="raw-only-status"><div><b>${record.analysis_status === "running" ? "正在安静整理" : "原文已经保存"}</b><p>${record.analysis_status === "running" ? "可以先离开，完成后会出现在这里。" : record.analysis_status === "failed" ? "上次没有整理完成，原文不受影响。" : "结构整理暂未完成，不影响这条记录。"}</p>${record.analysis_status === "failed" && record.analysis_error ? `<small class="raw-only-error" data-testid="analysis-error">原因：${escapeHtml(record.analysis_error)}</small>` : ""}</div><div class="raw-only-actions"><button type="button" data-action="retry-local-analysis" ${record.analysis_status === "running" ? "disabled" : ""}>${record.analysis_status === "failed" ? "重新整理" : "稍后整理"}</button>${record.analysis_status !== "running" ? `<button type="button" class="text-action" data-action="skip-to-manual" data-testid="skip-to-manual">不等了，我自己选</button>` : ""}</div></section>` : `<button class="judgement-summary" type="button" data-action="open-attitude" data-testid="attitude-summary">
         <span class="judgement-summary-icon" aria-hidden="true">${icon("edit")}</span><span class="judgement-summary-copy"><small>个人态度与推荐 · ${record.attitude ? "点击修改" : "点击选择"}</small><b>${escapeHtml(attitudeLabel(record.attitude))} · ${recommendation}</b></span>${icon("chevron")}
       </button>`}
+      <div class="impression-actions"><button class="text-action" type="button" data-action="edit-impression" data-testid="edit-impression">${icon("edit")}编辑原文</button></div>
       <p class="impression">${escapeHtml(record.rawText)}</p>
       ${viewingEventsSection(state.viewingEvents)}
       ${record.status === "raw_only_confirmed" ? "" : `<div class="memory-heading"><h2>留下来的片段</h2><div class="memory-heading-actions"><button class="text-action" type="button" data-action="request-ai-cards" data-testid="request-ai-cards" ${record.cardSuggestionStatus === "running" ? "disabled" : ""}>${record.cardSuggestionStatus === "running" ? "AI 整理中…" : "AI 建议卡片"}</button><button class="text-action add-card" type="button" data-action="add-card">＋ 添加卡片</button></div></div>${record.cardSuggestionStatus === "failed" && record.cardSuggestionError ? `<p class="card-suggestion-error" data-testid="card-suggestion-error">AI 建议没有完成：${escapeHtml(record.cardSuggestionError)}</p>` : ""}${memoryCard(record)}`}
@@ -730,6 +731,28 @@ function cardEditorOverlay(record) {
           ${canDelete ? `<button type="button" class="danger-text-action" data-action="delete-card" data-card-id="${escapeHtml(editing.card_id)}" data-testid="delete-card">删除</button>` : "<span></span>"}
           <button class="sheet-done" type="submit">${editing ? "保存修改" : "添加卡片"}</button>
         </div>
+      </form>
+    </section>
+  </div>`;
+}
+
+/**
+ * 用户反馈：卡片生成之后，原文完全是静态文字，没有任何入口能回去补几句话——
+ * 这份记录的核心资产是原文本身，写完之后应该还能回来改，不该是一次性的。
+ * 编辑原文不会动 attitude/recommendation/cards——这些是分开、用户自己确认过的字段，
+ * 改几句原文不会连带把它们清空；如果这次改动比较大，可以再点一次「AI 建议卡片」
+ * 让 AI 看一遍新原文，重新给建议（不会覆盖已有卡片，见 requestAiCards()）。
+ */
+function impressionEditorOverlay(record) {
+  return `<div class="overlay" data-testid="impression-editor">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭编辑"></button>
+    <section class="bottom-sheet impression-editor" role="dialog" aria-modal="true" aria-labelledby="impression-editor-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">感想原文</span><h2 id="impression-editor-title">改几句话</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <form id="impression-form">
+        <textarea name="rawText" required placeholder="看完之后，先把还没消失的感觉写下来">${escapeHtml(record.rawText)}</textarea>
+        <p class="impression-editor-hint">已经生成的态度、推荐和记忆卡片不会被这次修改清空；如果这次改动比较大，保存后可以再点一次"AI 建议卡片"重新看一遍。</p>
+        <button class="sheet-done" type="submit">保存修改</button>
       </form>
     </section>
   </div>`;
@@ -929,6 +952,8 @@ function render() {
         ? exportOverlay(record)
       : state.overlay === "record-menu" && record
         ? recordMenuOverlay(record)
+      : state.overlay === "impression" && record
+        ? impressionEditorOverlay(record)
         : "";
   app.innerHTML = `${base}${overlay}`;
   document.body.classList.toggle("overlay-open", Boolean(state.overlay));
@@ -1850,6 +1875,9 @@ app.addEventListener("click", async (event) => {
   } else if (action === "open-record-menu") {
     state.overlay = "record-menu";
     render();
+  } else if (action === "edit-impression") {
+    state.overlay = "impression";
+    render();
   } else if (action === "confirm-delete-record") {
     const record = currentRecord();
     if (!record) return;
@@ -1985,36 +2013,50 @@ app.addEventListener("change", async (event) => {
 });
 
 app.addEventListener("submit", async (event) => {
-  if (event.target.id !== "card-form") return;
-  event.preventDefault();
-  const data = new FormData(event.target);
-  const content = String(data.get("content") || "").trim();
-  if (!content) return;
-  const id = event.target.dataset.cardId;
-  await updateRecord((record) => {
-    if (id) {
-      const card = record.cards.find((item) => item.card_id === id);
-      if (card?.provenance === "ai_suggested") {
-        record.aiSuggestionHistory ||= [];
-        record.aiSuggestionHistory.push({ suggestionType: "memory_card", suggestionId: card.card_id, action: "user_modified", snapshot: { ...card }, at: new Date().toISOString() });
-        card.provenance = "user_modified";
+  if (event.target.id === "card-form") {
+    event.preventDefault();
+    const data = new FormData(event.target);
+    const content = String(data.get("content") || "").trim();
+    if (!content) return;
+    const id = event.target.dataset.cardId;
+    await updateRecord((record) => {
+      if (id) {
+        const card = record.cards.find((item) => item.card_id === id);
+        if (card?.provenance === "ai_suggested") {
+          record.aiSuggestionHistory ||= [];
+          record.aiSuggestionHistory.push({ suggestionType: "memory_card", suggestionId: card.card_id, action: "user_modified", snapshot: { ...card }, at: new Date().toISOString() });
+          card.provenance = "user_modified";
+        }
+        Object.assign(card, { type: data.get("type"), title: String(data.get("title") || "").trim(), content });
+      } else {
+        record.cards.push({
+          card_id: createId("card"),
+          type: data.get("type"),
+          title: String(data.get("title") || "").trim(),
+          content,
+          is_core: false,
+          order: record.cards.length,
+          provenance: "user_added"
+        });
       }
-      Object.assign(card, { type: data.get("type"), title: String(data.get("title") || "").trim(), content });
-    } else {
-      record.cards.push({
-        card_id: createId("card"),
-        type: data.get("type"),
-        title: String(data.get("title") || "").trim(),
-        content,
-        is_core: false,
-        order: record.cards.length,
-        provenance: "user_added"
-      });
-    }
-  });
-  state.overlay = null;
-  render();
-  announce(id ? "记忆卡片已更新" : "记忆卡片已添加");
+    });
+    state.overlay = null;
+    render();
+    announce(id ? "记忆卡片已更新" : "记忆卡片已添加");
+    return;
+  }
+  if (event.target.id === "impression-form") {
+    // 反馈：卡片生成之后完全没有回来改原文的入口。编辑不动 attitude/recommendation/
+    // cards——那些是分开确认过的字段，不因为改了几句原文就被清空。
+    event.preventDefault();
+    const data = new FormData(event.target);
+    const rawText = String(data.get("rawText") || "").trim();
+    if (!rawText) return;
+    await updateRecord((record) => { record.rawText = rawText; });
+    state.overlay = null;
+    renderPreservingScroll();
+    announce("原文已更新");
+  }
 });
 
 window.addEventListener("popstate", () => {

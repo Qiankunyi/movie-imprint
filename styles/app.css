@@ -780,6 +780,13 @@ svg {
   color: var(--outline);
 }
 
+/* 反馈：卡片生成之后，原文一直是纯静态文字，没有任何入口能回去补几句话。 */
+.impression-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-1);
+}
+
 .impression {
   margin: 0 0 var(--space-8);
   color: var(--ink);
@@ -1493,14 +1500,16 @@ svg {
 }
 
 .judgement-sheet,
-.card-editor {
+.card-editor,
+.impression-editor {
   padding-right: var(--space-5);
   padding-bottom: calc(var(--space-5) + env(safe-area-inset-bottom));
   padding-left: var(--space-5);
 }
 
 .judgement-sheet h2,
-.card-editor h2 {
+.card-editor h2,
+.impression-editor h2 {
   margin: 0 0 var(--space-2);
   font: var(--type-title);
 }
@@ -1833,7 +1842,8 @@ svg {
 .recommend-note input,
 .card-editor input,
 .card-editor select,
-.card-editor textarea {
+.card-editor textarea,
+.impression-editor textarea {
   width: 100%;
   min-height: var(--touch);
   padding: 11px var(--space-3);
@@ -1845,7 +1855,8 @@ svg {
 }
 
 .judgement-sheet > .sheet-done,
-.card-editor .sheet-done {
+.card-editor .sheet-done,
+.impression-editor .sheet-done {
   display: block;
   margin: var(--space-5) 0 0 auto;
 }
@@ -1855,7 +1866,8 @@ svg {
   margin-bottom: var(--space-4);
 }
 
-.card-editor form {
+.card-editor form,
+.impression-editor form {
   display: grid;
   gap: var(--space-3);
 }
@@ -1877,6 +1889,17 @@ svg {
 .card-editor textarea {
   min-height: 136px;
   resize: vertical;
+}
+
+.impression-editor textarea {
+  min-height: 220px;
+  resize: vertical;
+}
+
+.impression-editor-hint {
+  margin: 0;
+  color: var(--ink-soft);
+  font: var(--type-meta);
 }
 
 .fatal-error {
@@ -1933,7 +1956,8 @@ svg {
   }
 
   .judgement-sheet,
-  .card-editor {
+  .card-editor,
+  .impression-editor {
     padding-right: var(--space-4);
     padding-left: var(--space-4);
   }
