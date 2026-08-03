@@ -10,6 +10,10 @@
  *   - 线上／在家卡：普通描边
  *   - 补充记录卡（record.record_kind === "supplement"）：左侧细竖线，日期弱化
  *   - 草稿卡：维持「继续写」，有 captureContext 时显示海报与作品名
+ *
+ * R3 补丁 1（用户反馈）：海报从 72×108 的小缩略图改为占据卡片整个左侧、随卡片高度
+ * 拉伸铺满（参考票务 App 的海报占位比例）；"仅保存原文"/"待确认作品"状态从占位置的
+ * 底部文字行移到海报左下角的小标签，不再挤占卡片footer 的视觉空间。
  */
 
 import { attitudeLabel, formatDate } from "./domain.js";
@@ -42,7 +46,22 @@ function eventDateLabel(event, { withTime = false } = {}) {
   return time ? `${ymd} (${weekday}) ${time}` : `${ymd} (${weekday})`;
 }
 
-function posterMarkup(work, { buildPosterUrl } = {}) {
+/**
+ * 海报左下角的小标签：只在"仅保存原文"（含正在整理／已保存两种子状态）或
+ * "待确认作品"时出现，叠加在海报图片/占位块上，不再占用卡片 footer 的一整行。
+ */
+function posterStatusRibbon(record, work) {
+  if (record?.status === "raw_only_confirmed") {
+    const label = record.analysis_status === "running" ? "正在整理" : "仅保存原文";
+    return `<span class="record-poster-status" data-testid="work-match-status"><span class="status-dot"></span>${label}</span>`;
+  }
+  if (work?.match?.status === "needs_confirmation") {
+    return `<span class="record-poster-status" data-testid="work-match-status"><span class="status-dot"></span>待确认作品</span>`;
+  }
+  return "";
+}
+
+function posterMarkup(work, record, { buildPosterUrl } = {}) {
   const title = work?.title || "";
   const initial = escapeHtml((title.trim() || "?").charAt(0));
   const hasPoster = Boolean(work?.identity_status === "matched" && work?.poster_subject_id && typeof buildPosterUrl === "function");
@@ -50,6 +69,7 @@ function posterMarkup(work, { buildPosterUrl } = {}) {
   return `<div class="record-poster" data-testid="record-poster">
     <span class="record-poster-fallback" aria-hidden="true">${initial}</span>
     ${hasPoster ? `<img class="record-poster-img" src="${escapeHtml(src)}" alt="" loading="lazy" />` : ""}
+    ${posterStatusRibbon(record, work)}
   </div>`;
 }
 
@@ -61,30 +81,20 @@ function badgeChipMarkup(badge) {
   return `<span class="format-badge ${badge.style} tone-${badge.tone}" data-badge-key="${escapeHtml(badge.key)}">${badge.icon ? `<i class="format-badge-icon icon-${badge.icon}" aria-hidden="true"></i>` : ""}${escapeHtml(badge.label)}</span>`;
 }
 
-function attentionLine(record, work) {
-  if (record.status === "raw_only_confirmed") {
-    return `<span class="record-status attention" data-testid="work-match-status"><span class="status-dot"></span>${record.analysis_status === "running" ? "正在整理" : "仅保存原文"}</span>`;
-  }
-  if (work?.match?.status === "needs_confirmation") {
-    return `<span class="record-status attention" data-testid="work-match-status"><span class="status-dot"></span>待确认作品</span>`;
-  }
-  return "<span></span>";
-}
-
 function draftCardMarkup(record, { buildPosterUrl } = {}) {
   const ctx = record.captureContext;
   const title = ctx?.workTitle?.trim();
   const posterWork = title ? { title, identity_status: ctx.subjectId ? "matched" : "local_only", poster_subject_id: ctx.subjectId || null } : null;
   return `<article class="record-card draft-card" data-testid="draft-card">
     <button class="record-card-button" type="button" data-action="resume-draft" data-testid="resume-draft">
-      <div class="record-card-row">
-        ${posterWork ? posterMarkup(posterWork, { buildPosterUrl }) : ""}
+      ${posterWork ? posterMarkup(posterWork, null, { buildPosterUrl }) : ""}
+      <div class="record-card-body">
         <div class="record-card-main">
           <div class="record-meta"><time>未完成的记录</time><span class="record-draft-label">继续写</span></div>
           <h2>${escapeHtml(title || "继续写")}</h2>
         </div>
+        <div class="record-card-footer draft-footer"><span class="record-status" data-testid="draft-status"><span class="status-dot"></span>已自动保存在本机</span><span></span></div>
       </div>
-      <div class="record-card-footer"><span class="record-status" data-testid="draft-status"><span class="status-dot"></span>已自动保存在本机</span><span></span></div>
     </button>
   </article>`;
 }
@@ -121,18 +131,17 @@ function viewingCardMarkup(record, work, event, { buildPosterUrl } = {}) {
 
   return `<article class="${cardClasses}" data-testid="record-card">
     <button class="record-card-button" type="button" data-action="open-record" data-testid="record-${record.id}" data-record-id="${record.id}">
-      <div class="record-card-row">
-        ${posterMarkup(work, { buildPosterUrl })}
+      ${posterMarkup(work, record, { buildPosterUrl })}
+      <div class="record-card-body">
         <div class="record-card-main">
           <h2>${escapeHtml(title)}</h2>
           <div class="record-card-meta-line">${escapeHtml(dateLabel)}</div>
           ${locationLabel ? `<div class="record-card-meta-line">${escapeHtml(locationLabel)}</div>` : ""}
           ${badgeChips ? `<div class="record-badge-row">${badgeChips}</div>` : ""}
         </div>
-      </div>
-      <div class="record-card-footer">
-        ${attentionLine(record, work)}
-        ${attitudeTagMarkup(record)}
+        <div class="record-card-footer">
+          ${attitudeTagMarkup(record)}
+        </div>
       </div>
     </button>
   </article>`;
@@ -153,16 +162,15 @@ function supplementCardMarkup(record, work, { buildPosterUrl } = {}) {
   const distance = supplementDistanceLabel(work, record);
   return `<article class="record-card supplement" data-testid="record-card">
     <button class="record-card-button" type="button" data-action="open-record" data-testid="record-${record.id}" data-record-id="${record.id}">
-      <div class="record-card-row">
-        ${posterMarkup(work, { buildPosterUrl })}
+      ${posterMarkup(work, record, { buildPosterUrl })}
+      <div class="record-card-body">
         <div class="record-card-main">
           <h2>${escapeHtml(title)}</h2>
           <div class="record-card-meta-line muted">补充记录${distance ? ` · 距首次观看 ${distance}` : ""}</div>
         </div>
-      </div>
-      <div class="record-card-footer">
-        <span></span>
-        ${attitudeTagMarkup(record)}
+        <div class="record-card-footer">
+          ${attitudeTagMarkup(record)}
+        </div>
       </div>
     </button>
   </article>`;

@@ -308,15 +308,19 @@ export function parseScreeningSegment(segment) {
   }
 
   // ── 放映制式 ──────────────────────────────────────────────────────────────
+  // 具体的银幕／放映规格排在前面，裸的 "Dolby"（可能只是 Dolby Atmos 音响系统，不代表
+  // Dolby Cinema 银幕规格）放最后兜底，避免它在同一段文本里抢在 ScreenX/IMAX 等真正的
+  // 银幕规格前面被误判（参见 src/event-types.js 顶部注释里的真实票务案例）。
   const formatPatterns = [
     /(?:上映方式|制式|スクリーン)[：:\s]*([^\n]+)/i,
-    /(Dolby\s*(?:Cinema|Atmos|Vision)?)/i,
     /(IMAX(?:\s*レーザー)?)/i,
+    /(ScreenX)/i,
     /(4DX(?:SCREEN)?)/i,
     /(MX4D)/i,
-    /(ScreenX)/i,
     /(TCX)/i,
-    /(BESTIA)/i
+    /(BESTIA)/i,
+    /(Dolby\s*Cinema)/i,
+    /(Dolby\s*(?:Atmos|Vision)?)/i
   ];
   let screeningFormat = formatFromTitle;
   if (!screeningFormat) {

@@ -129,3 +129,39 @@ test("无记录 → 渲染空状态插画与文案，不是白屏", () => {
   assert.match(html, /<img/);
   assert.match(html, /电影散场以后/);
 });
+
+// R3 补丁 1：海报改为占据卡片整个左侧（record-card-button 直接包住 poster + body，
+// 不再有把 poster 和文字都框进去、四周留白的 record-card-row）
+test("海报直接是 record-card-button 的第一个子元素，不再包在四周留白的 row 容器里", () => {
+  const { record, work, event } = cinemaRecord();
+  const html = recordCard(record, { work, event, buildPosterUrl });
+  assert.doesNotMatch(html, /record-card-row/);
+  assert.match(html, /<button class="record-card-button"[^>]*>\s*<div class="record-poster"/);
+});
+
+// R3 补丁 1：「仅保存原文」/「待确认作品」从 footer 的文字行改为叠加在海报角落的小标签，
+// 不再挤占 footer（footer 现在应该只剩下态度标签）
+test("仅保存原文 → 状态标签叠在海报上，不在 footer 里", () => {
+  const { record, work, event } = cinemaRecord({ record: { status: "raw_only_confirmed" } });
+  const html = recordCard(record, { work, event, buildPosterUrl });
+  assert.match(html, /<div class="record-poster"[^>]*>[\s\S]*?record-poster-status[\s\S]*?<\/div>/);
+  assert.match(html, /仅保存原文/);
+  const footerMatch = html.match(/<div class="record-card-footer">([\s\S]*?)<\/div>/);
+  assert.ok(footerMatch, "应有 record-card-footer");
+  assert.doesNotMatch(footerMatch[1], /仅保存原文|work-match-status/);
+});
+
+test("待确认作品 → 状态标签同样叠在海报上，不在 footer 里", () => {
+  const { record, event } = cinemaRecord();
+  const work = { title: "本地作品", identity_status: "local_only", poster_subject_id: null, match: { status: "needs_confirmation" } };
+  const html = recordCard(record, { work, event, buildPosterUrl });
+  assert.match(html, /待确认作品/);
+  const footerMatch = html.match(/<div class="record-card-footer">([\s\S]*?)<\/div>/);
+  assert.doesNotMatch(footerMatch[1], /待确认作品/);
+});
+
+test("正常记录（无异常状态）→ 海报上不渲染状态标签", () => {
+  const { record, work, event } = cinemaRecord();
+  const html = recordCard(record, { work, event, buildPosterUrl });
+  assert.doesNotMatch(html, /record-poster-status/);
+});

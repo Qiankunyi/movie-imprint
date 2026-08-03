@@ -60,13 +60,29 @@ test("重复的活动 key 去重后只出现一次", () => {
   assert.equal(overflow, 0);
 });
 
-test("高规格制式判定：IMAX/Dolby/4DX/MX4D/ScreenX 为高规格，2D 与未知不是", () => {
+test("高规格制式判定：IMAX/Dolby Cinema/4DX/MX4D/ScreenX 为高规格，2D 与未知不是", () => {
   assert.equal(isHighSpecFormat("IMAX"), true);
-  assert.equal(isHighSpecFormat("Dolby Atmos"), true);
+  assert.equal(isHighSpecFormat("Dolby Cinema"), true);
   assert.equal(isHighSpecFormat("4DX"), true);
   assert.equal(isHighSpecFormat("MX4D"), true);
   assert.equal(isHighSpecFormat("ScreenX"), true);
   assert.equal(isHighSpecFormat("2D"), false);
   assert.equal(isHighSpecFormat("35mm"), false);
   assert.equal(isHighSpecFormat(null), false);
+});
+
+// 回归：真实票务案例——「SCREENX with DolbyAtmos・字幕」曾被误标成「Dolby Cinema」。
+// Dolby Atmos 是很多普通厅也有的音响系统，不等于 Dolby Cinema 这个高端银幕规格；
+// 当一段文本里 ScreenX（银幕规格）与 Dolby Atmos（音响系统）同时出现时，应识别为 ScreenX。
+test("回归：银幕规格 + Dolby Atmos 音响系统组合 → 识别为银幕规格本身，不误判为 Dolby Cinema", () => {
+  const badge = formatBadge("SCREENX with DolbyAtmos・字幕");
+  assert.equal(badge.key, "screenx");
+  assert.notEqual(badge.key, "dolby");
+});
+
+test("纯 Dolby Atmos 音响系统（不含 Cinema）不再被误当成 Dolby Cinema 银幕规格", () => {
+  const badge = formatBadge("Dolby Atmos");
+  assert.notEqual(badge.key, "dolby");
+  assert.equal(badge.tone, "neutral");
+  assert.equal(isHighSpecFormat("Dolby Atmos"), false);
 });

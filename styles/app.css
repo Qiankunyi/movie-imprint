@@ -185,11 +185,14 @@ svg {
   border-left: 3px solid var(--accent);
 }
 
+/* R3 补丁 1：海报直接占据卡片整个左侧、随卡片高度拉伸（参考票务 App 的海报占位比例），
+   不再是四周留白里的一个小缩略图。button 本身变成横向 flex：海报贴边，文字区域单独留白。 */
 .record-card-button {
-  display: block;
+  display: flex;
   width: 100%;
-  min-height: 96px;
-  padding: var(--space-4);
+  min-height: 152px;
+  align-items: stretch;
+  padding: 0;
   text-align: left;
   background: transparent;
 }
@@ -198,19 +201,12 @@ svg {
   background: var(--surface-high);
 }
 
-.record-card-row {
-  display: flex;
-  gap: var(--space-3);
-  align-items: flex-start;
-}
-
 .record-poster {
   position: relative;
-  width: 72px;
-  height: 108px;
-  flex: 0 0 auto;
+  width: 112px;
+  flex: 0 0 112px;
+  align-self: stretch;
   overflow: hidden;
-  border-radius: 10px;
   background: var(--surface-high);
 }
 
@@ -220,7 +216,7 @@ svg {
   height: 100%;
   place-items: center;
   color: var(--ink-soft);
-  font: var(--type-title);
+  font: var(--type-display);
 }
 
 .record-poster-img {
@@ -231,10 +227,44 @@ svg {
   object-fit: cover;
 }
 
+/* R3 补丁 2：「仅保存原文」/「待确认作品」不再是 footer 里的一整行文字，改成叠在海报
+   左下角的小标签——不管卡片是否处于这些状态，footer 的布局都保持一致，不会因为多一行
+   文字而显得参差不齐。渐变衬底保证标签在任何海报图片/占位色块上都能看清楚。 */
+.record-poster-status {
+  position: absolute;
+  inset: auto 0 0 0;
+  z-index: 1;
+  display: flex;
+  padding: 4px 8px 5px;
+  align-items: center;
+  gap: 4px;
+  color: #fff;
+  background: linear-gradient(0deg, rgb(0 0 0 / 60%), rgb(0 0 0 / 0%) 100%);
+  font: var(--type-meta);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.record-poster-status .status-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--film);
+}
+
+/* 文字区域：与海报同高的一列，主内容顶部对齐、footer 贴底，卡片再高也不会松散 */
+.record-card-body {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+
 .record-card-main {
   display: grid;
   min-width: 0;
-  flex: 1;
   gap: 2px;
   align-content: start;
 }
@@ -324,12 +354,18 @@ svg {
   font: var(--type-meta);
 }
 
+/* 观影卡/补充卡的 footer 现在只剩下态度标签一个子元素（状态提示已经移到海报角落），
+   所以默认靠右；草稿卡的 footer 仍然是「本机自动保存」+ 占位符两个子元素，需要
+   space-between 让它们分居两端，见 .record-card-footer.draft-footer。 */
 .record-card-footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: var(--space-2);
-  margin-top: var(--space-3);
+}
+
+.record-card-footer.draft-footer {
+  justify-content: space-between;
 }
 
 .record-meta {
@@ -383,14 +419,6 @@ svg {
   gap: var(--space-2);
   color: var(--ink-soft);
   font: var(--type-meta);
-}
-
-.record-status.attention {
-  color: var(--film);
-}
-
-.record-status.attention .status-dot {
-  background: var(--film);
 }
 
 .status-dot {
@@ -855,6 +883,21 @@ svg {
   background: var(--accent-container);
 }
 
+/* 非 AI 建议卡片（用户自己添加/已保留/已修改）的删除入口：低调的文字按钮，
+   右对齐，不做成和「保留／删除建议」一样醒目的按钮组，避免和 AI 建议卡混淆。 */
+.card-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-3);
+}
+
+.danger-text-action {
+  padding: var(--space-1) 0;
+  color: var(--film);
+  background: transparent;
+  font: var(--type-label);
+}
+
 .memory-empty {
   min-height: 180px;
   padding: var(--space-6);
@@ -955,6 +998,58 @@ svg {
   height: 20px;
   flex: 0 0 auto;
   color: var(--accent-strong);
+}
+
+/* 「更多操作」里的删除入口——视觉上明显是破坏性操作，与 export-primary 的强调色区分开 */
+.danger-action {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 76px;
+  padding: var(--space-3);
+  margin: var(--space-3) 0;
+  text-align: left;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-card);
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface-container));
+}
+
+.danger-action:active {
+  background: color-mix(in srgb, var(--danger) 20%, var(--surface-container));
+}
+
+.danger-action-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #fff;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.danger-action-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.danger-action-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.danger-action-copy b {
+  color: var(--danger);
+  font: var(--type-label);
+}
+
+.danger-action-copy small {
+  color: var(--ink-soft);
+  font: var(--type-meta);
 }
 
 .toast {
@@ -1156,6 +1251,13 @@ svg {
 
 .raw-only-status > div {
   flex: 1;
+}
+
+.raw-only-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-1);
 }
 
 .raw-only-status b,
@@ -1772,7 +1874,12 @@ svg {
     font-size: 20px;
   }
 
-  .record-card-button {
+  .record-poster {
+    width: 92px;
+    flex-basis: 92px;
+  }
+
+  .record-card-body {
     padding: var(--space-3);
   }
 

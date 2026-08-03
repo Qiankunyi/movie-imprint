@@ -51,6 +51,18 @@ test("classifyBracketContent 对空内容返回 unknown", () => {
   assert.deepEqual(classifyBracketContent(""), { kind: "unknown", value: "" });
 });
 
+// 回归：真实票务案例——【SCREENX with DolbyAtmos・字幕】曾被整段原样存入 format，
+// 导致下游徽章把 "Dolby" 排在 "ScreenX" 前面而误标成 Dolby Cinema。
+// 现在应该只抽取真正的银幕规格关键词 "SCREENX"，丢掉音响系统与字幕标注的干扰文字。
+test("回归：括号内容同时含银幕规格与 Dolby Atmos 音响系统 → 只抽取银幕规格本身", () => {
+  assert.deepEqual(classifyBracketContent("SCREENX with DolbyAtmos・字幕"), { kind: "format", value: "SCREENX" });
+});
+
+test("回归：extractFormatAndTitle 对同一真实票务案例也只保留 ScreenX 制式", () => {
+  const { format } = extractFormatAndTitle("【SCREENX with DolbyAtmos・字幕】スパイダーマン：ブランド・ニュー・デイ");
+  assert.equal(format, "SCREENX");
+});
+
 test("work_type 与 event_types 不互相推导：other_event 不会被自动分类命中", () => {
   // EVENT_TYPES 表里 other_event 的正则列表为空，意味着它只能由用户手动选择，
   // 不会被 classifyBracketContent/extractEventTypes 自动匹配到。

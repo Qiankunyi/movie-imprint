@@ -159,7 +159,8 @@ const icons = {
   export: '<path d="M12 15V3m0 0L8 7m4-4 4 4"/><path d="M5 12v7h14v-7"/>',
   chevron: '<path d="m9 5 7 7-7 7"/>',
   share: '<path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v13"/>',
-  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/><path d="M10 11v6M14 11v6"/>'
 };
 
 // 单条记录导出：文件扩展名与 MIME 类型映射
@@ -398,9 +399,26 @@ function detailHeader(record) {
     <button class="icon-button" type="button" data-action="go-home" aria-label="返回记录流">${icon("back")}</button>
     <div class="detail-header-actions">
       <button class="icon-button" type="button" data-action="open-export" aria-label="导出这条记录">${icon("export")}</button>
-      <button class="icon-button" type="button" aria-label="更多（尚未接入）" disabled>${icon("more")}</button>
+      <button class="icon-button" type="button" data-action="open-record-menu" aria-label="更多操作" data-testid="open-record-menu">${icon("more")}</button>
     </div>
   </header>`;
+}
+
+/** R3 补丁 4：之前「更多」按钮完全没有接入，唯一能做的操作是删除这条记录。 */
+function recordMenuOverlay(record) {
+  const work = currentWork(record);
+  const title = work?.title || record.title || "这条记录";
+  return `<div class="overlay" data-testid="record-menu-sheet">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet record-menu-sheet" role="dialog" aria-modal="true" aria-labelledby="record-menu-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(title)}》</span><h2 id="record-menu-title">更多操作</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <button class="danger-action" type="button" data-action="confirm-delete-record" data-testid="delete-record">
+        <span class="danger-action-icon" aria-hidden="true">${icon("trash")}</span>
+        <span class="danger-action-copy"><b>删除这条记录</b><small>原文、记忆卡片与关联的观影场次都会一并删除，且无法恢复</small></span>
+      </button>
+    </section>
+  </div>`;
 }
 
 function exportOverlay(record) {
@@ -548,7 +566,7 @@ function renderDetail() {
       <div class="detail-title-row"><h1>${titleMarkup}</h1><span class="attitude-badge ${record.attitude ? "selected" : "empty"}"><i aria-hidden="true"></i>${escapeHtml(attitudeLabel(record.attitude))}</span></div>
       ${workMatchPanel(record)}
       ${record.aiWarnings?.length ? `<details class="analysis-warnings" ${record.cards?.length ? "" : "open"}><summary>整理提示</summary><ul>${record.aiWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></details>` : ""}
-      ${record.status === "raw_only_confirmed" ? `<section class="raw-only-status" data-testid="raw-only-status"><div><b>${record.analysis_status === "running" ? "正在安静整理" : "原文已经保存"}</b><p>${record.analysis_status === "running" ? "可以先离开，完成后会出现在这里。" : record.analysis_status === "failed" ? "上次没有整理完成，原文不受影响。" : "结构整理暂未完成，不影响这条记录。"}</p></div><button type="button" data-action="retry-local-analysis" ${record.analysis_status === "running" ? "disabled" : ""}>${record.analysis_status === "failed" ? "重新整理" : "稍后整理"}</button></section>` : `<button class="judgement-summary" type="button" data-action="open-attitude" data-testid="attitude-summary">
+      ${record.status === "raw_only_confirmed" ? `<section class="raw-only-status" data-testid="raw-only-status"><div><b>${record.analysis_status === "running" ? "正在安静整理" : "原文已经保存"}</b><p>${record.analysis_status === "running" ? "可以先离开，完成后会出现在这里。" : record.analysis_status === "failed" ? "上次没有整理完成，原文不受影响。" : "结构整理暂未完成，不影响这条记录。"}</p></div><div class="raw-only-actions"><button type="button" data-action="retry-local-analysis" ${record.analysis_status === "running" ? "disabled" : ""}>${record.analysis_status === "failed" ? "重新整理" : "稍后整理"}</button>${record.analysis_status !== "running" ? `<button type="button" class="text-action" data-action="skip-to-manual" data-testid="skip-to-manual">不等了，我自己选</button>` : ""}</div></section>` : `<button class="judgement-summary" type="button" data-action="open-attitude" data-testid="attitude-summary">
         <span class="judgement-summary-icon" aria-hidden="true">${icon("edit")}</span><span class="judgement-summary-copy"><small>个人态度与推荐 · ${record.attitude ? "点击修改" : "点击选择"}</small><b>${escapeHtml(attitudeLabel(record.attitude))} · ${recommendation}</b></span>${icon("chevron")}
       </button>`}
       <p class="impression">${escapeHtml(record.rawText)}</p>
@@ -903,6 +921,8 @@ function render() {
         ? cardEditorOverlay(record)
       : state.overlay === "export" && record
         ? exportOverlay(record)
+      : state.overlay === "record-menu" && record
+        ? recordMenuOverlay(record)
         : "";
   app.innerHTML = `${base}${overlay}`;
   document.body.classList.toggle("overlay-open", Boolean(state.overlay));
@@ -1307,6 +1327,32 @@ async function updateRecord(mutator) {
   await db.put("records", record);
 }
 
+/**
+ * R3 补丁 4：之前完全没有删除记录的入口。删除记录本身的同时，也要删掉它关联的那一场
+ * ViewingEvent（如果有），并对同一 work 下剩余的场次重新跑一遍初看/重看推定——否则
+ * 删掉「第 1 次」会让后面的场次错位，编号对不上。
+ */
+async function deleteRecord(record) {
+  const workId = record.work_id || record.workId;
+  let siblingEvents = [];
+  if (workId) {
+    try { siblingEvents = await db.getViewingEventsByWork(workId); } catch (_) { /* 允许为空 */ }
+  }
+  await db.delete("records", record.id);
+  if (record.viewing_event_id) {
+    await db.delete("viewingEvents", record.viewing_event_id);
+    const remaining = siblingEvents.filter((event) => event.id !== record.viewing_event_id);
+    if (remaining.length) await db.putViewingEvents(assignViewingRelations(remaining));
+  }
+  state.records = state.records.filter((item) => item.id !== record.id);
+  await indexHomeCardData();
+  state.overlay = null;
+  state.activeRecordId = null;
+  state.view = "home";
+  render();
+  announce("这条记录已删除");
+}
+
 async function buildAllExportEntries() {
   return Promise.all(state.records.map(async (record) => {
     const work = state.works.find((item) => item.id === record.workId) || null;
@@ -1603,6 +1649,17 @@ app.addEventListener("click", async (event) => {
     await requestWorkMatch(currentRecord()?.id, { force: true });
   } else if (action === "retry-local-analysis") {
     await runAiAnalysis(currentRecord()?.id);
+  } else if (action === "skip-to-manual") {
+    // 反馈 #3：AI 整理不可用/失败时，之前完全没有手动路径——个人态度与记忆卡片
+    // 一直被 status === "raw_only_confirmed" 挡住，只能一直等或重试 AI。
+    // 只在没有整理任务正在跑时允许跳过，避免和后台 AI 回来时的写入互相覆盖。
+    await updateRecord((record) => {
+      if (record.status !== "raw_only_confirmed" || record.analysis_status === "running") return;
+      record.status = "confirmed";
+      record.analysis_status = "manual";
+    });
+    renderPreservingScroll();
+    announce("已切换为手动整理，可以自己选择态度、添加卡片了");
   } else if (action === "open-attitude") {
     state.overlay = "attitude";
     render();
@@ -1705,6 +1762,20 @@ app.addEventListener("click", async (event) => {
     });
     renderPreservingScroll();
     announce("这条整理建议已删除，原文没有改变");
+  } else if (action === "delete-card") {
+    // R3 补丁 4：非 AI 建议的卡片（用户添加/已保留/已修改）此前只能编辑不能删除。
+    const record = currentRecord();
+    const card = record?.cards.find((item) => item.card_id === trigger.dataset.cardId);
+    if (!card) return;
+    if (!window.confirm("确定要删除这张记忆卡片吗？删除后无法恢复。")) return;
+    await updateRecord((record) => {
+      const index = record.cards.findIndex((item) => item.card_id === trigger.dataset.cardId);
+      if (index < 0) return;
+      record.cards.splice(index, 1);
+      record.cards.forEach((item, cardIndex) => { item.order = cardIndex; });
+    });
+    renderPreservingScroll();
+    announce("这张记忆卡片已删除");
   } else if (action === "add-card") {
     state.editingCardId = null;
     state.overlay = "card";
@@ -1716,6 +1787,16 @@ app.addEventListener("click", async (event) => {
   } else if (action === "open-export") {
     state.overlay = "export";
     render();
+  } else if (action === "open-record-menu") {
+    state.overlay = "record-menu";
+    render();
+  } else if (action === "confirm-delete-record") {
+    const record = currentRecord();
+    if (!record) return;
+    const work = currentWork(record);
+    const title = work?.title || record.title || "这条记录";
+    if (!window.confirm(`确定要删除《${title}》这条记录吗？\n原文、记忆卡片与关联的观影场次都会一并删除，且无法恢复。`)) return;
+    await deleteRecord(record);
   } else if (action === "export-share") {
     const record = currentRecord();
     if (!record) return;
