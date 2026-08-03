@@ -6,7 +6,8 @@
  * 因此这里把“生成内容”和“交付内容”拆成两层：
  *   - exportJSON / exportMarkdown / exportTXT：纯函数，只负责生成字符串，可离线单测
  *   - deliverExport / copyExportText：交付层，通过依赖注入接收 navigator/document，
- *     优先走系统分享面板（文件分享 → 文本分享），分享不可用时才退化为剪贴板复制或浏览器下载
+ *     优先走系统分享面板（纯文本分享，Web Share Level 1），不支持或分享失败时退化为浏览器下载；
+ *     copyExportText 走 Clipboard API，供"复制文本"按钮使用
  *
  * 安全红线：不导出 AI 密钥、访问密码；场次信息只保留详情页已展示的字段
  * （影院、日期、时间、制式、座位），不导出订单号/票价/姓名/邮箱等票务敏感字段
@@ -196,9 +197,17 @@ function resolveEnv(env = {}) {
   };
 }
 
+// 部分安卓/桌面的文件预览器在打开"裸下载"的文本文件时，会按系统默认编码（常见是 GBK）
+// 猜测内容，而不是遵循 Blob 的 type=...;charset=utf-8（那只在 HTTP 响应里生效，本地文件
+// 落盘后不带这个元信息）。加 UTF-8 BOM 是唯一能让几乎所有本地文本查看器都认对编码的办法，
+// 对 Markdown/TXT 生效；JSON 不加 BOM，避免影响以后可能出现的 JSON.parse 重新导入。
+const BOM_MIME_TYPES = new Set(["text/markdown", "text/plain"]);
+
 function triggerDownload(content, filename, mimeType, { document: doc, URL: URLRef, Blob: BlobRef }) {
   if (!doc || !URLRef || !BlobRef) throw new Error("download_unavailable");
-  const blob = new BlobRef([content], { type: mimeType });
+  const baseMimeType = mimeType.split(";")[0];
+  const withBom = BOM_MIME_TYPES.has(baseMimeType) ? "\uFEFF" + content : content;
+  const blob = new BlobRef([withBom], { type: mimeType });
   const url = URLRef.createObjectURL(blob);
   const link = doc.createElement("a");
   link.href = url;
@@ -224,43 +233,32 @@ export function downloadExport(content, filename, mimeType, env) {
 
 /**
  * 交付一份导出内容：手机上优先弹出系统分享面板，桌面或分享不可用时退化为下载。
+ *
+ * 注意：这里只用 Web Share Level 1 的纯文本分享（{title, text}），不尝试带文件分享。
+ * 带文件分享（{files:[...]）在安卓 Chrome 上依赖一份不透明的、按浏览器版本变化的 MIME
+ * 白名单，Markdown/JSON 大概率不在其中；`canShare` 判断失败后再退回文本分享还会二次调用
+ * `navigator.share()`，容易因为"用户激活状态"已被第一次调用消耗而被浏览器直接拒绝、静默
+ * 失败，表现为系统分享面板完全没有弹出、直接退化成了下载。纯文本分享是 Web Share 里支持
+ * 最广、行为最一致的原语，一次调用，不存在这个问题。
+ *
  * @param {{content: string, filename: string, mimeType: string, shareTitle?: string}} payload
  * @param {object} [env] 依赖注入，单测用；生产环境省略即可
- * @returns {Promise<{method: "share-file"|"share-text"|"download"|"cancelled"}>}
+ * @returns {Promise<{method: "share-text"|"download"|"cancelled"}>}
  */
 export async function deliverExport({ content, filename, mimeType, shareTitle = "电影印记" }, env) {
-  const { navigator: nav, document: doc, URL: URLRef, Blob: BlobRef, File: FileRef } = resolveEnv(env);
+  const { navigator: nav, document: doc, URL: URLRef, Blob: BlobRef } = resolveEnv(env);
+  const baseMimeType = mimeType.split(";")[0];
 
-  // 1) 优先：文件分享——目标 App 自己决定文件存到哪，用户不需要再去找“下载”目录
-  if (nav?.canShare && FileRef && BlobRef) {
-    try {
-      const file = new FileRef([content], filename, { type: mimeType });
-      if (nav.canShare({ files: [file] })) {
-        try {
-          await nav.share({ files: [file], title: shareTitle });
-          return { method: "share-file" };
-        } catch (error) {
-          if (error?.name === "AbortError") return { method: "cancelled" };
-          // 分享真的失败（非用户取消）→ 继续往下退化
-        }
-      }
-    } catch {
-      // File 构造或 canShare 检测失败 → 继续往下退化
-    }
-  }
-
-  // 2) 次选：纯文本分享——不支持带文件分享，但支持文本分享的浏览器（文本类格式）
-  if (nav?.share && (mimeType === "text/markdown" || mimeType === "text/plain")) {
+  if (nav?.share && baseMimeType.startsWith("text/")) {
     try {
       await nav.share({ title: shareTitle, text: content });
       return { method: "share-text" };
     } catch (error) {
       if (error?.name === "AbortError") return { method: "cancelled" };
-      // 继续退化到下载
+      // 分享真的失败（非用户取消）→ 退化为下载
     }
   }
 
-  // 3) 兜底：浏览器下载（桌面主路径，也是所有分支都不可用时的最终兜底）
   return triggerDownload(content, filename, mimeType, { document: doc, URL: URLRef, Blob: BlobRef });
 }
 
@@ -277,7 +275,7 @@ export async function copyExportText(content, env) {
 }
 
 export const MIME_TYPES = {
-  json: "application/json",
-  markdown: "text/markdown",
-  txt: "text/plain"
+  json: "application/json;charset=utf-8",
+  markdown: "text/markdown;charset=utf-8",
+  txt: "text/plain;charset=utf-8"
 };

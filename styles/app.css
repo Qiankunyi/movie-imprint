@@ -846,6 +846,90 @@ svg {
   padding-bottom: calc(var(--space-5) + env(safe-area-inset-bottom));
 }
 
+.export-primary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 76px;
+  padding: var(--space-3);
+  margin: var(--space-3) 0 var(--space-4);
+  text-align: left;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-card);
+  background: var(--accent-container);
+  box-shadow: 0 3px 12px rgb(13 32 37 / 5%);
+}
+
+.export-primary:active {
+  background: color-mix(in srgb, var(--accent-container) 72%, var(--surface-high));
+  transform: translateY(1px);
+}
+
+.export-primary-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--on-accent);
+  background: var(--accent);
+}
+
+.export-primary-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.export-primary-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.export-primary-copy b {
+  color: var(--accent-strong);
+  font: var(--type-label);
+}
+
+.export-primary-copy small {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.export-primary > svg:last-child {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom) + var(--space-5));
+  z-index: 60;
+  max-width: min(86vw, 420px);
+  padding: 12px 20px;
+  color: var(--surface);
+  border-radius: 999px;
+  background: var(--ink);
+  box-shadow: var(--shadow-float);
+  font: var(--type-label);
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 8px);
+  transition: opacity var(--motion-standard), transform var(--motion-standard);
+}
+
+.toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
 .wallpaper-settings h2 {
   margin: var(--space-1) 0 0;
   font: var(--type-title);

@@ -188,32 +188,42 @@ function fakeDocument() {
 
 function fakeURL() {
   const revoked = [];
+  const blobs = [];
   return {
-    createObjectURL: () => "blob:fake-url",
+    createObjectURL: (blob) => { blobs.push(blob); return "blob:fake-url"; },
     revokeObjectURL: (url) => revoked.push(url),
-    _revoked: revoked
+    _revoked: revoked,
+    _blobs: blobs
   };
 }
 
-test("deliverExport 优先走文件分享（移动端主路径）", async () => {
+// 真机 bug 复现（2026-08-03）：安卓 Chrome 上"分享"完全没有弹出系统分享面板，直接下载了
+// 一个乱码文件。根因是旧实现先尝试带文件分享（{files:[...]}），失败后又调用一次纯文本
+// 分享，第二次 navigator.share() 因为"用户激活"已被第一次调用消耗而被浏览器静默拒绝，
+// 表现为分享面板完全不出现。修复方案是文本类格式只用一次 Web Share Level 1 纯文本分享，
+// 不再尝试文件分享。以下测试锁定这个行为。
+
+test("deliverExport 对文本类格式只调用一次 navigator.share（纯文本分享），不做第二次尝试", async () => {
   const calls = [];
   const nav = {
-    canShare: (data) => Array.isArray(data.files) && data.files.length === 1,
+    canShare: () => true, // 即使浏览器声称支持文件分享，也不应该被调用到
     share: async (data) => { calls.push(data); }
   };
   const result = await deliverExport(
     { content: "hello", filename: "a.md", mimeType: MIME_TYPES.markdown, shareTitle: "标题" },
-    { navigator: nav, File: globalThis.File, Blob: globalThis.Blob }
+    { navigator: nav }
   );
-  assert.equal(result.method, "share-file");
+  assert.equal(result.method, "share-text");
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].files[0].name, "a.md");
+  assert.equal(calls[0].text, "hello");
+  assert.equal(calls[0].title, "标题");
+  assert.equal("files" in calls[0], false); // 确认不是文件分享
 });
 
-test("deliverExport 在不支持文件分享但支持文本分享时退化为文本分享", async () => {
+test("deliverExport 在只有旧式 share（无 canShare）时依然能分享文本", async () => {
   const calls = [];
   const nav = {
-    // 没有 canShare，只有 share（部分安卓浏览器的情况）
+    // 没有 canShare，只有 share
     share: async (data) => { calls.push(data); }
   };
   const result = await deliverExport(
@@ -224,7 +234,36 @@ test("deliverExport 在不支持文件分享但支持文本分享时退化为文
   assert.equal(calls[0].text, "纯文本内容");
 });
 
-test("deliverExport 在分享不可用时退化为浏览器下载", async () => {
+test("deliverExport 分享失败（非用户取消）时退化为浏览器下载，且只调用一次 share", async () => {
+  const shareCalls = [];
+  const doc = fakeDocument();
+  const url = fakeURL();
+  const nav = {
+    share: async (data) => { shareCalls.push(data); throw new Error("network error"); }
+  };
+  const result = await deliverExport(
+    { content: "hello", filename: "a.md", mimeType: MIME_TYPES.markdown },
+    { navigator: nav, document: doc, URL: url, Blob: globalThis.Blob }
+  );
+  assert.equal(result.method, "download");
+  assert.equal(shareCalls.length, 1);
+  assert.equal(doc._created[0].clicked, true);
+});
+
+test("deliverExport 对 JSON 这类非文本 MIME 类型不尝试分享，直接下载", async () => {
+  const shareCalls = [];
+  const doc = fakeDocument();
+  const url = fakeURL();
+  const nav = { share: async (data) => { shareCalls.push(data); } };
+  const result = await deliverExport(
+    { content: "{}", filename: "a.json", mimeType: MIME_TYPES.json },
+    { navigator: nav, document: doc, URL: url, Blob: globalThis.Blob }
+  );
+  assert.equal(result.method, "download");
+  assert.equal(shareCalls.length, 0);
+});
+
+test("deliverExport 在没有 navigator.share 时直接下载", async () => {
   const doc = fakeDocument();
   const url = fakeURL();
   const result = await deliverExport(
@@ -240,12 +279,11 @@ test("deliverExport 在分享不可用时退化为浏览器下载", async () => 
 test("deliverExport 在用户取消分享时不再退化为下载", async () => {
   const doc = fakeDocument();
   const nav = {
-    canShare: () => true,
     share: async () => { const e = new Error("cancelled"); e.name = "AbortError"; throw e; }
   };
   const result = await deliverExport(
     { content: "hello", filename: "a.md", mimeType: MIME_TYPES.markdown },
-    { navigator: nav, File: globalThis.File, Blob: globalThis.Blob, document: doc, URL: fakeURL() }
+    { navigator: nav, document: doc, URL: fakeURL() }
   );
   assert.equal(result.method, "cancelled");
   assert.equal(doc._created.length, 0);
@@ -257,6 +295,30 @@ test("downloadExport 直接触发下载，不尝试分享", () => {
   const result = downloadExport("content", "a.txt", MIME_TYPES.txt, { document: doc, URL: url, Blob: globalThis.Blob });
   assert.equal(result.method, "download");
   assert.equal(doc._created[0].clicked, true);
+});
+
+// 真机 bug 复现（2026-08-03）：下载/分享退化后的 .md 文件在手机文本查看器里打开是乱码。
+// 本地文件不带 HTTP 响应头，查看器不会遵循 Blob 的 charset，只能靠内容自身的 UTF-8 BOM
+// 识别编码，所以下载出的 Markdown/TXT 必须带 BOM；JSON 不加 BOM（避免影响以后重新导入解析）。
+test("downloadExport 给 Markdown/TXT 加 UTF-8 BOM，避免本地文件查看器把内容认成别的编码", async () => {
+  // Blob.text() 按 WHATWG Encoding 规范会自动吞掉前导 BOM，所以直接看原始字节
+  const doc = fakeDocument();
+  const url = fakeURL();
+  downloadExport("中文内容", "a.md", MIME_TYPES.markdown, { document: doc, URL: url, Blob: globalThis.Blob });
+  const bytes = new Uint8Array(await url._blobs[0].arrayBuffer());
+  assert.deepEqual([...bytes.slice(0, 3)], [0xEF, 0xBB, 0xBF]);
+  // 去掉 BOM 后能正确还原为原文（确认没有破坏内容本身的编码）
+  const withoutBom = Buffer.from(bytes.slice(3)).toString("utf-8");
+  assert.equal(withoutBom, "中文内容");
+});
+
+test("downloadExport 不给 JSON 加 BOM", async () => {
+  const doc = fakeDocument();
+  const url = fakeURL();
+  downloadExport('{"a":1}', "a.json", MIME_TYPES.json, { document: doc, URL: url, Blob: globalThis.Blob });
+  const bytes = new Uint8Array(await url._blobs[0].arrayBuffer());
+  assert.notDeepEqual([...bytes.slice(0, 3)], [0xEF, 0xBB, 0xBF]);
+  assert.equal(JSON.parse(Buffer.from(bytes).toString("utf-8")).a, 1);
 });
 
 test("copyExportText 使用 Clipboard API 复制文本", async () => {

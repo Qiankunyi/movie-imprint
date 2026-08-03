@@ -33,10 +33,11 @@ import {
   exportJSON,
   exportMarkdown,
   exportTXT
-} from "./export.js?v=1";
+} from "./export.js?v=2";
 
 const app = document.querySelector("#app");
 const liveRegion = document.querySelector("#live-region");
+const toastRegion = document.querySelector("#toast-region");
 const activeDraftId = "active";
 
 // --- 访问密码封装 ---
@@ -99,6 +100,7 @@ const state = {
 };
 
 let carouselGesture = null;
+let toastTimer = null;
 
 const icons = {
   back: '<path d="m15 5-7 7 7 7"/>',
@@ -133,6 +135,22 @@ function escapeHtml(value = "") {
 function announce(message) {
   liveRegion.textContent = "";
   requestAnimationFrame(() => { liveRegion.textContent = message; });
+}
+
+// announce() 只写屏幕阅读器才能听到的隐藏区域；复制/分享/下载这类没有其他可见状态变化的
+// 操作，需要一个真正显示出来的轻提示，否则看得见屏幕的用户完全不知道操作有没有生效。
+// 直接操作这个独立节点、不走 render()，这样不会打断正打开的 bottom-sheet 的滚动位置或焦点。
+function showToast(message) {
+  if (!toastRegion) return;
+  toastRegion.textContent = message;
+  toastRegion.classList.add("visible");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastRegion.classList.remove("visible"), 2200);
+}
+
+function notify(message) {
+  announce(message);
+  showToast(message);
 }
 
 function publicSeedRecords() {
@@ -368,16 +386,18 @@ function detailHeader(record) {
 
 function exportOverlay(record) {
   const work = currentWork(record);
+  const title = work?.title || record.title;
   return `<div class="overlay" data-testid="export-sheet">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭导出面板"></button>
     <section class="bottom-sheet export-sheet" role="dialog" aria-modal="true" aria-labelledby="export-title">
       <div class="sheet-handle" aria-hidden="true"></div>
-      <div class="sheet-title-row"><div><span class="sheet-kicker">这条记录</span><h2 id="export-title">导出</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(title)}》</span><h2 id="export-title">导出这条记录</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
 
-      <h3 class="settings-section-title">分享</h3>
-      <div class="settings-actions">
-        <button type="button" data-action="export-share" data-testid="export-share"><span><b>分享…</b><small>发到微信、备忘录、文件 App 等，手机上比"下载"更方便找到</small></span>${icon("share")}</button>
-      </div>
+      <button class="export-primary" type="button" data-action="export-share" data-testid="export-share">
+        <span class="export-primary-icon" aria-hidden="true">${icon("share")}</span>
+        <span class="export-primary-copy"><b>分享…</b><small>发到微信、备忘录、文件 App 等，比"下载"更容易找到</small></span>
+        ${icon("chevron")}
+      </button>
 
       <h3 class="settings-section-title">复制文本</h3>
       <div class="settings-actions">
@@ -391,7 +411,7 @@ function exportOverlay(record) {
         <button type="button" data-action="export-download" data-format="txt" data-testid="export-download-txt"><span><b>纯文本</b><small>.txt 文件</small></span>${icon("export")}</button>
         <button type="button" data-action="export-download" data-format="json" data-testid="export-download-json"><span><b>JSON</b><small>完整结构化数据，适合备份</small></span>${icon("export")}</button>
       </div>
-      <p class="settings-note">不含 AI 密钥或票务敏感字段${work?.title ? `；文件名会带上《${escapeHtml(work.title)}》` : ""}。</p>
+      <p class="settings-note">不含 AI 密钥或票务敏感字段。</p>
     </section>
   </div>`;
 }
@@ -1402,9 +1422,9 @@ app.addEventListener("click", async (event) => {
     try {
       const result = await deliverExport({ content, filename, mimeType: MIME_TYPES.markdown, shareTitle: work?.title || record.title });
       if (result.method === "cancelled") return;
-      announce(result.method === "download" ? "已下载这条记录" : "已打开分享面板");
+      notify(result.method === "download" ? "这个浏览器不支持分享，已改为下载文件" : "已分享");
     } catch (error) {
-      announce(`分享失败：${error.message}`);
+      notify(`分享失败：${error.message}`);
     }
   } else if (action === "export-copy") {
     const record = currentRecord();
@@ -1414,9 +1434,9 @@ app.addEventListener("click", async (event) => {
     const content = format === "txt" ? exportTXT(record, work, state.viewingEvents) : exportMarkdown(record, work, state.viewingEvents);
     try {
       await copyExportText(content);
-      announce("已复制到剪贴板");
+      notify("已复制到剪贴板");
     } catch (_) {
-      announce("复制失败，这个浏览器可能不支持剪贴板权限");
+      notify("复制失败，这个浏览器可能不支持剪贴板权限");
     }
   } else if (action === "export-download") {
     const record = currentRecord();
@@ -1427,23 +1447,23 @@ app.addEventListener("click", async (event) => {
       : format === "txt" ? exportTXT(record, work, state.viewingEvents)
       : exportMarkdown(record, work, state.viewingEvents);
     downloadExport(content, exportFilename(work, record, EXPORT_EXT[format]), MIME_TYPES[format]);
-    announce("已下载文件");
+    notify("已下载文件");
   } else if (action === "export-all-share") {
-    if (!state.records.length) { announce("还没有可导出的记录"); return; }
+    if (!state.records.length) { notify("还没有可导出的记录"); return; }
     const entries = await buildAllExportEntries();
     const content = exportAllMarkdown(entries);
     try {
       const result = await deliverExport({ content, filename: exportAllFilename("md"), mimeType: MIME_TYPES.markdown, shareTitle: "电影印记 · 全部记录" });
       if (result.method === "cancelled") return;
-      announce(result.method === "download" ? "已下载全部记录合集" : "已打开分享面板");
+      notify(result.method === "download" ? "这个浏览器不支持分享，已改为下载文件" : "已分享");
     } catch (error) {
-      announce(`分享失败：${error.message}`);
+      notify(`分享失败：${error.message}`);
     }
   } else if (action === "export-all-download") {
-    if (!state.records.length) { announce("还没有可导出的记录"); return; }
+    if (!state.records.length) { notify("还没有可导出的记录"); return; }
     const entries = await buildAllExportEntries();
     downloadExport(exportAllJSON(entries), exportAllFilename("json"), MIME_TYPES.json);
-    announce("已下载全部记录的 JSON 备份");
+    notify("已下载全部记录的 JSON 备份");
   }
 });
 

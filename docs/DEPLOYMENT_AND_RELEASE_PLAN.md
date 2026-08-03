@@ -271,3 +271,14 @@ C1—C4 核心功能已完成，79/79 测试通过。当前 app 运行方式是�
 - `index.html`：`app.css` 与 `app.js` 缓存版本号各 +1
 
 验证：`node --test tests/*.test.mjs` 全量 103/103 通过（含新增 16 个导出测试，无回退）；`node --check` 确认 `app.js`/`export.js` 语法正确。Web Share API 的实机行为（iOS/Android 系统分享面板是否弹出、文件分享 vs 文本分享分支是否命中预期）建议在真机或 Android 尺寸浏览器里再走一遍，沙箱环境无法模拟 `navigator.share`。
+
+### 真机测试反馈修复（2026-08-03，同日）
+
+安卓 Chrome 实机测试发现三个问题，逐一定位根因后修复：
+
+1. **"分享"没有弹出系统分享面板，直接下载了文件。** 根因：旧版 `deliverExport` 先尝试带文件分享（`{files:[...]}`），`canShare` 判断失败或分享被拒绝后，又在同一次调用里再打一次纯文本分享——第二次 `navigator.share()` 因为"用户激活状态"已被第一次调用消耗，被浏览器直接拒绝、静默失败，表现为分享面板完全不出现，直接落到下载分支。修复：文本类格式（Markdown/TXT）只用一次 Web Share Level 1 纯文本分享（`{title, text}`），不再尝试带文件分享；JSON 这类非文本格式不参与分享判断，直接走下载。
+2. **下载/分享退化后的文件内容乱码。** 根因：本地文件不带 HTTP 响应头，Blob 的 `type=...;charset=utf-8` 只在网络响应里生效，落盘后一些安卓文本查看器会按系统默认编码（常见是 GBK）猜内容。修复：`downloadExport` 给 Markdown/TXT 内容加 UTF-8 BOM（JSON 不加，避免影响以后可能的重新导入解析），且 `MIME_TYPES` 统一补上 `;charset=utf-8`。
+3. **复制文本没有可见反馈。** 根因：原来只调用了 `announce()`，那是给屏幕阅读器用的隐藏区域，看得见屏幕的用户完全感知不到。修复：新增 `showToast()`/`notify()`，在页面上弹一个真正可见的轻提示（`#toast-region`，直接 DOM 操作、不走 `render()`，不会打断正打开的面板的滚动位置），复制/分享/下载结果都改用 `notify()`。
+4. **导出面板视觉上像一个通用设置清单。** 把"分享"从列表行改造成独立的强调卡片（`.export-primary`，圆角、强调色、图标徽标，视觉上参考详情页"个人态度与推荐"入口卡片），面板顶部加作品名作为上下文标题；复制/下载仍保留列表样式（这部分和偏好设置面板是同一套组件，本身是一致的）。
+
+改动文件：`src/export.js`（交付层重写、BOM、charset）、`src/app.js`（`notify`/`showToast`、导出面板卡片化）、`styles/app.css`（`.export-primary`、`.toast`）、`tests/export.test.mjs`（用固定测试锁定"只调用一次 share"和"BOM 只加在 Markdown/TXT"这两个行为，防止回归）。全量测试 107/107 通过。
