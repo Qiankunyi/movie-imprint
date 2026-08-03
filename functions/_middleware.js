@@ -13,6 +13,10 @@ export async function onRequest(context) {
   if (!password) return context.next();
 
   const url = new URL(context.request.url);
+
+  // 只保护 /api/* 路由，页面和静态资源直接放行
+  if (!url.pathname.startsWith("/api/")) return context.next();
+
   const authHeader = context.request.headers.get("authorization") || "";
   const tokenFromHeader = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
   // 图片请求允许通过 ?token= 传递密码
