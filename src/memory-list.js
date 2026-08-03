@@ -3,9 +3,11 @@
  *
  * 废止横向分页/轮播（DEVELOPMENT_HANDOFF_V2.md §5、§3 的旧规则）：
  * 全部卡片一次渲染，竖向排列，role="list"/"listitem"，不做 scroll-snap，自由滚动。
- * 单张卡片内部结构（编辑按钮、证据折叠、AI 建议保留/删除按钮）与之前基本一致；
- * R3 补丁 4（用户反馈）：非 AI 建议的卡片（用户自己添加、已保留、已修改）此前完全没有
- * 删除入口——只能编辑，删不掉。现在这类卡片也带一个「删除这张卡片」的操作。
+ * 单张卡片内部结构（编辑按钮、证据折叠、AI 建议保留/删除按钮）与之前完全一致。
+ *
+ * R3 补丁 1（用户反馈第二轮）：非 AI 建议卡片的删除入口不放在卡片上（和首页记录卡的
+ * 删除一样，走"编辑"这个二级入口，而不是在卡片正面摆一个显眼的删除按钮）——具体做法
+ * 见 src/app.js 的 cardEditorOverlay()：编辑界面右下角"保存修改"，左下角"删除"。
  *
  * 纯渲染函数：icon 参数是可选注入的 SVG 图标渲染器（app.js 的 icon()），
  * 不传时编辑按钮不带图标，方便在 Node 测试里直接断言字符串。
@@ -24,9 +26,7 @@ function memoryCardMarkup(card, { icon } = {}) {
     <h3>${escapeHtml(card.title || "没有标题")}</h3>
     <p>${escapeHtml(card.content)}</p>
     ${card.evidence?.length ? `<details class="evidence-details"><summary>查看原文依据</summary>${card.evidence.map((item) => `<blockquote>${escapeHtml(item.excerpt)}</blockquote>`).join("")}</details>` : ""}
-    ${isAiSuggestion
-      ? `<div class="suggestion-actions"><button type="button" data-action="accept-ai-card" data-card-id="${escapeHtml(card.card_id)}">保留这张</button><button type="button" data-action="remove-ai-card" data-card-id="${escapeHtml(card.card_id)}">删除建议</button></div>`
-      : `<div class="card-actions"><button type="button" class="danger-text-action" data-action="delete-card" data-card-id="${escapeHtml(card.card_id)}" data-testid="delete-card">删除这张卡片</button></div>`}
+    ${isAiSuggestion ? `<div class="suggestion-actions"><button type="button" data-action="accept-ai-card" data-card-id="${escapeHtml(card.card_id)}">保留这张</button><button type="button" data-action="remove-ai-card" data-card-id="${escapeHtml(card.card_id)}">删除建议</button></div>` : ""}
   </article>`;
 }
 

@@ -56,12 +56,8 @@ test("aria-label 标注卡片总数", () => {
   assert.match(html, /记忆卡片，共 3 张/);
 });
 
-// R3 补丁 4：非 AI 建议的卡片（用户自己添加/已保留/已修改）此前完全没有删除入口，
-// 只能编辑。现在每张这样的卡片都应该带一个「删除这张卡片」的操作。
-test("非 AI 建议卡片（用户添加/保留/修改）也有删除入口", () => {
+// R3 补丁 1（用户反馈第二轮）：删除不放在卡片正面，走「编辑」这个二级入口。
+test("非 AI 建议卡片正面不直接放删除按钮（删除走编辑二级入口，不在卡片上）", () => {
   const html = memoryListMarkup(sampleCards());
-  assert.match(html, /data-action="delete-card" data-card-id="card_1"/);
-  assert.match(html, /data-action="delete-card" data-card-id="card_2"/);
-  // AI 建议卡走自己的「保留／删除建议」流程，不应该重复出现 delete-card
-  assert.doesNotMatch(html, /data-action="delete-card" data-card-id="card_3"/);
+  assert.doesNotMatch(html, /data-action="delete-card"/);
 });

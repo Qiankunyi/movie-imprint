@@ -201,11 +201,14 @@ svg {
   background: var(--surface-high);
 }
 
+/* 用户反馈：固定 112px 宽、拉伸到卡片全高，卡片一高就把海报挤成过窄的竖条。
+   改成用标准电影海报比例（2:3）反推宽度——海报高度始终等于卡片高度，宽度跟着
+   卡片变高自动往右延伸，卡片矮的时候海报也不会比常见的海报比例更窄。 */
 .record-poster {
   position: relative;
-  width: 112px;
-  flex: 0 0 112px;
+  flex: 0 0 auto;
   align-self: stretch;
+  aspect-ratio: 2 / 3;
   overflow: hidden;
   background: var(--surface-high);
 }
@@ -883,14 +886,8 @@ svg {
   background: var(--accent-container);
 }
 
-/* 非 AI 建议卡片（用户自己添加/已保留/已修改）的删除入口：低调的文字按钮，
-   右对齐，不做成和「保留／删除建议」一样醒目的按钮组，避免和 AI 建议卡混淆。 */
-.card-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: var(--space-3);
-}
-
+/* 卡片/记录的删除入口统一走"编辑"这个二级入口，不摆在正面（见 .card-editor-actions、
+   .danger-action）；.danger-text-action 是这类低调文字按钮的通用底色。 */
 .danger-text-action {
   padding: var(--space-1) 0;
   color: var(--film);
@@ -1285,6 +1282,13 @@ svg {
 .analysis-warnings ul {
   padding-left: var(--space-4);
   margin: var(--space-2) 0 0;
+}
+
+.raw-only-error {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--film);
+  font: var(--type-meta);
 }
 
 .raw-only-status p {
@@ -1829,6 +1833,20 @@ svg {
   gap: var(--space-3);
 }
 
+/* 编辑界面的底部操作行：左下角"删除"（仅编辑已有、非待审 AI 建议的卡片时出现），
+   右下角"保存修改"——和用户反馈里"首页记录删除放二级菜单"是同一个思路，删除不摆在
+   卡片正面，走编辑这个入口。没有删除按钮时用一个空 <span> 占位，保持 sheet-done 靠右。 */
+.card-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-5);
+}
+
+.card-editor-actions .sheet-done {
+  margin: 0;
+}
+
 .card-editor textarea {
   min-height: 136px;
   resize: vertical;
@@ -1872,11 +1890,6 @@ svg {
 
   .brand-lockup h1 {
     font-size: 20px;
-  }
-
-  .record-poster {
-    width: 92px;
-    flex-basis: 92px;
   }
 
   .record-card-body {

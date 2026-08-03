@@ -566,7 +566,7 @@ function renderDetail() {
       <div class="detail-title-row"><h1>${titleMarkup}</h1><span class="attitude-badge ${record.attitude ? "selected" : "empty"}"><i aria-hidden="true"></i>${escapeHtml(attitudeLabel(record.attitude))}</span></div>
       ${workMatchPanel(record)}
       ${record.aiWarnings?.length ? `<details class="analysis-warnings" ${record.cards?.length ? "" : "open"}><summary>整理提示</summary><ul>${record.aiWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></details>` : ""}
-      ${record.status === "raw_only_confirmed" ? `<section class="raw-only-status" data-testid="raw-only-status"><div><b>${record.analysis_status === "running" ? "正在安静整理" : "原文已经保存"}</b><p>${record.analysis_status === "running" ? "可以先离开，完成后会出现在这里。" : record.analysis_status === "failed" ? "上次没有整理完成，原文不受影响。" : "结构整理暂未完成，不影响这条记录。"}</p></div><div class="raw-only-actions"><button type="button" data-action="retry-local-analysis" ${record.analysis_status === "running" ? "disabled" : ""}>${record.analysis_status === "failed" ? "重新整理" : "稍后整理"}</button>${record.analysis_status !== "running" ? `<button type="button" class="text-action" data-action="skip-to-manual" data-testid="skip-to-manual">不等了，我自己选</button>` : ""}</div></section>` : `<button class="judgement-summary" type="button" data-action="open-attitude" data-testid="attitude-summary">
+      ${record.status === "raw_only_confirmed" ? `<section class="raw-only-status" data-testid="raw-only-status"><div><b>${record.analysis_status === "running" ? "正在安静整理" : "原文已经保存"}</b><p>${record.analysis_status === "running" ? "可以先离开，完成后会出现在这里。" : record.analysis_status === "failed" ? "上次没有整理完成，原文不受影响。" : "结构整理暂未完成，不影响这条记录。"}</p>${record.analysis_status === "failed" && record.analysis_error ? `<small class="raw-only-error" data-testid="analysis-error">原因：${escapeHtml(record.analysis_error)}</small>` : ""}</div><div class="raw-only-actions"><button type="button" data-action="retry-local-analysis" ${record.analysis_status === "running" ? "disabled" : ""}>${record.analysis_status === "failed" ? "重新整理" : "稍后整理"}</button>${record.analysis_status !== "running" ? `<button type="button" class="text-action" data-action="skip-to-manual" data-testid="skip-to-manual">不等了，我自己选</button>` : ""}</div></section>` : `<button class="judgement-summary" type="button" data-action="open-attitude" data-testid="attitude-summary">
         <span class="judgement-summary-icon" aria-hidden="true">${icon("edit")}</span><span class="judgement-summary-copy"><small>个人态度与推荐 · ${record.attitude ? "点击修改" : "点击选择"}</small><b>${escapeHtml(attitudeLabel(record.attitude))} · ${recommendation}</b></span>${icon("chevron")}
       </button>`}
       <p class="impression">${escapeHtml(record.rawText)}</p>
@@ -714,6 +714,9 @@ function attitudeOverlay(record) {
 function cardEditorOverlay(record) {
   const editing = record.cards.find((card) => card.card_id === state.editingCardId);
   const card = editing || { type: "被击中的瞬间", title: "", content: "" };
+  // 用户反馈第二轮：删除不摆在卡片正面，走"编辑"这个二级入口——只有已存在、
+  // 不是待审 AI 建议（那类有自己的"保留/删除建议"流程）的卡片才带删除。
+  const canDelete = Boolean(editing) && editing.provenance !== "ai_suggested";
   return `<div class="overlay" data-testid="card-editor">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭卡片编辑"></button>
     <section class="bottom-sheet card-editor" role="dialog" aria-modal="true" aria-labelledby="card-editor-title">
@@ -723,7 +726,10 @@ function cardEditorOverlay(record) {
         <label><span>类型</span><select name="type">${CARD_TYPES.map((type) => `<option ${card.type === type ? "selected" : ""}>${escapeHtml(type)}</option>`).join("")}</select></label>
         <label><span>标题</span><input name="title" value="${escapeHtml(card.title)}" placeholder="给这个片段一个短标题" /></label>
         <label><span>内容</span><textarea name="content" required placeholder="记住了什么？">${escapeHtml(card.content)}</textarea></label>
-        <button class="sheet-done" type="submit">${editing ? "保存修改" : "添加卡片"}</button>
+        <div class="card-editor-actions">
+          ${canDelete ? `<button type="button" class="danger-text-action" data-action="delete-card" data-card-id="${escapeHtml(editing.card_id)}" data-testid="delete-card">删除</button>` : "<span></span>"}
+          <button class="sheet-done" type="submit">${editing ? "保存修改" : "添加卡片"}</button>
+        </div>
       </form>
     </section>
   </div>`;
@@ -1763,7 +1769,8 @@ app.addEventListener("click", async (event) => {
     renderPreservingScroll();
     announce("这条整理建议已删除，原文没有改变");
   } else if (action === "delete-card") {
-    // R3 补丁 4：非 AI 建议的卡片（用户添加/已保留/已修改）此前只能编辑不能删除。
+    // 非 AI 建议的卡片（用户添加/已保留/已修改）此前只能编辑不能删除；删除入口在
+    // 卡片编辑界面左下角，不摆在卡片正面（见 cardEditorOverlay）。
     const record = currentRecord();
     const card = record?.cards.find((item) => item.card_id === trigger.dataset.cardId);
     if (!card) return;
@@ -1774,6 +1781,7 @@ app.addEventListener("click", async (event) => {
       record.cards.splice(index, 1);
       record.cards.forEach((item, cardIndex) => { item.order = cardIndex; });
     });
+    state.overlay = null;
     renderPreservingScroll();
     announce("这张记忆卡片已删除");
   } else if (action === "add-card") {
