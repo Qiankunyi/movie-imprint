@@ -185,12 +185,12 @@ svg {
   border-left: 3px solid var(--accent);
 }
 
-/* R3 补丁 1：海报直接占据卡片整个左侧、随卡片高度拉伸（参考票务 App 的海报占位比例），
+/* R3 补丁 1：海报直接占据卡片整个左侧（参考票务 App 的海报占位比例），
    不再是四周留白里的一个小缩略图。button 本身变成横向 flex：海报贴边，文字区域单独留白。 */
 .record-card-button {
   display: flex;
   width: 100%;
-  min-height: 152px;
+  min-height: 162px;
   align-items: stretch;
   padding: 0;
   text-align: left;
@@ -201,13 +201,21 @@ svg {
   background: var(--surface-high);
 }
 
-/* 用户反馈：固定 112px 宽、拉伸到卡片全高，卡片一高就把海报挤成过窄的竖条。
-   改成用标准电影海报比例（2:3）反推宽度——海报高度始终等于卡片高度，宽度跟着
-   卡片变高自动往右延伸，卡片矮的时候海报也不会比常见的海报比例更窄。 */
+/* 用户反馈两轮踩坑记录：
+   第一轮固定 112px 宽、靠 align-self:stretch 拉伸到卡片全高——卡片一高，海报被挤成
+   过窄的竖条。第二轮改成"高度=卡片全高，靠 aspect-ratio 反推宽度"，指望 flex 在算
+   flex-basis 时用拉伸后的高度倒推出宽度——但这需要浏览器在"auto 宽度"和"stretch 高度"
+   之间做一次相互依赖的两阶段计算，实测在真机浏览器里没有按预期解出来，反而比第一轮
+   更窄（海报的固有内容宽度几乎是 0，等于白算了）。
+   现在改成完全不依赖这种循环推导的写法：宽度是固定值（definite），高度用
+   aspect-ratio 从宽度直接算出来（2:3，标准电影海报比例）——这是 aspect-ratio 最基础、
+   哪个浏览器都保证支持的用法，不再需要浏览器去猜"到底该先定宽还是先定高"。
+   代价：卡片如果因为徽章换行等原因比 162px（108×1.5）更高，海报底部会留一点背景色
+   空隙，不会再撑满到卡片最底——但形状永远是正确的电影海报比例，不会再变形/变窄。 */
 .record-poster {
   position: relative;
+  width: 108px;
   flex: 0 0 auto;
-  align-self: stretch;
   aspect-ratio: 2 / 3;
   overflow: hidden;
   background: var(--surface-high);
@@ -785,6 +793,20 @@ svg {
 .memory-heading h2 {
   margin: 0;
   font: var(--type-card-title);
+}
+
+/* 「AI 建议卡片」+「＋ 添加卡片」并排——记录一旦离开只保存原文的状态，
+   这是唯一能再次让 AI 帮忙看原文、补建议卡片的入口，不会覆盖已有卡片。 */
+.memory-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.card-suggestion-error {
+  margin: 0 0 var(--space-3);
+  color: var(--film);
+  font: var(--type-meta);
 }
 
 .text-action {
@@ -1890,6 +1912,10 @@ svg {
 
   .brand-lockup h1 {
     font-size: 20px;
+  }
+
+  .record-poster {
+    width: 92px;
   }
 
   .record-card-body {

@@ -571,7 +571,7 @@ function renderDetail() {
       </button>`}
       <p class="impression">${escapeHtml(record.rawText)}</p>
       ${viewingEventsSection(state.viewingEvents)}
-      ${record.status === "raw_only_confirmed" ? "" : `<div class="memory-heading"><h2>留下来的片段</h2><button class="text-action add-card" type="button" data-action="add-card">＋ 添加卡片</button></div>${memoryCard(record)}`}
+      ${record.status === "raw_only_confirmed" ? "" : `<div class="memory-heading"><h2>留下来的片段</h2><div class="memory-heading-actions"><button class="text-action" type="button" data-action="request-ai-cards" data-testid="request-ai-cards" ${record.cardSuggestionStatus === "running" ? "disabled" : ""}>${record.cardSuggestionStatus === "running" ? "AI 整理中…" : "AI 建议卡片"}</button><button class="text-action add-card" type="button" data-action="add-card">＋ 添加卡片</button></div></div>${record.cardSuggestionStatus === "failed" && record.cardSuggestionError ? `<p class="card-suggestion-error" data-testid="card-suggestion-error">AI 建议没有完成：${escapeHtml(record.cardSuggestionError)}</p>` : ""}${memoryCard(record)}`}
     </article>
   </main>`;
 }
@@ -1087,6 +1087,56 @@ async function runAiAnalysis(recordId) {
     await db.put("records", record);
     renderPreservingScroll();
     announce("原文已保存，整理可以稍后重试");
+  }
+}
+
+/**
+ * 用户反馈：记录一旦离开 raw_only_confirmed（AI 首次整理成功，或用户点了「不等了，
+ * 我自己选」跳过），就再也没有入口能让 AI 重新看一遍原文、建议新的记忆卡片——
+ * 只能一张一张手动加。这里补一个可以反复安全调用的入口：
+ *   - 不会动 runAiAnalysis() 那条首次整理的逻辑（避免影响已经测试过的首次整理路径）；
+ *   - 新的建议追加在已有卡片后面（order 接着算），不覆盖/删除用户已经写好、保留、
+ *     接受过的卡片——用户还是照常通过每张卡的「保留这张／删除建议」去处理这批新建议；
+ *   - 只有在用户还没有手动确认过态度（attitudeProvenance 为空）时，才用这次 AI 的
+ *     态度建议去刷新"建议"字段；用户已经自己选过的 attitude/recommendation 不会被动。
+ */
+async function requestAiCards(recordId) {
+  const record = state.records.find((item) => item.id === recordId);
+  if (!record || record.cardSuggestionStatus === "running") return;
+  record.cardSuggestionStatus = "running";
+  record.cardSuggestionError = null;
+  await db.put("records", record);
+  renderPreservingScroll();
+  try {
+    const response = await apiFetch("/api/ai/analyze", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ provider: state.aiPreference?.provider, title: currentWork(record)?.title || record.title, rawText: record.rawText })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.message || "AI 建议暂时没有完成");
+    const analysis = payload.analysis;
+    const baseOrder = record.cards.length;
+    const newCards = (analysis.memory_cards || []).map((card, index) => ({ ...card, order: baseOrder + index }));
+    record.cards = [...record.cards, ...newCards];
+    if (!record.attitudeProvenance) {
+      record.attitudeSuggestion = analysis.attitude?.suggested || record.attitudeSuggestion || null;
+      record.attitudeSuggestionDetails = analysis.attitude || record.attitudeSuggestionDetails || null;
+    }
+    record.emotions = analysis.emotions?.length ? analysis.emotions : record.emotions;
+    record.aiWarnings = analysis.warnings || [];
+    record.analysisMetadata = payload.metadata;
+    record.cardSuggestionStatus = "done";
+    record.updatedAt = new Date().toISOString();
+    await db.put("records", record);
+    renderPreservingScroll();
+    announce(newCards.length ? `AI 建议了 ${newCards.length} 张新卡片，一起放在下面等你确认` : "AI 这次没有给出新的建议卡片");
+  } catch (error) {
+    record.cardSuggestionStatus = "failed";
+    record.cardSuggestionError = error.message;
+    await db.put("records", record);
+    renderPreservingScroll();
+    announce("AI 建议暂时没有完成，可以再试一次");
   }
 }
 
@@ -1655,6 +1705,8 @@ app.addEventListener("click", async (event) => {
     await requestWorkMatch(currentRecord()?.id, { force: true });
   } else if (action === "retry-local-analysis") {
     await runAiAnalysis(currentRecord()?.id);
+  } else if (action === "request-ai-cards") {
+    await requestAiCards(currentRecord()?.id);
   } else if (action === "skip-to-manual") {
     // 反馈 #3：AI 整理不可用/失败时，之前完全没有手动路径——个人态度与记忆卡片
     // 一直被 status === "raw_only_confirmed" 挡住，只能一直等或重试 AI。
