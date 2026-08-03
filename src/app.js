@@ -1,4 +1,4 @@
-import { db, clearLocalData } from "./db.js?v=10";
+import { db, clearLocalData, migrateLocalToCloud } from "./db.js?v=11";
 import { parseTicketText, draftViewingEvent } from "./ticket.js";
 import { applyBangumiCandidateToWork, buildWorkSearchQuery, chooseDailyWallpaper, chooseNextWallpaper, wallpaperCandidates } from "./bangumi.js?v=10";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
@@ -81,7 +81,8 @@ const state = {
   // C4：票务粘贴流程
   ticketParseResult: null,   // 解析结果，显示确认卡片
   pendingViewingEvents: [],  // 用户已确认、等待写入 DB 的场次列表
-  viewingEvents: []          // 当前详情页关联的已保存场次
+  viewingEvents: [],         // 当前详情页关联的已保存场次
+  syncMigrateStatus: null   // "running" | "done" | "error" | null
 };
 
 let carouselGesture = null;
@@ -523,8 +524,11 @@ function composerOverlay() {
 function syncSettingsSection() {
   const enabled = !!(localStorage.getItem(ACCESS_PASSWORD_KEY));
   if (enabled) {
+    const migrateStatus = state.syncMigrateStatus || "";
     return `<div class="settings-actions">
-      <button type="button" data-action="disconnect-sync"><span><b>已开启云端同步</b><small>数据同步至云端，点击断开连接</small></span>${icon("chevron")}</button>
+      <button type="button" data-action="test-sync-connection"><span><b>测试连接</b><small>验证云端数据库是否可用</small></span>${icon("chevron")}</button>
+      <button type="button" data-action="migrate-to-cloud" ${migrateStatus === "running" ? "disabled" : ""}><span><b>上传本机数据到云端</b><small>${migrateStatus === "running" ? "上传中…" : migrateStatus === "done" ? "上传完成，刷新页面生效" : migrateStatus === "error" ? "上传失败，请重试" : "将本机已有记录同步到云端（一次性操作）"}</small></span>${icon("chevron")}</button>
+      <button type="button" data-action="disconnect-sync"><span><b>断开云端同步</b><small>断开后数据只保存在本机</small></span>${icon("chevron")}</button>
     </div>`;
   }
   return `<div class="settings-sync-row">
@@ -1038,6 +1042,29 @@ app.addEventListener("click", async (event) => {
     await db.put("meta", state.recordingPreference);
     render();
     announce(state.recordingPreference.autoAnalyze ? "已开启自动整理" : "新记录将只保存原文");
+  } else if (action === "test-sync-connection") {
+    try {
+      const res = await apiFetch("/api/sync/status");
+      const data = await res.json();
+      // eslint-disable-next-line no-alert
+      alert(data.ok ? "✅ 云端数据库连接正常！" : `❌ 连接失败：${data.error}`);
+    } catch (e) {
+      // eslint-disable-next-line no-alert
+      alert(`❌ 请求失败：${e.message}`);
+    }
+  } else if (action === "migrate-to-cloud") {
+    state.syncMigrateStatus = "running";
+    render();
+    try {
+      await migrateLocalToCloud((msg) => announce(msg));
+      state.syncMigrateStatus = "done";
+      announce("本机数据已上传到云端，刷新页面可看到最新数据");
+    } catch (e) {
+      state.syncMigrateStatus = "error";
+      console.error("[migrate]", e);
+      announce(`上传失败：${e.message}`);
+    }
+    render();
   } else if (action === "save-sync-password") {
     const input = document.querySelector("#sync-password-input");
     const password = input?.value.trim() || "";

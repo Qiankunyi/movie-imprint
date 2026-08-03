@@ -135,11 +135,44 @@ async function cloudOp(cloudFn, localFn) {
     return await cloudFn();
   } catch (e) {
     if (e.message === "db_401") {
-      // 密码错误，清除密码并降级
       localStorage.removeItem(ACCESS_PASSWORD_KEY);
     }
-    // 其他云端错误（500、网络故障等）也降级到本地，不崩溃
+    // 记录错误，方便在浏览器控制台查看实际原因
+    console.error("[db] 云端操作失败，降级到本地存储:", e.message);
     return localFn();
+  }
+}
+
+/**
+ * 将本机 IndexedDB 的全部数据一次性上传到 D1 云端。
+ * 仅在云端同步已开启时可用。
+ */
+export async function migrateLocalToCloud(onProgress) {
+  if (!isCloudSyncEnabled()) throw new Error("请先开启云端同步");
+
+  for (const store of STORES) {
+    onProgress?.(`正在上传 ${store}…`);
+    const items = await idb.getAll(store);
+    if (items.length === 0) continue;
+
+    if (store === "viewingEvents") {
+      const res = await apiFetch("/api/sync/viewingEvents", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(items)
+      });
+      if (!res.ok) throw new Error(`上传 ${store} 失败 (${res.status})`);
+      continue;
+    }
+
+    for (const item of items) {
+      const res = await apiFetch(`/api/sync/${store}/${encodeURIComponent(item.id)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(item)
+      });
+      if (!res.ok) throw new Error(`上传 ${store}/${item.id} 失败 (${res.status})`);
+    }
   }
 }
 
