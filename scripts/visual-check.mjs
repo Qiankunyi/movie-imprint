@@ -7,7 +7,9 @@ const root = resolve(import.meta.dirname, "..");
 const port = 4174;
 const baseUrl = `http://127.0.0.1:${port}`;
 const testOnly = process.argv.includes("--test-only");
-const mockWallpaper = await readFile(join(root, "docs", "design", "mockups", "assets", "cinema-memory-hero-v1.png"));
+// R3：壁纸已移除，这张图现在只是 /api/bangumi/image 的模拟响应体（用于海报请求 mock），
+// 文件本身与展示无关，保留原路径即可。
+const mockPosterImage = await readFile(join(root, "docs", "design", "mockups", "assets", "cinema-memory-hero-v1.png"));
 
 async function loadPlaywright() {
   if (process.env.PLAYWRIGHT_MODULE) {
@@ -90,7 +92,7 @@ async function mockBangumi(page) {
     });
   });
   await page.route("**/api/bangumi/image?**", async (route) => {
-    await route.fulfill({ status: 200, contentType: "image/png", body: mockWallpaper });
+    await route.fulfill({ status: 200, contentType: "image/png", body: mockPosterImage });
   });
   await page.route("**/api/bangumi/search?**", async (route) => {
     const query = new URL(route.request().url()).searchParams.get("q") || "";
@@ -209,56 +211,25 @@ async function runFunctionalPath(browser) {
   if (!linkedWork || linkedWork.identity_status !== "matched" || linkedWork.external_refs?.[0]?.id !== "900001") {
     throw new Error("记录没有保存已确认的 Bangumi 作品身份");
   }
-  await page.evaluate(async () => {
-    const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("movie-imprint-local", 2);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    await new Promise((resolve, reject) => {
-      const transaction = database.transaction("works", "readwrite");
-      transaction.objectStore("works").put({
-        id: "work_second_wallpaper",
-        work_id: "work_second_wallpaper",
-        title: "第二张壁纸",
-        original_title: null,
-        work_type: "animation_movie",
-        aliases: [],
-        release_year: 2025,
-        external_refs: [{ source: "bangumi", id: "900002", url: "https://bgm.tv/subject/900002" }],
-        identity_status: "matched",
-        match: { status: "confirmed", candidates: [] }
-      });
-      transaction.oncomplete = resolve;
-      transaction.onerror = () => reject(transaction.error);
-    });
-  });
   await page.getByRole("button", { name: "返回记录流" }).click();
   await page.reload();
-  await page.getByTestId("daily-wallpaper").waitFor();
-  if (!(await page.getByTestId("wallpaper-credit").innerText()).includes("今日壁纸")) throw new Error("按日壁纸来源没有显示");
-  const firstWallpaperSrc = await page.getByTestId("daily-wallpaper").getAttribute("src");
+  // R3：壁纸已移除，首页改为鉴赏履历卡——回归检查卡片正确展示海报、没有任何壁纸残留元素、
+  // 设置面板已改名且不再有壁纸选项。
+  if (await page.locator(".wallpaper, .wallpaper-image, .wallpaper-scrim, .wallpaper-credit, .detail-wallpaper").count()) {
+    throw new Error("首页或详情页仍残留壁纸相关元素");
+  }
+  const summerTrainCard = page.locator(".record-card", { hasText: "夏日列车" });
+  await summerTrainCard.waitFor();
+  const posterImg = summerTrainCard.locator(".record-poster-img");
+  await posterImg.waitFor();
+  const posterLoaded = await posterImg.evaluate((image) => image.complete && image.naturalWidth > 0);
+  if (!posterLoaded) throw new Error("履历卡海报没有正常加载");
   await page.getByRole("button", { name: "偏好设置", exact: true }).click();
-  await page.locator("[data-action='change-wallpaper']").click();
-  await page.waitForFunction((previous) => document.querySelector("[data-testid='daily-wallpaper']")?.getAttribute("src") !== previous, firstWallpaperSrc);
-  const changedWallpaperSrc = await page.getByTestId("daily-wallpaper").getAttribute("src");
-  if (firstWallpaperSrc === changedWallpaperSrc) throw new Error("换一张没有改变壁纸作品");
-  await page.locator("[data-action='fix-wallpaper']").click();
-  await page.waitForFunction(() => document.querySelector("[data-testid='wallpaper-mode']")?.textContent?.includes("已固定"));
-  if (!(await page.getByTestId("wallpaper-mode").innerText()).includes("已固定")) throw new Error("壁纸固定状态没有显示");
-  await page.getByRole("button", { name: "关闭", exact: true }).click();
-  await page.reload();
-  if ((await page.getByTestId("daily-wallpaper").getAttribute("src")) !== changedWallpaperSrc) throw new Error("固定壁纸刷新后发生变化");
-  await page.getByRole("button", { name: "偏好设置", exact: true }).click();
-  await page.locator("[data-action='use-daily-wallpaper']").click();
-  await page.waitForFunction(() => document.querySelector("[data-testid='wallpaper-mode']")?.textContent?.includes("每天稳定"));
-  await page.locator("[data-action='toggle-wallpaper']").click();
-  await page.waitForFunction(() => document.querySelector("[data-testid='wallpaper-mode']")?.textContent?.includes("已关闭"));
-  await page.getByRole("button", { name: "关闭", exact: true }).click();
-  if (await page.getByTestId("daily-wallpaper").count()) throw new Error("关闭壁纸后图片仍然存在");
-  await page.getByRole("button", { name: "偏好设置", exact: true }).click();
-  await page.locator("[data-action='toggle-wallpaper']").click();
-  await page.getByTestId("daily-wallpaper").waitFor();
+  await page.getByTestId("settings").waitFor();
+  if (await page.locator("[data-action='toggle-wallpaper'], [data-action='change-wallpaper']").count()) {
+    throw new Error("设置面板里仍残留壁纸选项");
+  }
+  if (!(await page.getByTestId("settings").innerText()).includes("云端同步")) throw new Error("设置面板改名后同步区块丢失");
   await page.getByRole("button", { name: "关闭", exact: true }).click();
   await page.getByRole("heading", { name: "夏日列车" }).click();
   await page.getByTestId("detail").waitFor();
@@ -297,14 +268,11 @@ async function runFunctionalPath(browser) {
   await page.getByRole("heading", { name: "雨停后的旋律" }).waitFor();
 
   await page.reload();
-  for (let swipe = 0; swipe < 2; swipe += 1) {
-    const carousel = page.getByTestId("memory-carousel");
-    await carousel.scrollIntoViewIfNeeded();
-    const box = await carousel.boundingBox();
-    await page.mouse.move(box.x + box.width * 0.82, box.y + box.height * 0.42);
-    await page.mouse.down();
-    await page.mouse.move(box.x + box.width * 0.18, box.y + box.height * 0.42, { steps: 6 });
-    await page.mouse.up();
+  // R3：记忆卡片竖向连续流动，全部一次渲染——不再需要横向滑动就能看到全部卡片。
+  const memoryList = page.getByTestId("memory-list");
+  await memoryList.waitFor();
+  if (await page.locator(".memory-pagination, .swipe-hint").count()) {
+    throw new Error("记忆卡片仍残留横向分页/滑动提示控件");
   }
   await page.getByRole("heading", { name: "雨停后的旋律" }).waitFor();
   const summary = await page.getByTestId("attitude-summary").innerText();
@@ -350,45 +318,73 @@ async function runFunctionalPath(browser) {
   await context.close();
 }
 
-async function runOfflineWallpaperPath(browser) {
+/**
+ * R3：壁纸移除后，海报缓存（C2 建立的策略）复用同一个 /api/bangumi/image 端点与
+ * Service Worker 缓存实现，只是缓存名从 movie-imprint-wallpapers-v1 改成了
+ * movie-imprint-posters-v1。这里验证断网时首页履历卡的海报仍能从缓存加载，不破图。
+ */
+async function runOfflinePosterPath(browser) {
   const context = await browser.newContext({ viewport: { width: 360, height: 800 }, colorScheme: "light", serviceWorkers: "allow" });
   const page = await context.newPage();
   await page.goto(baseUrl);
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.evaluate(async ({ imageBase64 }) => {
     const bytes = Uint8Array.from(atob(imageBase64), (character) => character.charCodeAt(0));
-    const cache = await caches.open("movie-imprint-wallpapers-v1");
+    const cache = await caches.open("movie-imprint-posters-v1");
     await cache.put("/api/bangumi/image?subjectId=449", new Response(bytes, { headers: { "content-type": "image/png", "x-movie-imprint-cached-at": String(Date.now()) } }));
     const database = await new Promise((resolve, reject) => {
       const request = indexedDB.open("movie-imprint-local", 2);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
+    const now = new Date().toISOString();
     await new Promise((resolve, reject) => {
-      const transaction = database.transaction("works", "readwrite");
+      const transaction = database.transaction(["works", "records"], "readwrite");
       transaction.objectStore("works").put({
-        id: "work_offline_wallpaper",
-        work_id: "work_offline_wallpaper",
+        id: "work_offline_poster",
+        work_id: "work_offline_poster",
         title: "哆啦A梦：大雄与动物行星",
         original_title: "ドラえもん のび太とアニマル惑星",
         work_type: "animation_movie",
         aliases: [],
         release_year: 1990,
+        poster_subject_id: 449,
         external_refs: [{ source: "bangumi", id: "449", url: "https://bgm.tv/subject/449" }],
         identity_status: "matched",
-        match: { status: "confirmed", candidates: [] }
+        match: { status: "confirmed", candidates: [] },
+        first_recorded_at: now
+      });
+      transaction.objectStore("records").put({
+        id: "record_offline_poster",
+        schema_version: "0.1-local",
+        title: "哆啦A梦：大雄与动物行星",
+        rawText: "断网海报缓存回归测试用记录。",
+        tags: [],
+        inputHints: { seriesPath: [], workTitle: null },
+        createdAt: now,
+        updatedAt: now,
+        status: "confirmed",
+        attitude: "like",
+        recommendation: null,
+        recommendationNote: "",
+        cards: [],
+        work_id: "work_offline_poster",
+        workId: "work_offline_poster",
+        record_kind: "viewing",
+        viewing_event_id: null
       });
       transaction.oncomplete = resolve;
       transaction.onerror = () => reject(transaction.error);
     });
-  }, { imageBase64: mockWallpaper.toString("base64") });
+  }, { imageBase64: mockPosterImage.toString("base64") });
   await page.reload();
-  await page.getByTestId("daily-wallpaper").waitFor();
+  const posterImg = page.locator(".record-card", { hasText: "哆啦A梦：大雄与动物行星" }).locator(".record-poster-img");
+  await posterImg.waitFor();
   await context.setOffline(true);
   await page.reload();
-  await page.getByTestId("daily-wallpaper").waitFor();
-  const loaded = await page.getByTestId("daily-wallpaper").evaluate((image) => image.complete && image.naturalWidth > 0);
-  if (!loaded) throw new Error("离线刷新后没有从本地缓存恢复按日壁纸");
+  await posterImg.waitFor();
+  const loaded = await posterImg.evaluate((image) => image.complete && image.naturalWidth > 0);
+  if (!loaded) throw new Error("离线刷新后履历卡海报没有从本地缓存恢复");
   await context.close();
 }
 
@@ -421,12 +417,13 @@ async function captureVariants(browser) {
       await page.locator("[data-action='confirm-work-match'][data-subject-id='900001']").click();
       await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("作品已确认"));
       await page.getByRole("button", { name: "返回记录流" }).click();
-      await page.getByTestId("daily-wallpaper").waitFor();
-      await page.screenshot({ path: join(output, "wallpaper.png") });
+      // R3：壁纸移除后，首页鉴赏履历卡（含制式/活动徽章、金属描边）替代了原来的壁纸截图。
+      await page.locator(".record-card.cinema").first().waitFor();
+      await page.screenshot({ path: join(output, "record-cards.png") });
       await page.getByRole("button", { name: "偏好设置", exact: true }).click();
-      await page.getByTestId("wallpaper-settings").waitFor();
+      await page.getByTestId("settings").waitFor();
       await page.waitForTimeout(250);
-      await page.screenshot({ path: join(output, "wallpaper-settings.png") });
+      await page.screenshot({ path: join(output, "settings.png") });
       await page.getByRole("button", { name: "关闭", exact: true }).click();
       await page.getByRole("heading", { name: "夏日列车" }).click();
       await page.getByTestId("attitude-summary").click();

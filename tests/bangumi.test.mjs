@@ -5,8 +5,6 @@ import {
   buildBangumiImageRequest,
   buildBangumiSearchRequest,
   buildWorkSearchQuery,
-  chooseDailyWallpaper,
-  chooseNextWallpaper,
   isAllowedBangumiImageUrl,
   normalizeBangumiSubjects
 } from "../src/bangumi.js";
@@ -24,28 +22,6 @@ test("图片代理只接受正式条目 ID 与 Bangumi 图片主机", () => {
   assert.equal(isAllowedBangumiImageUrl("https://lain.bgm.tv/pic/cover/l/example.jpg"), true);
   assert.equal(isAllowedBangumiImageUrl("http://lain.bgm.tv/pic/cover/l/example.jpg"), false);
   assert.equal(isAllowedBangumiImageUrl("https://lain.bgm.tv.evil.example/cover.jpg"), false);
-});
-
-test("同一天从已匹配作品中稳定选择同一张壁纸", () => {
-  const works = [
-    { id: "work_b", title: "作品乙", identity_status: "matched", external_refs: [{ source: "bangumi", id: "202", url: "https://bgm.tv/subject/202" }] },
-    { id: "work_local", title: "本地作品", identity_status: "local_only", external_refs: [] },
-    { id: "work_a", title: "作品甲", identity_status: "matched", external_refs: [{ source: "bangumi", id: "101", url: "https://bgm.tv/subject/101" }] }
-  ];
-  const first = chooseDailyWallpaper(works, "2026-08-02");
-  const second = chooseDailyWallpaper([...works].reverse(), "2026-08-02");
-  assert.deepEqual(first, second);
-  assert.ok([101, 202].includes(first.subjectId));
-  assert.equal(chooseDailyWallpaper([works[1]], "2026-08-02"), null);
-});
-
-test("换一张壁纸按稳定作品顺序轮换", () => {
-  const works = [
-    { id: "work_b", title: "乙", identity_status: "matched", external_refs: [{ source: "bangumi", id: "2" }] },
-    { id: "work_a", title: "甲", identity_status: "matched", external_refs: [{ source: "bangumi", id: "1" }] }
-  ];
-  assert.equal(chooseNextWallpaper(works, "work_a", "2026-08-02").workId, "work_b");
-  assert.equal(chooseNextWallpaper(works, "work_b", "2026-08-02").workId, "work_a");
 });
 
 test("确认候选只更新稳定 Work 并保存 Bangumi 外部身份", () => {

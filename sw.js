@@ -1,7 +1,10 @@
-const CACHE = "movie-imprint-shell-v20";
-const WALLPAPER_CACHE = "movie-imprint-wallpapers-v1";
-const WALLPAPER_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
-const WALLPAPER_CACHED_AT = "x-movie-imprint-cached-at";
+const CACHE = "movie-imprint-shell-v21";
+// R3：这个缓存原名 WALLPAPER_CACHE，是 C2 为「每日壁纸」建立的图片缓存策略。
+// 壁纸功能已在 R3 移除，但同一个 /api/bangumi/image 端点现在被海报复用，
+// 缓存策略本身原样保留，只是改个名字反映它现在缓存的是海报。
+const POSTER_CACHE = "movie-imprint-posters-v1";
+const POSTER_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+const POSTER_CACHED_AT = "x-movie-imprint-cached-at";
 const SHELL = [
   "/",
   "/index.html",
@@ -10,14 +13,14 @@ const SHELL = [
   "/public/icon-192.png",
   "/public/icon-512.png",
   "/public/icon-maskable-512.png",
-  "/docs/design/tokens-v2.css?v=14",
-  "/styles/app.css?v=17",
-  "/src/app.js?v=18",
+  "/public/icon-character-v2-flat.png",
+  "/docs/design/tokens-v2.css?v=15",
+  "/styles/app.css?v=20",
+  "/src/app.js?v=21",
   "/src/editor.js?v=8",
   "/src/db.js?v=7",
   "/src/domain.js?v=11",
-  "/src/bangumi.js?v=10",
-  "/docs/design/mockups/assets/cinema-memory-hero-v1.png"
+  "/src/bangumi.js?v=11"
 ];
 
 self.addEventListener("install", (event) => {
@@ -27,7 +30,7 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE && key !== WALLPAPER_CACHE).map((key) => caches.delete(key))))
+    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE && key !== POSTER_CACHE).map((key) => caches.delete(key))))
   );
   self.clients.claim();
 });
@@ -36,10 +39,10 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET" || new URL(event.request.url).origin !== self.location.origin) return;
   const path = new URL(event.request.url).pathname;
   if (path === "/api/bangumi/image") {
-    event.respondWith(caches.open(WALLPAPER_CACHE).then(async (cache) => {
+    event.respondWith(caches.open(POSTER_CACHE).then(async (cache) => {
       const cached = await cache.match(event.request);
-      const cachedAt = Number(cached?.headers.get(WALLPAPER_CACHED_AT) || 0);
-      if (cached && Date.now() - cachedAt < WALLPAPER_MAX_AGE) return cached;
+      const cachedAt = Number(cached?.headers.get(POSTER_CACHED_AT) || 0);
+      if (cached && Date.now() - cachedAt < POSTER_MAX_AGE) return cached;
       let response;
       try {
         response = await fetch(event.request);
@@ -49,14 +52,14 @@ self.addEventListener("fetch", (event) => {
       }
       if (response.ok && response.headers.get("content-type")?.startsWith("image/")) {
         const headers = new Headers(response.headers);
-        headers.set(WALLPAPER_CACHED_AT, String(Date.now()));
+        headers.set(POSTER_CACHED_AT, String(Date.now()));
         const stored = new Response(response.clone().body, { status: response.status, statusText: response.statusText, headers });
         await cache.put(event.request, stored);
         const keys = await cache.keys();
         const expired = await Promise.all(keys.map(async (key) => {
           const item = await cache.match(key);
-          const savedAt = Number(item?.headers.get(WALLPAPER_CACHED_AT) || 0);
-          return Date.now() - savedAt >= WALLPAPER_MAX_AGE ? key : null;
+          const savedAt = Number(item?.headers.get(POSTER_CACHED_AT) || 0);
+          return Date.now() - savedAt >= POSTER_MAX_AGE ? key : null;
         }));
         await Promise.all(expired.filter(Boolean).map((key) => cache.delete(key)));
         const freshKeys = await cache.keys();

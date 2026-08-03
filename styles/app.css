@@ -76,59 +76,6 @@ svg {
   isolation: isolate;
 }
 
-.wallpaper,
-.detail-wallpaper {
-  position: fixed;
-  z-index: -3;
-  inset: 0;
-  background-color: var(--surface-low);
-  background-image: url("/docs/design/mockups/assets/cinema-memory-hero-v1.png");
-  background-position: 50% 50%;
-  background-size: cover;
-}
-
-.wallpaper-scrim {
-  position: fixed;
-  z-index: -2;
-  inset: 0;
-  background: var(--wallpaper-scrim);
-}
-
-.wallpaper-image {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: 50% 36%;
-}
-
-.wallpaper-credit {
-  display: flex;
-  min-height: 32px;
-  padding: 6px 10px;
-  margin-bottom: var(--space-2);
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  color: #fff;
-  border-radius: var(--radius-tag);
-  background: rgb(6 12 14 / 68%);
-  backdrop-filter: blur(8px);
-  font: var(--type-meta);
-}
-
-.wallpaper-credit span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.wallpaper-credit a {
-  flex: 0 0 auto;
-  color: #9cebf4;
-  text-decoration: none;
-}
-
 .top-bar {
   position: sticky;
   z-index: 4;
@@ -138,7 +85,7 @@ svg {
   justify-content: space-between;
   min-height: calc(64px + env(safe-area-inset-top));
   padding: env(safe-area-inset-top) var(--space-4) 0;
-  background: var(--wallpaper-header-scrim);
+  background: var(--surface);
 }
 
 .brand-lockup,
@@ -198,18 +145,50 @@ svg {
   margin: 0 auto;
 }
 
+/* ── R3：首页鉴赏履历卡 ──────────────────────────────────────────────────── */
+
 .record-card {
+  position: relative;
   margin: 0 0 var(--space-3);
   overflow: hidden;
+  border: 1px solid var(--record-border);
   border-radius: var(--radius-card);
   background: var(--surface-container);
   box-shadow: var(--shadow-float);
 }
 
+/* 影院卡：金属质感描边 + 顶部横向渐变高光 */
+.record-card.cinema {
+  border-color: var(--record-border-cinema);
+}
+
+.record-card.cinema::before {
+  position: absolute;
+  z-index: 1;
+  inset: 0 0 auto;
+  height: 2px;
+  content: "";
+  background: var(--record-highlight-cinema);
+}
+
+/* 高规格制式（IMAX / Dolby / 4DX / MX4D / ScreenX）→ 描边与高光透明度更高 */
+.record-card.cinema.high-spec {
+  border-color: var(--record-border-cinema-highspec);
+}
+
+.record-card.cinema.high-spec::before {
+  background: var(--record-highlight-cinema-highspec);
+}
+
+/* 补充记录卡：左侧细竖线，与观影卡区分 */
+.record-card.supplement {
+  border-left: 3px solid var(--accent);
+}
+
 .record-card-button {
   display: block;
   width: 100%;
-  min-height: 148px;
+  min-height: 96px;
   padding: var(--space-4);
   text-align: left;
   background: transparent;
@@ -217,6 +196,140 @@ svg {
 
 .record-card-button:active {
   background: var(--surface-high);
+}
+
+.record-card-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+
+.record-poster {
+  position: relative;
+  width: 72px;
+  height: 108px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--surface-high);
+}
+
+.record-poster-fallback {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  color: var(--ink-soft);
+  font: var(--type-title);
+}
+
+.record-poster-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.record-card-main {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+  align-content: start;
+}
+
+.record-card-main h2 {
+  margin: 0 0 2px;
+  overflow: hidden;
+  color: var(--accent-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--type-card-title);
+}
+
+.record-card-meta-line {
+  overflow: hidden;
+  color: var(--ink-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--type-meta);
+}
+
+.record-card-meta-line.muted {
+  color: var(--ink-soft);
+  opacity: 0.82;
+}
+
+.record-badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: var(--space-2);
+}
+
+/* 制式徽章：实心底 + 白字，方角 */
+.format-badge {
+  display: inline-flex;
+  min-height: 22px;
+  padding: 2px 8px;
+  align-items: center;
+  gap: 4px;
+  font: var(--type-meta);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.format-badge.solid {
+  border-radius: 4px;
+  color: var(--badge-ink, #fff);
+  background: var(--badge-bg, var(--surface-high));
+}
+
+.format-badge.solid.tone-imax { --badge-bg: var(--badge-imax-bg); --badge-ink: var(--badge-imax-ink); box-shadow: inset 0 0 0 1px var(--badge-imax-border); }
+.format-badge.solid.tone-dolby { --badge-bg: var(--badge-dolby-bg); --badge-ink: var(--badge-dolby-ink); box-shadow: inset 0 0 0 1px var(--badge-dolby-border); }
+.format-badge.solid.tone-warm { --badge-bg: var(--badge-warm-bg); --badge-ink: var(--badge-warm-ink); }
+.format-badge.solid.tone-screenx { --badge-bg: var(--badge-screenx-bg); --badge-ink: var(--badge-screenx-ink); }
+.format-badge.solid.tone-neutral { --badge-bg: var(--surface-high); --badge-ink: var(--ink-soft); }
+
+/* 活动徽章：描边样式（透明底 + 彩色边框和文字），圆角 */
+.format-badge.outline {
+  border: 1px solid var(--event-tone, var(--outline));
+  border-radius: 999px;
+  color: var(--event-tone, var(--ink-soft));
+  background: transparent;
+}
+
+.format-badge.outline.tone-warm-red { --event-tone: var(--event-warm-red); }
+.format-badge.outline.tone-warm-orange { --event-tone: var(--event-warm-orange); }
+.format-badge.outline.tone-gold { --event-tone: var(--event-gold); }
+.format-badge.outline.tone-indigo { --event-tone: var(--event-indigo); }
+.format-badge.outline.tone-cyan { --event-tone: var(--event-cyan); }
+.format-badge.outline.tone-neutral { --event-tone: var(--outline); }
+.format-badge.outline.overflow { border-style: dashed; }
+
+.format-badge-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.rewatch-tag {
+  display: inline-flex;
+  min-height: 22px;
+  padding: 2px 8px;
+  align-items: center;
+  color: var(--ink-soft);
+  border: 1px solid var(--outline-soft);
+  border-radius: 999px;
+  font: var(--type-meta);
+}
+
+.record-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .record-meta {
@@ -264,34 +377,10 @@ svg {
   background: var(--accent);
 }
 
-.record-card h2 {
-  margin: 0 0 var(--space-2);
-  color: var(--accent-strong);
-  font: var(--type-card-title);
-}
-
-.record-card p {
-  display: -webkit-box;
-  margin: 0;
-  overflow: hidden;
-  color: var(--ink);
-  font: var(--type-body);
-  white-space: pre-line;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-}
-
-.record-card mark {
-  color: var(--accent-strong);
-  background: transparent;
-  font-weight: 600;
-}
-
 .record-status {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-top: var(--space-3);
   color: var(--ink-soft);
   font: var(--type-meta);
 }
@@ -315,17 +404,46 @@ svg {
   border: 2px solid var(--accent);
 }
 
-.empty-copy {
+.empty-state {
   display: grid;
   min-height: 62dvh;
+  padding: var(--space-6);
   place-items: center;
+  gap: var(--space-4);
   text-align: center;
 }
 
-.empty-copy p {
-  padding: var(--space-4);
+.empty-state-illustration {
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: var(--shadow-float);
+}
+
+.empty-state-copy {
+  margin: 0;
   color: var(--ink);
   font: var(--type-display);
+}
+
+.empty-state-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.empty-state-fab-hint {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  color: var(--on-accent);
+  border-radius: 50%;
+  background: var(--accent);
+  font-weight: 600;
 }
 
 .fab {
@@ -353,36 +471,25 @@ svg {
   background: var(--surface);
 }
 
-.detail-wallpaper {
-  position: absolute;
-  z-index: 0;
-  height: 292px;
-  background-position: 50% 36%;
-}
-
 .detail-header {
-  position: relative;
-  z-index: 2;
+  position: sticky;
+  z-index: 4;
+  top: 0;
   display: flex;
   justify-content: space-between;
   min-height: calc(64px + env(safe-area-inset-top));
   padding: env(safe-area-inset-top) var(--space-3) 0;
-  color: #fff;
-  background: rgb(12 18 20 / 42%);
-}
-
-.icon-button.inverse {
-  color: #fff;
+  color: var(--ink);
+  background: var(--surface);
 }
 
 .detail-content {
   position: relative;
   z-index: 1;
   max-width: 680px;
-  min-height: calc(100dvh - 236px);
+  min-height: calc(100dvh - 64px);
   padding: var(--space-5) var(--space-5) calc(40px + env(safe-area-inset-bottom));
-  margin: 172px auto 0;
-  border-radius: var(--radius-sheet) var(--radius-sheet) 0 0;
+  margin: 0 auto;
   background: var(--surface);
 }
 
@@ -666,32 +773,20 @@ svg {
   height: 18px;
 }
 
-.memory-stage {
-  min-height: 268px;
-  border-radius: var(--radius-card);
-  touch-action: pan-y;
-  user-select: none;
-}
-
-.memory-stage:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 4px;
+/* R3：竖向连续流动——全部卡片一次渲染，卡片间距明显大于卡片内部行距，
+   每张卡有完整边界，不做通栏分隔线；不做 scroll-snap，自由滚动。 */
+.memory-list {
+  display: grid;
+  gap: var(--space-5);
 }
 
 .memory-card {
-  min-height: 218px;
+  min-height: 176px;
   padding: var(--space-4);
   border: 1px solid var(--outline-soft);
   border-radius: var(--radius-card);
   background: var(--surface-container);
   box-shadow: 0 4px 16px rgb(13 32 37 / 7%);
-  cursor: grab;
-  transition: transform var(--motion-fast) ease;
-}
-
-.memory-stage.dragging .memory-card {
-  cursor: grabbing;
-  transition: none;
 }
 
 [data-theme="dark"] .memory-card {
@@ -760,50 +855,6 @@ svg {
   background: var(--accent-container);
 }
 
-.memory-pagination {
-  display: grid;
-  grid-template-columns: var(--touch) auto 1fr var(--touch);
-  min-height: var(--touch);
-  margin-top: var(--space-2);
-  align-items: center;
-  color: var(--ink-soft);
-  font: var(--type-meta);
-}
-
-.memory-pagination button {
-  width: var(--touch);
-  height: var(--touch);
-  color: var(--accent-strong);
-  background: transparent;
-  font-size: 26px;
-}
-
-.dots {
-  display: flex;
-  justify-content: center;
-  gap: 6px;
-}
-
-.dots i {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--outline-soft);
-}
-
-.dots i.active {
-  width: 18px;
-  border-radius: 4px;
-  background: var(--accent);
-}
-
-.swipe-hint {
-  margin-top: calc(var(--space-1) * -1);
-  color: var(--ink-soft);
-  text-align: center;
-  font: var(--type-meta);
-}
-
 .memory-empty {
   min-height: 180px;
   padding: var(--space-6);
@@ -841,7 +892,7 @@ svg {
   animation: sheet-in var(--motion-standard) cubic-bezier(0.2, 0, 0, 1);
 }
 
-.wallpaper-settings,
+.settings-sheet,
 .export-sheet {
   padding-bottom: calc(var(--space-5) + env(safe-area-inset-bottom));
 }
@@ -930,18 +981,9 @@ svg {
   transform: translate(-50%, 0);
 }
 
-.wallpaper-settings h2 {
+.settings-sheet h2 {
   margin: var(--space-1) 0 0;
   font: var(--type-title);
-}
-
-.wallpaper-mode {
-  padding: var(--space-3);
-  margin: var(--space-4) 0 var(--space-2);
-  color: var(--accent-strong);
-  border-radius: 12px;
-  background: var(--accent-container);
-  font: var(--type-label);
 }
 
 .settings-section-title {

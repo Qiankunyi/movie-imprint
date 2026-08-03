@@ -64,3 +64,9 @@
 3. 在 Android 真机验证偏好层滚动、中文／日文输入法与 PWA 独立窗口。
 
 这些改进不阻塞进入交接文档的 C3 AI 结构化整理；票务粘贴与脱敏属于其后的 C4。
+
+## 2026-08-04 补记（R3）
+
+按日轮换壁纸功能已于 R3 移除（用户决策，见 `docs/handoff/R3_HISTORY_CARD.md`）：`resolveDailyWallpaper()`、`saveWallpaperPreference()`、`changeWallpaper()`（app.js）与 `wallpaperCandidates()`、`chooseDailyWallpaper()`、`chooseNextWallpaper()`（bangumi.js）已删除；偏好设置面板里的壁纸模式选择与"换一张"按钮已移除。
+
+本节记录的**作品匹配能力与图片接口本身保留**，未受影响：`/api/bangumi/search`、`/api/bangumi/image` 代理，`apiBangumiImageUrl()`、`buildBangumiImageRequest()`、`isAllowedBangumiImageUrl()`，以及 Service Worker 的图片缓存策略（现更名为海报缓存 `movie-imprint-posters-v1`，策略不变）——这些都被 R3 的首页鉴赏履历卡海报直接复用。

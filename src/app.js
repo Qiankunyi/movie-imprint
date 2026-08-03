@@ -1,10 +1,12 @@
 import { db, clearLocalData, migrateLocalToCloud } from "./db.js?v=12";
 import { parseTicketText, draftViewingEvent } from "./ticket.js";
-import { buildWorkSearchQuery, chooseDailyWallpaper, chooseNextWallpaper, wallpaperCandidates } from "./bangumi.js?v=10";
+import { buildWorkSearchQuery } from "./bangumi.js?v=11";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
 import { runMigrationIfNeeded } from "./migrate.js?v=1";
 import { EVENT_TYPES } from "./event-types.js?v=1";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
+import { recordCard, emptyHomeStateMarkup } from "./record-card.js?v=1";
+import { memoryListMarkup } from "./memory-list.js?v=1";
 import {
   captureTransition,
   toggleEventType,
@@ -30,7 +32,6 @@ import {
   createId,
   deterministicAnalysis,
   emptyRecommendationDetails,
-  formatDate,
   isRecommendationAllowed,
   mergeWorks,
   parseDraft,
@@ -85,7 +86,7 @@ async function apiFetch(url, options = {}) {
   return response;
 }
 
-// 带访问密码的图片 URL（壁纸以 URL 形式嵌入，无法加请求头，改用 ?token= 参数）
+// 带访问密码的图片 URL（海报以 URL 形式嵌入 <img src>，无法加请求头，改用 ?token= 参数）
 function apiBangumiImageUrl(subjectId) {
   const base = `/api/bangumi/image?subjectId=${subjectId}`;
   const password = getAccessPassword();
@@ -97,14 +98,13 @@ const state = {
   overlay: null,
   records: [],
   works: [],
-  wallpaper: null,
-  wallpaperPreference: null,
+  worksById: new Map(),        // R3：work_id → work，首页卡片渲染 O(1) 查表
+  recordEventById: new Map(),  // R3：record_id → 该记录关联的 ViewingEvent，首页卡片渲染 O(1) 查表
   recordingPreference: null,
   aiPreference: null,
   aiProviders: { active: null, providers: [] },
   draft: null,
   activeRecordId: null,
-  activeCardIndex: 0,
   editingCardId: null,
   returnScrollY: 0,
   saveTimer: null,
@@ -122,7 +122,6 @@ const state = {
   syncMigrateStatus: null   // "running" | "done" | "error" | null
 };
 
-let carouselGesture = null;
 let toastTimer = null;
 
 // ─── R2：捕获流程状态机的 UI 呈现 ─────────────────────────────────────────────
@@ -312,7 +311,7 @@ async function loadState() {
   }
   await ensureWorkLinks(state.records);
   state.works = await db.getAll("works");
-  await resolveDailyWallpaper();
+  await indexHomeCardData();
   state.records.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   // R2：草稿必须连同 captureContext 一起恢复——Step 3 中断后再打开 App，
   // 应该能直接从"继续写"回到 Step 3，而不是重走 Step 1/2。
@@ -330,57 +329,24 @@ function currentRecord() {
 }
 
 function currentWork(record = currentRecord()) {
-  return record ? state.works.find((work) => work.id === record.workId) : null;
+  if (!record) return null;
+  return state.worksById.get(record.workId) || state.works.find((work) => work.id === record.workId) || null;
 }
 
-function localDateKey(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-async function resolveDailyWallpaper() {
-  const dateKey = localDateKey();
-  const preference = state.wallpaperPreference || await db.get("meta", "wallpaper-preference") || { id: "wallpaper-preference", mode: "daily", fixedWorkId: null };
-  state.wallpaperPreference = preference;
-  if (preference.mode === "off") {
-    state.wallpaper = null;
-    return;
+/**
+ * R3：首页鉴赏履历卡需要每条 record 同时拿到 work（海报、标题）与 viewingEvent
+ * （日期、影院、制式、初看重看）。这里一次性加载全量 viewingEvents 并建立索引，
+ * 渲染时 O(1) 查表，不在 renderHome() 里逐条查库。
+ */
+async function indexHomeCardData() {
+  state.worksById = new Map(state.works.map((work) => [work.id, work]));
+  const allEvents = await db.getAll("viewingEvents");
+  const eventsById = new Map((allEvents || []).map((event) => [event.id, event]));
+  state.recordEventById = new Map();
+  for (const record of state.records) {
+    const event = record.viewing_event_id ? eventsById.get(record.viewing_event_id) : null;
+    if (event) state.recordEventById.set(record.id, event);
   }
-  const candidates = wallpaperCandidates(state.works);
-  if (preference.mode === "fixed") {
-    const fixed = candidates.find((candidate) => candidate.workId === preference.fixedWorkId);
-    if (fixed) {
-      state.wallpaper = { id: "daily-wallpaper", dateKey, ...fixed };
-      return;
-    }
-    state.wallpaperPreference = { id: "wallpaper-preference", mode: "daily", fixedWorkId: null };
-    await db.put("meta", state.wallpaperPreference);
-  }
-  const existing = await db.get("meta", "daily-wallpaper");
-  const eligibleWorkIds = new Set(candidates.map((candidate) => candidate.workId));
-  if (existing?.dateKey === dateKey && eligibleWorkIds.has(existing.workId)) {
-    state.wallpaper = existing;
-    return;
-  }
-  const selected = chooseDailyWallpaper(state.works, dateKey);
-  state.wallpaper = selected ? { id: "daily-wallpaper", ...selected } : null;
-  if (state.wallpaper) await db.put("meta", state.wallpaper);
-  else if (existing) await db.delete("meta", "daily-wallpaper");
-}
-
-async function saveWallpaperPreference(mode, fixedWorkId = null) {
-  state.wallpaperPreference = { id: "wallpaper-preference", mode, fixedWorkId };
-  await db.put("meta", state.wallpaperPreference);
-}
-
-async function changeWallpaper() {
-  const next = chooseNextWallpaper(state.works, state.wallpaper?.workId, localDateKey());
-  if (!next) return;
-  state.wallpaper = { id: "daily-wallpaper", ...next };
-  await db.put("meta", state.wallpaper);
-  if (state.wallpaperPreference?.mode === "fixed") await saveWallpaperPreference("fixed", next.workId);
 }
 
 function topBar() {
@@ -389,13 +355,9 @@ function topBar() {
     <div class="top-actions">
       <button class="icon-button" type="button" data-action="theme" aria-label="切换到${state.theme === "dark" ? "浅色" : "深色"}主题">${icon(state.theme === "dark" ? "sun" : "theme")}</button>
       <button class="icon-button" type="button" aria-label="搜索（尚未接入）" disabled>${icon("search")}</button>
-      <button class="icon-button" type="button" data-action="open-wallpaper-settings" aria-label="偏好设置">${icon("more")}</button>
+      <button class="icon-button" type="button" data-action="open-settings" aria-label="偏好设置">${icon("more")}</button>
     </div>
   </header>`;
-}
-
-function highlightTags(text) {
-  return escapeHtml(text).replace(/(^|\s)(#[^#\s，。！？、；：,.!?;:]+)/gu, "$1<mark>$2</mark>");
 }
 
 function seriesHintContent(text) {
@@ -412,42 +374,20 @@ function updateSeriesHint(text) {
   hint.hidden = !content;
 }
 
-function recordCard(record, isDraft = false) {
-  const preview = isDraft ? record.text : record.rawText;
-  const parsed = parseDraft(preview);
-  const work = isDraft ? null : currentWork(record);
-  const matchStatus = work?.match?.status;
-  const statusLabel = record.status === "raw_only_confirmed"
-    ? record.analysis_status === "running" ? "正在整理" : "仅保存原文"
-    : matchStatus === "needs_confirmation"
-    ? "待确认作品"
-    : matchStatus === "searching"
-      ? "正在匹配作品"
-      : work?.identity_status === "matched"
-        ? "已匹配 Bangumi"
-        : "本地成品";
-  return `<article class="record-card ${isDraft ? "draft-card" : ""}">
-    <button class="record-card-button" type="button" data-action="${isDraft ? "resume-draft" : "open-record"}" data-testid="${isDraft ? "resume-draft" : `record-${record.id}`}" ${isDraft ? "" : `data-record-id="${record.id}"`}>
-      <div class="record-meta"><time>${isDraft ? "未完成的记录" : formatDate(record.createdAt)}</time><span class="${isDraft ? "record-draft-label" : `record-attitude-tag ${record.attitude ? "selected" : "empty"}`}">${isDraft ? "继续写" : attitudeLabel(record.attitude)}</span></div>
-      <h2>${escapeHtml(work?.title || parsed.title)}</h2>
-      <p>${highlightTags(preview)}</p>
-      <div class="record-status ${matchStatus === "needs_confirmation" ? "attention" : ""}" data-testid="${isDraft ? "draft-status" : "work-match-status"}"><span class="status-dot"></span>${isDraft ? "已自动保存在本机" : statusLabel}</div>
-    </button>
-  </article>`;
-}
-
 function renderHome() {
-  const draftCard = state.draft?.text?.trim() ? recordCard(state.draft, true) : "";
-  const cards = state.records.map((record) => recordCard(record)).join("");
-  const wallpaperUrl = state.wallpaper ? apiBangumiImageUrl(state.wallpaper.subjectId) : "";
+  const draftCard = state.draft?.text?.trim() ? recordCard(state.draft, { isDraft: true, buildPosterUrl: apiBangumiImageUrl }) : "";
+  const cards = state.records.map((record) => recordCard(record, {
+    work: currentWork(record),
+    event: state.recordEventById.get(record.id) || null,
+    buildPosterUrl: apiBangumiImageUrl
+  })).join("");
+  const hasAnyCard = Boolean(draftCard || cards);
   return `<main class="home-view" data-testid="home">
-    <div class="wallpaper" aria-hidden="true">${wallpaperUrl ? `<img class="wallpaper-image" data-testid="daily-wallpaper" src="${wallpaperUrl}" alt="" />` : ""}</div>
-    <div class="wallpaper-scrim" aria-hidden="true"></div>
     ${topBar()}
     <section class="feed" aria-label="电影记录">
-      ${state.wallpaper ? `<div class="wallpaper-credit" data-testid="wallpaper-credit"><span>今日壁纸 · ${escapeHtml(state.wallpaper.title)}</span><a href="${escapeHtml(state.wallpaper.attributionUrl)}" target="_blank" rel="noreferrer">来源 Bangumi</a></div>` : ""}
       ${draftCard}
-      ${cards || `<div class="empty-copy"><p>电影散场以后，<br>先把还没消失的感觉留下来。</p></div>`}
+      ${cards}
+      ${hasAnyCard ? "" : emptyHomeStateMarkup()}
     </section>
     <button class="fab" type="button" data-action="open-capture" aria-label="开始记录" data-testid="add-record">＋</button>
   </main>`;
@@ -455,10 +395,10 @@ function renderHome() {
 
 function detailHeader(record) {
   return `<header class="detail-header">
-    <button class="icon-button inverse" type="button" data-action="go-home" aria-label="返回记录流">${icon("back")}</button>
+    <button class="icon-button" type="button" data-action="go-home" aria-label="返回记录流">${icon("back")}</button>
     <div class="detail-header-actions">
-      <button class="icon-button inverse" type="button" data-action="open-export" aria-label="导出这条记录">${icon("export")}</button>
-      <button class="icon-button inverse" type="button" aria-label="更多（尚未接入）" disabled>${icon("more")}</button>
+      <button class="icon-button" type="button" data-action="open-export" aria-label="导出这条记录">${icon("export")}</button>
+      <button class="icon-button" type="button" aria-label="更多（尚未接入）" disabled>${icon("more")}</button>
     </div>
   </header>`;
 }
@@ -496,29 +436,7 @@ function exportOverlay(record) {
 }
 
 function memoryCard(record) {
-  const cards = record.cards || [];
-  if (!cards.length) {
-    return `<div class="memory-empty"><p>还没有记忆卡片。</p><button class="text-action" type="button" data-action="add-card">＋ 添加第一张</button></div>`;
-  }
-  state.activeCardIndex = Math.max(0, Math.min(state.activeCardIndex, cards.length - 1));
-  const card = cards[state.activeCardIndex];
-  const isAiSuggestion = card.provenance === "ai_suggested";
-  return `<div class="memory-stage" tabindex="0" role="region" aria-roledescription="轮播" aria-label="记忆卡片，第 ${state.activeCardIndex + 1} 张，共 ${cards.length} 张。左右滑动或使用方向键切换" data-testid="memory-carousel">
-    <article class="memory-card ${card.is_core ? "core" : ""}" data-testid="memory-card">
-      <div class="memory-card-top"><span>${escapeHtml(card.type)}${isAiSuggestion ? " · 整理建议" : card.provenance === "user_accepted" ? " · 已保留" : ""}</span><button class="text-action" type="button" data-action="edit-card" data-card-id="${card.card_id}">${icon("edit")}编辑</button></div>
-      <h3>${escapeHtml(card.title || "没有标题")}</h3>
-      <p>${escapeHtml(card.content)}</p>
-      ${card.evidence?.length ? `<details class="evidence-details"><summary>查看原文依据</summary>${card.evidence.map((item) => `<blockquote>${escapeHtml(item.excerpt)}</blockquote>`).join("")}</details>` : ""}
-      ${isAiSuggestion ? `<div class="suggestion-actions"><button type="button" data-action="accept-ai-card" data-card-id="${card.card_id}">保留这张</button><button type="button" data-action="remove-ai-card" data-card-id="${card.card_id}">删除建议</button></div>` : ""}
-    </article>
-    <div class="memory-pagination" aria-label="记忆卡片分页">
-      <button type="button" data-action="previous-card" ${state.activeCardIndex === 0 ? "disabled" : ""} aria-label="上一张">‹</button>
-      <span>${state.activeCardIndex + 1} / ${cards.length}</span>
-      <div class="dots" aria-hidden="true">${cards.map((_, index) => `<i class="${index === state.activeCardIndex ? "active" : ""}"></i>`).join("")}</div>
-      <button type="button" data-action="next-card" ${state.activeCardIndex === cards.length - 1 ? "disabled" : ""} aria-label="下一张">›</button>
-    </div>
-    ${cards.length > 1 ? `<div class="swipe-hint">左右滑动切换</div>` : ""}
-  </div>`;
+  return memoryListMarkup(record.cards || [], { icon });
 }
 
 function normalizedRecommendationDetails(record) {
@@ -624,7 +542,6 @@ function renderDetail() {
     ? `《<a href="https://bangumi.tv/subject/${encodeURIComponent(bangumiReference.id)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>》`
     : `《${escapeHtml(title)}》`;
   return `<main class="detail-view" data-testid="detail">
-    <div class="detail-wallpaper" aria-hidden="true"></div>
     ${detailHeader(record)}
     <article class="detail-content">
       <div class="detail-date">${escapeHtml(new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric" }).format(new Date(record.createdAt)))}</div>
@@ -706,23 +623,12 @@ function syncSettingsSection() {
   <p class="settings-note" style="margin-top:var(--space-2)">输入部署时设置的访问密码，开启后数据跨设备同步。无密码时数据仅保存在本机。</p>`;
 }
 
-function wallpaperSettingsOverlay() {
-  const mode = state.wallpaperPreference?.mode || "daily";
-  const candidates = wallpaperCandidates(state.works);
-  const modeLabel = mode === "off" ? "已关闭作品壁纸" : mode === "fixed" ? "已固定当前作品" : "每天稳定轮换一张";
-  return `<div class="overlay" data-testid="wallpaper-settings">
-    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭壁纸设置"></button>
-    <section class="bottom-sheet wallpaper-settings" role="dialog" aria-modal="true" aria-labelledby="wallpaper-settings-title">
+function settingsOverlay() {
+  return `<div class="overlay" data-testid="settings">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭偏好设置"></button>
+    <section class="bottom-sheet settings-sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <div class="sheet-handle" aria-hidden="true"></div>
-      <div class="sheet-title-row"><div><span class="sheet-kicker">首页与记录</span><h2 id="wallpaper-settings-title">偏好设置</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
-      <h3 class="settings-section-title">作品壁纸</h3>
-      <p class="wallpaper-mode" data-testid="wallpaper-mode">${modeLabel}</p>
-      <div class="settings-actions">
-        ${mode !== "off" ? `<button type="button" data-action="change-wallpaper" ${candidates.length < 2 ? "disabled" : ""}><span><b>换一张</b><small>${candidates.length < 2 ? "还需要另一部已匹配作品" : "只改变当前选择"}</small></span>${icon("chevron")}</button>` : ""}
-        ${mode === "daily" && state.wallpaper ? `<button type="button" data-action="fix-wallpaper"><span><b>固定这张</b><small>以后继续使用当前作品</small></span>${icon("chevron")}</button>` : ""}
-        ${mode === "fixed" ? `<button type="button" data-action="use-daily-wallpaper"><span><b>恢复按日轮换</b><small>同一天仍保持稳定</small></span>${icon("chevron")}</button>` : ""}
-        <button type="button" data-action="toggle-wallpaper"><span><b>${mode === "off" ? "开启作品壁纸" : "关闭作品壁纸"}</b><small>${mode === "off" ? "从已匹配作品中按日选择" : "继续使用内置中性背景"}</small></span>${icon("chevron")}</button>
-      </div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">首页与记录</span><h2 id="settings-title">偏好设置</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
       <h3 class="settings-section-title">记录方式</h3>
       <div class="settings-actions">
         <button type="button" data-action="toggle-auto-analysis" aria-pressed="${state.recordingPreference?.autoAnalyze !== false}"><span><b>自动整理新记录</b><small data-testid="recording-mode">${state.recordingPreference?.autoAnalyze === false ? "当前关闭；完成时只保存原文" : "当前开启；原文保存后再后台整理"}</small></span><span class="settings-switch ${state.recordingPreference?.autoAnalyze === false ? "" : "on"}" aria-hidden="true"><i></i></span></button>
@@ -989,8 +895,8 @@ function render() {
       ? sceneChoiceOverlay()
     : state.overlay === "compose"
       ? composerOverlay()
-    : state.overlay === "wallpaper"
-      ? wallpaperSettingsOverlay()
+    : state.overlay === "settings"
+      ? settingsOverlay()
     : state.overlay === "attitude" && record
       ? attitudeOverlay(record)
       : state.overlay === "card" && record
@@ -1415,7 +1321,6 @@ async function buildAllExportEntries() {
 async function openRecord(recordId) {
   state.returnScrollY = scrollY;
   state.activeRecordId = recordId;
-  state.activeCardIndex = 0;
   state.view = "detail";
   state.viewingEvents = [];
   history.pushState({ recordId }, "", `#record=${encodeURIComponent(recordId)}`);
@@ -1445,16 +1350,6 @@ function goHome({ replace = false } = {}) {
   requestAnimationFrame(() => scrollTo({ top: state.returnScrollY, behavior: "instant" }));
 }
 
-function showMemoryCard(index, { focus = false } = {}) {
-  const previousScroll = scrollY;
-  state.activeCardIndex = index;
-  render();
-  requestAnimationFrame(() => {
-    scrollTo({ top: previousScroll, behavior: "instant" });
-    if (focus) document.querySelector(".memory-stage")?.focus({ preventScroll: true });
-  });
-}
-
 app.addEventListener("click", async (event) => {
   const trigger = event.target.closest("[data-action]");
   if (!trigger) return;
@@ -1462,32 +1357,8 @@ app.addEventListener("click", async (event) => {
   if (action === "theme") {
     applyTheme(state.theme === "dark" ? "light" : "dark");
     render();
-  } else if (action === "open-wallpaper-settings") {
-    state.overlay = "wallpaper";
-    render();
-  } else if (action === "change-wallpaper") {
-    await changeWallpaper();
-    render();
-    announce(`已换成${state.wallpaper?.title || "新的"}壁纸`);
-  } else if (action === "fix-wallpaper") {
-    if (state.wallpaper) await saveWallpaperPreference("fixed", state.wallpaper.workId);
-    render();
-    announce("已固定当前壁纸");
-  } else if (action === "use-daily-wallpaper") {
-    await saveWallpaperPreference("daily");
-    await resolveDailyWallpaper();
-    render();
-    announce("已恢复按日轮换");
-  } else if (action === "toggle-wallpaper") {
-    if (state.wallpaperPreference?.mode === "off") {
-      await saveWallpaperPreference("daily");
-      await resolveDailyWallpaper();
-      announce("已开启作品壁纸");
-    } else {
-      await saveWallpaperPreference("off");
-      state.wallpaper = null;
-      announce("已关闭作品壁纸");
-    }
+  } else if (action === "open-settings") {
+    state.overlay = "settings";
     render();
   } else if (action === "toggle-auto-analysis") {
     state.recordingPreference = {
@@ -1831,7 +1702,6 @@ app.addEventListener("click", async (event) => {
       record.aiSuggestionHistory ||= [];
       record.aiSuggestionHistory.push({ suggestionType: "memory_card", suggestionId: card.card_id, action: "user_removed", snapshot: card, at: new Date().toISOString() });
       record.cards.forEach((item, cardIndex) => { item.order = cardIndex; });
-      state.activeCardIndex = Math.max(0, Math.min(state.activeCardIndex, record.cards.length - 1));
     });
     renderPreservingScroll();
     announce("这条整理建议已删除，原文没有改变");
@@ -1843,10 +1713,6 @@ app.addEventListener("click", async (event) => {
     state.editingCardId = trigger.dataset.cardId;
     state.overlay = "card";
     render();
-  } else if (action === "previous-card") {
-    showMemoryCard(state.activeCardIndex - 1);
-  } else if (action === "next-card") {
-    showMemoryCard(state.activeCardIndex + 1);
   } else if (action === "open-export") {
     state.overlay = "export";
     render();
@@ -1964,9 +1830,8 @@ app.addEventListener("paste", (event) => {
 });
 
 app.addEventListener("error", (event) => {
-  if (!event.target.matches?.(".wallpaper-image")) return;
+  if (!event.target.matches?.(".record-poster-img")) return;
   event.target.hidden = true;
-  document.querySelector(".wallpaper-credit")?.setAttribute("hidden", "");
 }, true);
 
 app.addEventListener("change", async (event) => {
@@ -2004,57 +1869,11 @@ app.addEventListener("submit", async (event) => {
         order: record.cards.length,
         provenance: "user_added"
       });
-      state.activeCardIndex = record.cards.length - 1;
     }
   });
   state.overlay = null;
   render();
   announce(id ? "记忆卡片已更新" : "记忆卡片已添加");
-});
-
-app.addEventListener("pointerdown", (event) => {
-  const stage = event.target.closest(".memory-stage");
-  if (!stage || event.target.closest("button")) return;
-  carouselGesture = { x: event.clientX, y: event.clientY, at: performance.now(), stage };
-  stage.classList.add("dragging");
-});
-
-app.addEventListener("pointermove", (event) => {
-  if (!carouselGesture) return;
-  const dx = Math.max(-72, Math.min(72, event.clientX - carouselGesture.x));
-  const card = carouselGesture.stage.querySelector(".memory-card");
-  if (card) card.style.transform = `translateX(${dx}px)`;
-});
-
-app.addEventListener("pointerup", (event) => {
-  if (!carouselGesture) return;
-  const { x, y, stage } = carouselGesture;
-  const dx = event.clientX - x;
-  const dy = event.clientY - y;
-  const record = currentRecord();
-  carouselGesture = null;
-  stage.classList.remove("dragging");
-  if (!record || Math.abs(dx) < 48 || Math.abs(dx) <= Math.abs(dy) * 1.2) {
-    const card = stage.querySelector(".memory-card");
-    if (card) card.style.transform = "";
-    return;
-  }
-  const nextIndex = dx < 0 ? state.activeCardIndex + 1 : state.activeCardIndex - 1;
-  if (nextIndex < 0 || nextIndex >= record.cards.length) {
-    const card = stage.querySelector(".memory-card");
-    if (card) card.style.transform = "";
-    return;
-  }
-  showMemoryCard(nextIndex, { focus: true });
-  announce(`第 ${nextIndex + 1} 张记忆卡片`);
-});
-
-app.addEventListener("pointercancel", () => {
-  if (!carouselGesture) return;
-  const card = carouselGesture.stage.querySelector(".memory-card");
-  if (card) card.style.transform = "";
-  carouselGesture.stage.classList.remove("dragging");
-  carouselGesture = null;
 });
 
 window.addEventListener("popstate", () => {
@@ -2071,16 +1890,6 @@ window.addEventListener("popstate", () => {
 });
 
 window.addEventListener("keydown", async (event) => {
-  if (event.target.closest?.(".memory-stage") && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
-    const record = currentRecord();
-    if (!record) return;
-    const nextIndex = event.key === "ArrowRight" ? state.activeCardIndex + 1 : state.activeCardIndex - 1;
-    if (nextIndex < 0 || nextIndex >= record.cards.length) return;
-    event.preventDefault();
-    showMemoryCard(nextIndex, { focus: true });
-    announce(`第 ${nextIndex + 1} 张记忆卡片`);
-    return;
-  }
   if (event.key !== "Escape" || !state.overlay) return;
   if (state.overlay === "compose") {
     await saveDraft(document.querySelector("#composer-input")?.value || "", true);

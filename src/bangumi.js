@@ -41,38 +41,6 @@ export function isAllowedBangumiImageUrl(value) {
   }
 }
 
-export function wallpaperCandidates(works) {
-  return works.flatMap((work) => {
-    if (work.identity_status !== "matched") return [];
-    const reference = work.external_refs?.find((item) => item.source === "bangumi");
-    const subjectId = Number(reference?.id);
-    if (!Number.isInteger(subjectId) || subjectId <= 0) return [];
-    return [{ workId: work.id, subjectId, title: work.title, attributionUrl: `https://bangumi.tv/subject/${subjectId}` }];
-  }).sort((first, second) => first.workId.localeCompare(second.workId));
-}
-
-export function chooseDailyWallpaper(works, dateKey) {
-  const eligible = wallpaperCandidates(works);
-  if (!eligible.length) return null;
-  let hash = 2166136261;
-  const seed = `${dateKey}:${eligible.map((item) => item.subjectId).join(",")}`;
-  for (const character of seed) {
-    hash ^= character.codePointAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return { dateKey, ...eligible[(hash >>> 0) % eligible.length] };
-}
-
-export function chooseNextWallpaper(works, currentWorkId, dateKey) {
-  const eligible = wallpaperCandidates(works);
-  if (!eligible.length) return null;
-  const currentIndex = eligible.findIndex((candidate) => candidate.workId === currentWorkId);
-  const next = currentIndex === -1
-    ? chooseDailyWallpaper(works, dateKey)
-    : eligible[(currentIndex + 1) % eligible.length];
-  return next ? { dateKey, ...next } : null;
-}
-
 export function normalizeBangumiSubjects(payload) {
   if (!Array.isArray(payload?.data)) return [];
   return payload.data.slice(0, 3).flatMap((subject) => {
