@@ -533,12 +533,16 @@ function detailHeader(record) {
 
 // ═══ R4 · 作品书架 ══════════════════════════════════════════════════════════
 
+// 用户反馈：「其他」和「未分类」两个筛选几乎重复——查代码后确认原因是目前没有任何
+// 手动设置作品类型的入口，「其他」是个筛不出任何东西的死标签。补上手动选类型的入口
+// （见下 WORK_TYPE_OPTIONS / workTypeEditorOverlay）后，浏览筛选栏里两者合并显示成
+// 一个「未分类」chip（filterShelfEntries 里 unspecified 同时匹配 other 与 unspecified），
+// 但底层 work_type 仍保留 R1 冻结的五个取值，用户在作品页仍可以精确选到「其他」。
 const SHELF_TYPE_FILTERS = [
   ["all", "全部"],
   ["animation_film", "动画电影"],
   ["live_action_film", "真人电影"],
   ["event", "活动"],
-  ["other", "其他"],
   ["unspecified", "未分类"]
 ];
 
@@ -580,15 +584,19 @@ function renderShelf() {
     <span class="shelf-item-title">${escapeHtml(work.title || "未命名作品")}</span>
   </button>`).join("");
 
+  // 用户反馈：两排筛选要按"是什么"和"怎么看"分开——第一排只回答"这是哪种作品"
+  // （work_type），第二排是排序 + "特别场次"（挂在具体某次观影上的舞台挨拶/应援上映
+  // 等，和作品类型的"活动"是完全不同的两个维度，不能放在同一排造成混淆）。
   return `<main class="shelf-view" data-testid="shelf">
     ${shelfHeader()}
     <div class="shelf-filters" data-testid="shelf-filters">
-      <div class="shelf-chip-row" role="group" aria-label="按类型筛选">
+      <div class="shelf-chip-row" role="group" aria-label="按作品类型筛选">
         ${SHELF_TYPE_FILTERS.map(([value, label]) => `<button type="button" class="shelf-chip ${filter.workType === value ? "selected" : ""}" data-action="set-shelf-type-filter" data-value="${value}" aria-pressed="${filter.workType === value}">${label}</button>`).join("")}
-        <button type="button" class="shelf-chip ${filter.eventsOnly ? "selected" : ""}" data-action="toggle-shelf-events-filter" aria-pressed="${filter.eventsOnly}" data-testid="shelf-events-only">有活动场次</button>
       </div>
-      <div class="shelf-sort-row" role="group" aria-label="排序方式">
+      <div class="shelf-sort-row" role="group" aria-label="排序与特别场次筛选">
         ${SHELF_SORTS.map(([value, label]) => `<button type="button" class="shelf-sort ${filter.sort === value ? "selected" : ""}" data-action="set-shelf-sort" data-value="${value}" aria-pressed="${filter.sort === value}">${label}</button>`).join("")}
+        <span class="shelf-row-divider" aria-hidden="true"></span>
+        <button type="button" class="shelf-sort ${filter.eventsOnly ? "selected" : ""}" data-action="toggle-shelf-events-filter" aria-pressed="${filter.eventsOnly}" data-testid="shelf-events-only">特别场次</button>
       </div>
     </div>
     <section class="shelf-grid" aria-label="作品书架" data-testid="shelf-grid">
@@ -607,6 +615,18 @@ const WORK_TYPE_LABELS = {
   unspecified: "未分类"
 };
 
+// 用户反馈：之前完全没有手动设置作品类型的入口，只有 Bangumi 自动判断出动画/真人
+// 电影，其余全部停在"未分类"——"活动"与"其他"因此是两个永远筛不出东西的死标签。
+// 这里补一个作品页可编辑的入口。"活动"专门配一句说明，区分它和"这一次观看带有
+// 舞台挨拶/应援上映"完全是两回事：前者是作品本身的性质，后者是某一次观影的属性。
+const WORK_TYPE_OPTIONS = [
+  ["animation_film", "动画电影", ""],
+  ["live_action_film", "真人电影", ""],
+  ["event", "活动", "作品本身就是一场活动——比如 TV 动画的先行上映、剧场先行版、Live Viewing 演唱会。和某一次观影带的「舞台挨拶」「应援上映」不是一回事，那些属于场次的特别场次标签，不影响这里的作品类型。"],
+  ["other", "其他", "不属于以上任何一类，比如纪录片、舞台剧录像。"],
+  ["unspecified", "未分类", "还没想好，先不选。"]
+];
+
 const WORK_LOCATION_LABELS = { home: "在家观看", online: "线上观看", other: "其他方式观看" };
 
 function formatShortDate(isoLike) {
@@ -616,6 +636,12 @@ function formatShortDate(isoLike) {
   return y && m && d ? `${y}/${m}/${d}` : datePart;
 }
 
+// 用户反馈：原来的"通栏大图 hero + 负边距把标题拉上去叠在图片底部"这套排版，
+// 手机上海报把标题信息页挤没了，PC 宽视口下 aspect-ratio 撑不满容器宽度、
+// 内容却按 max-width 独立居中，两块对不上，直接读成"海报定在左上角、正文错位"。
+// 现在没有单独的横版剧照素材可用（Bangumi 只给竖版封面），改成海报当一张
+// 固定尺寸的缩略图，摆在标题信息区左边、合并进同一个 .work-panel 网格里，
+// 和下面 .work-content 共用同一条左右内边距，宽窄屏都不用另起一套结构。
 function workHeroMarkup(work) {
   const hasPoster = Boolean(work.identity_status === "matched" && work.poster_subject_id);
   const src = hasPoster ? apiBangumiImageUrl(work.poster_subject_id) : "";
@@ -623,7 +649,6 @@ function workHeroMarkup(work) {
     ${hasPoster
       ? `<img class="work-hero-img" src="${escapeHtml(src)}" alt="" />`
       : `<div class="work-hero-fallback" aria-hidden="true">${escapeHtml((work.title || "?").trim().charAt(0) || "?")}</div>`}
-    <div class="work-hero-scrim" aria-hidden="true"></div>
   </div>`;
 }
 
@@ -631,9 +656,27 @@ function workMetaLine(work) {
   const year = work.release_year || (work.release_dates?.jp ? Number(work.release_dates.jp.slice(0, 4)) : null);
   const typeLabel = WORK_TYPE_LABELS[work.work_type] || WORK_TYPE_LABELS.unspecified;
   const bangumiRef = (work.external_refs || []).find((ref) => ref.source === "bangumi");
-  const parts = [year, typeLabel].filter(Boolean).map(String).map(escapeHtml);
   const bangumiLink = bangumiRef ? `<a href="https://bangumi.tv/subject/${encodeURIComponent(bangumiRef.id)}" target="_blank" rel="noreferrer">Bangumi ↗</a>` : "";
-  return `<div class="work-meta-line">${[...parts, bangumiLink].filter(Boolean).join(" · ")}</div>`;
+  const typeChip = `<button type="button" class="work-type-chip" data-action="edit-work-type" data-testid="edit-work-type">${escapeHtml(typeLabel)}${icon("edit")}</button>`;
+  const parts = [year ? `<span>${escapeHtml(String(year))}</span>` : "", typeChip, bangumiLink].filter(Boolean);
+  return `<div class="work-meta-line">${parts.join('<span class="meta-dot" aria-hidden="true">·</span>')}</div>`;
+}
+
+function workTypeEditorOverlay(work) {
+  const current = work.work_type || "unspecified";
+  return `<div class="overlay" data-testid="work-type-editor">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet work-type-editor" role="dialog" aria-modal="true" aria-labelledby="work-type-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="work-type-title">这是哪种作品？</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <div class="work-type-options" role="group" aria-label="作品类型">
+        ${WORK_TYPE_OPTIONS.map(([value, label, hint]) => `<button type="button" class="work-type-option ${current === value ? "selected" : ""}" data-action="select-work-type" data-value="${value}" aria-pressed="${current === value}" data-testid="work-type-option-${value}">
+          <span class="work-type-option-label">${escapeHtml(label)}</span>
+          ${hint ? `<span class="work-type-option-hint">${escapeHtml(hint)}</span>` : ""}
+        </button>`).join("")}
+      </div>
+    </section>
+  </div>`;
 }
 
 /**
@@ -727,11 +770,15 @@ function renderWork() {
       <button class="icon-button" type="button" data-action="close-work" aria-label="返回作品书架" data-testid="work-back">${icon("back")}</button>
       <span class="detail-header-actions"></span>
     </header>
-    ${workHeroMarkup(work)}
+    <div class="work-panel" data-testid="work-panel">
+      <div class="work-poster-col">${workHeroMarkup(work)}</div>
+      <div class="work-info-col">
+        <h1 class="work-title">《${escapeHtml(work.title || "未命名作品")}》</h1>
+        ${workMetaLine(work)}
+        ${releaseDateRow(work)}
+      </div>
+    </div>
     <article class="work-content">
-      <h1 class="work-title">《${escapeHtml(work.title || "未命名作品")}》</h1>
-      ${workMetaLine(work)}
-      ${releaseDateRow(work)}
       <section class="work-section" data-testid="work-history">
         <h2 class="work-section-title">观影履历</h2>
         ${view.history.length ? view.history.map((item, i) => workHistoryRow(item, i)).join("") : `<p class="work-section-empty">还没有观影场次</p>`}
@@ -1393,6 +1440,8 @@ function render() {
         ? historyEventEditorOverlay(editingHistoryEvent)
       : state.overlay === "release-date-cn" && currentWorkForOverlay
         ? releaseDateEditorOverlay(currentWorkForOverlay)
+      : state.overlay === "work-type" && currentWorkForOverlay
+        ? workTypeEditorOverlay(currentWorkForOverlay)
         : "";
   app.innerHTML = `${base}${overlay}`;
   document.body.classList.toggle("overlay-open", Boolean(state.overlay));
@@ -2059,6 +2108,15 @@ async function updateCurrentWorkReleaseDateCn(cnDate) {
   state.works = state.works.map((item) => (item.id === updated.id ? updated : item));
 }
 
+/** 用户手动选择作品类型——不影响任何一次具体观影的"特别场次"标签，两者是独立维度。 */
+async function updateCurrentWorkType(workType) {
+  const work = findWorkById(state.works, state.currentWorkId);
+  if (!work) return;
+  const updated = { ...work, work_type: workType };
+  await db.put("works", updated);
+  state.works = state.works.map((item) => (item.id === updated.id ? updated : item));
+}
+
 /**
  * R4 §3.4 补充记录（提案 E）：从作品页发起，直接进入 Step 3 书写层，不经过
  * Step 1/2（场景已经明确——就是这个作品）。生成的 record 是 record_kind: "supplement"，
@@ -2124,6 +2182,14 @@ app.addEventListener("click", async (event) => {
   } else if (action === "edit-release-date-cn") {
     state.overlay = "release-date-cn";
     render();
+  } else if (action === "edit-work-type") {
+    state.overlay = "work-type";
+    render();
+  } else if (action === "select-work-type") {
+    await updateCurrentWorkType(trigger.dataset.value);
+    state.overlay = null;
+    renderPreservingScroll();
+    announce("作品类型已更新");
   } else if (action === "open-supplement") {
     if (state.currentWorkId) openSupplementCompose(state.currentWorkId);
   } else if (action === "toggle-auto-analysis") {
@@ -2326,10 +2392,14 @@ app.addEventListener("click", async (event) => {
       const text = document.querySelector("#composer-input")?.value || "";
       await saveDraft(text, true);
       applyCaptureTransition("close");
+      render();
+    } else if (state.overlay === "sidebar") {
+      // 点遮罩关闭抽屉时也走跟手手势同一条"滑出去再摘 DOM"的动画，体验和右滑关闭一致。
+      closeSidebarAnimated();
     } else {
       state.overlay = null;
+      render();
     }
-    render();
   } else if (action === "insert-hash") {
     const input = document.querySelector("#composer-input");
     if (input) {
@@ -2824,35 +2894,105 @@ window.visualViewport?.addEventListener("scroll", updateVisualViewport);
 document.addEventListener("focusin", updateVisualViewport);
 document.addEventListener("focusout", () => setTimeout(updateVisualViewport, 180));
 
-// R4：侧边栏抽屉可右滑关闭（点遮罩关闭已经复用通用的 close-overlay 动作）。
-// 只做位移跟手 + 松手判定，不接入动画库——和这个项目里其余交互的实现规模一致。
-let sidebarSwipeStartX = null;
-let sidebarSwipeCurrentX = 0;
-document.addEventListener("touchstart", (event) => {
-  if (!event.target.closest("[data-testid='sidebar-drawer']")) return;
-  sidebarSwipeStartX = event.touches[0].clientX;
-  sidebarSwipeCurrentX = sidebarSwipeStartX;
-}, { passive: true });
-document.addEventListener("touchmove", (event) => {
-  if (sidebarSwipeStartX === null) return;
-  const drawer = document.querySelector("[data-testid='sidebar-drawer']");
-  if (!drawer) return;
-  sidebarSwipeCurrentX = event.touches[0].clientX;
-  const delta = Math.max(0, sidebarSwipeCurrentX - sidebarSwipeStartX);
-  drawer.style.transition = "none";
-  drawer.style.transform = `translateX(${delta}px)`;
-}, { passive: true });
-document.addEventListener("touchend", () => {
-  if (sidebarSwipeStartX === null) return;
-  const drawer = document.querySelector("[data-testid='sidebar-drawer']");
-  const delta = Math.max(0, sidebarSwipeCurrentX - sidebarSwipeStartX);
-  sidebarSwipeStartX = null;
-  if (!drawer) return;
-  drawer.style.transition = "";
-  drawer.style.transform = "";
-  if (delta > 80) {
+// R4 用户反馈：只做了"拖抽屉本身关闭"，没做安卓用户习惯的"从屏幕左边缘右滑打开"——
+// 用户原话"我是安卓手机，一切要以安卓的交互理念为先"。这里把开/关两个方向的手势
+// 合到一组 touchstart/touchmove/touchend 里，跟手拖动 + 松手按位移阈值判定，
+// 不接入动画库，和这个项目里其余交互的实现规模一致。
+const SIDEBAR_EDGE_ZONE_PX = 24; // 触点落在屏幕左边缘这个范围内，才可能是"打开"手势
+const SIDEBAR_OPEN_ARM_PX = 12; // 边缘触点要先滑动这么多才确认是"打开"而不是误触/纵向滚动
+const SIDEBAR_OPEN_COMMIT_RATIO = 0.35; // 打开手势：松手时超过抽屉宽度这个比例才算打开
+const SIDEBAR_CLOSE_COMMIT_PX = 80; // 关闭手势：已经打开时，右滑超过这个像素才算关闭
+
+let sidebarGesture = null; // { mode: "opening" | "closing", startX, lastX, width, armed }
+
+function sidebarDrawerEl() {
+  return document.querySelector("[data-testid='sidebar-drawer']");
+}
+
+/** 侧边栏收起动画：先让抽屉滑回屏幕外，动画结束后再真正从 DOM 里移除。 */
+function closeSidebarAnimated() {
+  const drawer = sidebarDrawerEl();
+  if (!drawer) {
     state.overlay = null;
     render();
+    return;
+  }
+  drawer.style.transition = "";
+  drawer.style.transform = "translateX(-100%)";
+  setTimeout(() => {
+    state.overlay = null;
+    render();
+  }, 200);
+}
+
+document.addEventListener("touchstart", (event) => {
+  const touch = event.touches[0];
+  if (event.target.closest("[data-testid='sidebar-drawer']")) {
+    const drawer = sidebarDrawerEl();
+    sidebarGesture = { mode: "closing", startX: touch.clientX, lastX: touch.clientX, width: drawer?.getBoundingClientRect().width || 320, armed: true };
+    return;
+  }
+  if (state.overlay === null && touch.clientX <= SIDEBAR_EDGE_ZONE_PX) {
+    sidebarGesture = { mode: "opening", startX: touch.clientX, lastX: touch.clientX, width: 320, armed: false };
+  }
+}, { passive: true });
+
+document.addEventListener("touchmove", (event) => {
+  if (!sidebarGesture) return;
+  const touch = event.touches[0];
+  sidebarGesture.lastX = touch.clientX;
+  const deltaX = touch.clientX - sidebarGesture.startX;
+
+  if (sidebarGesture.mode === "opening") {
+    if (!sidebarGesture.armed) {
+      if (deltaX < SIDEBAR_OPEN_ARM_PX) return; // 还没滑够，可能只是竖向滚动，先不动手
+      sidebarGesture.armed = true;
+      state.overlay = "sidebar";
+      render();
+      const drawer = sidebarDrawerEl();
+      if (!drawer) { sidebarGesture = null; return; }
+      sidebarGesture.width = drawer.getBoundingClientRect().width || sidebarGesture.width;
+      drawer.style.transition = "none";
+    }
+    const drawer = sidebarDrawerEl();
+    if (!drawer) return;
+    const offset = Math.min(0, Math.max(-sidebarGesture.width, deltaX - sidebarGesture.width));
+    drawer.style.transform = `translateX(${offset}px)`;
+    return;
+  }
+
+  const drawer = sidebarDrawerEl();
+  if (!drawer) return;
+  const offset = Math.max(0, deltaX);
+  drawer.style.transition = "none";
+  drawer.style.transform = `translateX(${offset}px)`;
+}, { passive: true });
+
+document.addEventListener("touchend", () => {
+  if (!sidebarGesture) return;
+  const gesture = sidebarGesture;
+  sidebarGesture = null;
+  const drawer = sidebarDrawerEl();
+
+  if (gesture.mode === "opening") {
+    if (!gesture.armed || !drawer) return; // 没滑够识别阈值，什么都没发生
+    const deltaX = gesture.lastX - gesture.startX;
+    drawer.style.transition = "";
+    if (deltaX >= gesture.width * SIDEBAR_OPEN_COMMIT_RATIO) {
+      drawer.style.transform = "";
+    } else {
+      closeSidebarAnimated();
+    }
+    return;
+  }
+
+  if (!drawer) return;
+  const deltaX = Math.max(0, gesture.lastX - gesture.startX);
+  drawer.style.transition = "";
+  if (deltaX > SIDEBAR_CLOSE_COMMIT_PX) {
+    closeSidebarAnimated();
+  } else {
+    drawer.style.transform = "";
   }
 });
 window.addEventListener("pagehide", () => {

@@ -1980,6 +1980,13 @@ svg {
   .detail-content {
     border-radius: var(--radius-sheet);
   }
+
+  /* 宽屏下海报列稍微放大一点，和正文一起仍然共用 680px 的 max-width，
+     不会出现之前"海报按自身宽高比撑不满容器、正文另按 max-width 单独居中"
+     导致两边对不齐的问题——两块现在本来就是同一个 flex 容器里的子元素。 */
+  .work-poster-col {
+    width: 140px;
+  }
 }
 
 /* ── C4 票务粘贴 ──────────────────────────────────────────────────────────── */
@@ -2565,6 +2572,9 @@ svg {
   background: var(--surface-container);
   box-shadow: var(--shadow-float);
   animation: drawer-in var(--motion-standard) cubic-bezier(0.2, 0, 0, 1);
+  /* 手势拖动时 JS 会把这个覆盖成 "none" 做跟手效果；松手后清掉那个内联覆盖，
+     这条 transition 就接管"回弹到开/合"的动画，不需要每次手动写 transition。 */
+  transition: transform var(--motion-standard) cubic-bezier(0.2, 0, 0, 1);
 }
 
 @keyframes scrim-in {
@@ -2801,26 +2811,41 @@ svg {
   min-height: 100dvh;
 }
 
-.work-header {
-  position: absolute;
-  z-index: 5;
-  top: env(safe-area-inset-top);
-  right: 0;
-  left: 0;
-  background: transparent;
+/* work-header 不再需要悬浮在通栏大图上的白字反色处理——见下方 .work-panel
+   说明，海报改成缩略图后头部就是普通的 sticky 条，直接吃 .detail-header 的默认样式。 */
+
+/* 海报缩略图 + 标题信息区合并成一个网格区域，和 .work-content 共用同一条
+   左右内边距与 max-width，保证"海报列"与"正文列"在任何视口宽度下都对得齐——
+   这是这轮排版问题的核心修复点，宽屏也不用另起一套结构，只调列宽/间距。 */
+.work-panel {
+  display: flex;
+  width: 100%;
+  max-width: 680px;
+  gap: var(--space-4);
+  align-items: flex-start;
+  padding: var(--space-2) var(--space-4) var(--space-4);
+  margin: 0 auto;
 }
 
-.work-header .icon-button {
-  color: #fff;
-  background: rgb(6 12 14 / 38%);
+.work-poster-col {
+  width: 104px;
+  flex: 0 0 auto;
+}
+
+.work-info-col {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-top: var(--space-2);
 }
 
 .work-hero {
   position: relative;
+  width: 100%;
   overflow: hidden;
   aspect-ratio: 3 / 4;
-  max-height: 60vh;
+  border-radius: var(--radius-card);
   background: var(--surface-high);
+  box-shadow: var(--shadow-float);
 }
 
 .work-hero-img {
@@ -2838,25 +2863,17 @@ svg {
   place-items: center;
   color: var(--ink-soft);
   font: var(--type-display);
-  font-size: 64px;
-}
-
-.work-hero-scrim {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, rgb(6 12 14 / 0%) 45%, rgb(6 12 14 / 78%) 100%);
+  font-size: 28px;
 }
 
 .work-content {
   width: 100%;
   max-width: 680px;
-  padding: var(--space-4) var(--space-4) calc(var(--space-10) + env(safe-area-inset-bottom));
-  margin: -56px auto 0;
+  padding: 0 var(--space-4) calc(var(--space-10) + env(safe-area-inset-bottom));
+  margin: 0 auto;
 }
 
 .work-title {
-  position: relative;
-  z-index: 1;
   margin: 0 0 var(--space-1);
   color: var(--ink);
   font: var(--type-title);
@@ -2865,6 +2882,7 @@ svg {
 .work-meta-line {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   color: var(--ink-soft);
   font: var(--type-meta);
@@ -2872,6 +2890,71 @@ svg {
 
 .work-meta-line a {
   color: var(--accent-strong);
+}
+
+.meta-dot {
+  color: var(--outline);
+}
+
+/* 作品类型是可编辑字段，用一个带小铅笔图标的低调 chip 承载点击入口，
+   和纯展示的年份/Bangumi 链接区分开——用户要能一眼看出"这个能点"。 */
+.work-type-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 8px 1px 2px;
+  color: var(--ink-soft);
+  border: 1px solid var(--outline-soft);
+  border-radius: 999px;
+  background: transparent;
+  font: var(--type-meta);
+}
+
+.work-type-chip svg {
+  width: 13px;
+  height: 13px;
+}
+
+.work-type-options {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.work-type-option {
+  display: grid;
+  gap: 2px;
+  padding: var(--space-3);
+  text-align: left;
+  border: 1.5px solid var(--outline-soft);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+
+.work-type-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-container);
+}
+
+.work-type-option-label {
+  color: var(--ink);
+  font: var(--type-label);
+}
+
+.work-type-option.selected .work-type-option-label {
+  color: var(--accent-strong);
+}
+
+.work-type-option-hint {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.shelf-row-divider {
+  width: 1px;
+  height: 24px;
+  flex: 0 0 auto;
+  margin: 0 2px;
+  background: var(--outline-soft);
 }
 
 .work-release-row {
@@ -3174,5 +3257,14 @@ svg {
   .work-content {
     padding-right: var(--space-4);
     padding-left: var(--space-4);
+  }
+
+  .work-panel {
+    padding-right: var(--space-3);
+    padding-left: var(--space-3);
+  }
+
+  .work-poster-col {
+    width: 88px;
   }
 }

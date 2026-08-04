@@ -226,11 +226,15 @@ test("filterShelfEntries：work_type 筛选（含未分类）与有活动场次�
   const entries = [
     { work: makeWork({ id: "w1", work_type: "animation_film" }), hasEvents: true },
     { work: makeWork({ id: "w2", work_type: "unspecified" }), hasEvents: false },
-    { work: makeWork({ id: "w3", work_type: "live_action_film" }), hasEvents: true }
+    { work: makeWork({ id: "w3", work_type: "live_action_film" }), hasEvents: true },
+    { work: makeWork({ id: "w4", work_type: "other" }), hasEvents: false }
   ];
-  assert.deepEqual(filterShelfEntries(entries, { workType: "all" }).map((e) => e.work.id), ["w1", "w2", "w3"]);
-  assert.deepEqual(filterShelfEntries(entries, { workType: "unspecified" }).map((e) => e.work.id), ["w2"]);
+  assert.deepEqual(filterShelfEntries(entries, { workType: "all" }).map((e) => e.work.id), ["w1", "w2", "w3", "w4"]);
   assert.deepEqual(filterShelfEntries(entries, { eventsOnly: true }).map((e) => e.work.id), ["w1", "w3"]);
+  // 用户反馈：浏览筛选栏里"未分类"要同时吃掉 other 与 unspecified 两个 work_type
+  // 取值——两者在筛选这一层是同一件事，不需要在书架 chip 上分成两格。
+  assert.deepEqual(filterShelfEntries(entries, { workType: "unspecified" }).map((e) => e.work.id), ["w2", "w4"]);
+  assert.deepEqual(filterShelfEntries(entries, { workType: "event" }).map((e) => e.work.id), []);
 });
 
 test("sortShelfEntries：最近观看（默认）/ 观看次数 / 首次记录时间", () => {

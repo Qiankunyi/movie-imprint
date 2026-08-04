@@ -127,3 +127,39 @@
 - `openSupplementCompose()` 直接把 `state.draft` 置空，不经过 `saveDraft`。这个 App 目前只有一个共享的 `"active"` 草稿槽位（沿用自 R2 设计，不是本窗口引入的限制）；如果用户先开始写一条普通感想没写完，又跑去某个作品页点"＋ 补充记录"，会静默覆盖掉那条未完成的草稿。发生概率很低（需要用户主动跨页面切换未完成的记录），但如果之后要做多草稿槽位，这是需要一并考虑的点。
 - 书架/作品页目前只能从首页顶栏的抽屉进入；作品页与书架自身没有独立的抽屉入口（与 `R4_WORK_SHELF.md` 原文"首页顶部…新增抽屉入口"的范围一致，未扩大范围）。
 - W11 年度报告需要的 `stats`（`watchCount`/`totalMinutes`/`totalSpent`/`eventTypeCounts`）已经在 `buildWorkView` 里算好，作品页本身按红线不展示，留给 W11 直接复用。
+
+## R4 补丁 1：交互反馈修复（用户实机试用后）
+
+R4 交付后用户在安卓真机上试用，反馈 4 点 + 追加 1 点，均已修复：
+
+### 1. 侧边栏改成真正的安卓边缘右滑手势
+
+用户原话："我说了我是安卓手机，一切要以安卓的交互理念为先"——原实现只做了"拖抽屉本身右滑关闭"，没有"从屏幕左边缘右滑打开"，只能点顶栏按钮，不符合安卓系统抽屉的标准交互。
+
+`src/app.js` 末尾的手势代码改成一组 `touchstart`/`touchmove`/`touchend` 同时处理开/关两个方向：触点落在屏幕左边缘 24px 内（`SIDEBAR_EDGE_ZONE_PX`）且抽屉未打开时，视为"打开"手势的候选；先要求横向滑动超过 12px（`SIDEBAR_OPEN_ARM_PX`）才真正确认（避免和左侧竖向滚动误触冲突），确认后才 `state.overlay = "sidebar"` 挂载抽屉 DOM 并接管其 `transform` 跟手；松手按位移是否超过抽屉宽度的 35%（`SIDEBAR_OPEN_COMMIT_RATIO`）判定打开或取消。触点落在已挂载的抽屉元素上则走"关闭"分支，逻辑与之前一致（松手超过 80px 判定关闭），但补上了 `closeSidebarAnimated()`——之前松手关闭是直接摘 DOM，没有动画；现在无论是右滑关闭、还是点遮罩关闭（`close-overlay` 分支新增 `state.overlay === "sidebar"` 特判），都先让抽屉滑出屏幕再摘 DOM。`.sidebar-drawer` 新增一条基础 `transition: transform`，手势拖动时用内联 `transition: none` 覆盖掉它，松手清空内联覆盖后这条 transition 接管回弹动画。
+
+### 2/3/4. 书架筛选：合并"其他/未分类"、拆分两排、"有活动场次"改名"特别场次"
+
+用户对筛选栏提了三点，逐一确认后落地：
+
+- **"活动"筛选和"有活动场次"筛选是两回事，命名容易混淆**：前者是 `work.work_type === "event"`（作品本身就是一场活动，比如 TV 动画先行上映、Live Viewing），后者是某一次具体观影带的"舞台挨拶/应援上映"等标签（`ViewingEvent.viewing_context.event_types`）。经确认，把后者改名为**"特别场次"**，和作品类型的"活动"在措辞上明确区分开。
+- **"其他"和"未分类"为什么要分两个 chip**：查代码确认，`work_type` 的 `other` 取值此前在整个代码库里完全没有任何路径能设置到（Bangumi 自动匹配只产生 `animation_film`/`live_action_film`，其余一律落 `unspecified`），"其他"是个永远筛不出东西的死标签。经确认，两处理办法一并落地：①作品页 `workMetaLine` 新增可点击的类型 chip（`edit-work-type` → `workTypeEditorOverlay`），让用户能手动选到全部 5 个 `work_type` 取值，"活动"选项配一句说明区分它和"特别场次"不是一回事；②浏览筛选栏这一层，`filterShelfEntries` 里 `workType: "unspecified"` 现在同时匹配 `other` 与 `unspecified`——两者从"要不要去筛"的角度几乎是同一件事，`work_type` 底层数据不丢信息，只是筛选 UI 合并显示成一个"未分类" chip。
+- **两排筛选重新分工**：第一排（`SHELF_TYPE_FILTERS`）现在只回答"这是哪种作品"——全部/动画电影/真人电影/活动/未分类；第二排（`SHELF_SORTS` + 特别场次开关）是"怎么找/怎么排"——最近观看/观看次数/首次记录时间，用一条竖分隔线（`.shelf-row-divider`）隔开后接"特别场次"筛选按钮。
+
+### 5. 作品页海报排版重做（PC 端错位 / 移动端海报占屏过多）
+
+用户反馈：手机上大海报把标题信息区挤到很靠下，PC 宽视口下海报"定格在左上角"、正文排版错位。原因是原设计用一张通栏大图（`aspect-ratio: 3/4` + `max-height: 60vh`）当顶部 hero，靠 `.work-content { margin-top: -56px }` 把标题区拉上去叠一点在海报底部（靠渐变遮罩保证底部文字可读）——这套写法本身依赖"海报天然撑满容器宽度"的假设，在宽视口下不成立（block 盒子的 `aspect-ratio` 在配合 `max-height` 时不会反过来把宽度收窄到撑满容器，实测宽视口下海报被限制在左侧一小块，正文却还按各自的 `max-width: 680px; margin: 0 auto` 独立居中，两者对不上）。
+
+用户提出两个方案，因为 Bangumi 只提供竖版封面、没有适合当通栏图的横版剧照素材，采用方案二：海报当缩略图，摆到标题信息区左边，合并进同一个 `.work-panel` 区域。具体改动：
+
+- `workHeroMarkup` 去掉渐变遮罩（`.work-hero-scrim`），海报不再需要为压字做暗化处理。
+- `renderWork()` 新增 `.work-panel`（flex 行布局：`.work-poster-col` 固定宽度 + `.work-info-col` 放标题/类型/上映日期），原来 `.work-content` 里的标题三行移到这里；`.work-content` 现在只包含观影履历/评价变迁/感想列表/补充记录按钮。
+- `.work-panel` 与 `.work-content` 共用同一条 `max-width: 680px; margin: 0 auto` 与横向内边距，保证两块在任何视口宽度下左边缘对齐（"同样网格尺寸对齐"）。
+- 移动端海报列宽 104px（≤412px 视口收到 88px），`min-width: 720px` 起放宽到 140px；`.work-hero` 从"通栏大图"变成一张固定宽度的圆角卡片（`border-radius: var(--radius-card)` + 阴影），和首页记录卡的海报缩略图（`.record-poster`）视觉语言一致。
+- `.work-header` 不再需要悬浮在通栏图上的白字反色处理，去掉 `position: absolute`/透明背景覆盖，回落到 `.detail-header` 基础样式（sticky、正常配色）。
+
+### 测试与验证
+
+`tests/work-view.test.mjs` 的 `filterShelfEntries` 用例补了 `work_type: "other"` 的断言，确认它和 `unspecified` 一起被"未分类"筛选命中、且不会被 `workType: "event"` 误命中（原有断言本来就覆盖了基础筛选逻辑，这次是在同一个 test 里加断言，不是新增 test，总数仍是 284）。全量测试 284 通过（`node --test tests/*.test.mjs`），`node --check` 过 `src/app.js`/`src/work-view.js` 无语法错误，`styles/app.css` 花括号配对数确认无误（471 对 471）。`index.html`/`sw.js` 版本号已 bump（`app.css`/`app.js` v26→v27，SW shell 缓存 v27→v28）。
+
+侧边栏边缘手势、作品页新排版均未做真机截图验证（本窗口无浏览器环境，延续 R3/R4 起的已知限制），建议用户下次实机测试时重点看这两处。

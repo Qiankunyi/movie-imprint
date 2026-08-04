@@ -214,7 +214,14 @@ export function summarizeWorksForShelf(works, viewingEvents) {
 }
 
 /**
- * 书架筛选：按 work_type（含"未分类" unspecified）与"有活动场次"。
+ * 书架筛选：按 work_type（含"未分类"）与"特别场次"（原"有活动场次"）。
+ *
+ * 用户反馈后的调整：在浏览筛选栏这一层，"未分类"同时匹配 `unspecified` 与 `other`——
+ * 目前系统里没有任何路径能把 work_type 自动判成 "other"，只有作品页新增的手动
+ * 选类型入口才能让用户主动选 "其他"；从浏览的角度，"用户手动确认是其他类型"和
+ * "还没确定类型"这两种情况混在一个"未分类" chip 里更符合直觉，不需要在筛选栏
+ * 区分成两个几乎总是重叠的格子。work_type 本身仍保留 R1 冻结的五个取值，
+ * 没有丢失信息，只是筛选 UI 把两者合并显示。
  * @param {{ work: object, hasEvents: boolean }[]} entries
  * @param {{ workType?: string, eventsOnly?: boolean }} [filter]
  */
@@ -223,7 +230,9 @@ export function filterShelfEntries(entries, { workType = "all", eventsOnly = fal
   return list.filter((entry) => {
     if (eventsOnly && !entry.hasEvents) return false;
     if (workType === "all") return true;
-    return (entry.work.work_type || "unspecified") === workType;
+    const type = entry.work.work_type || "unspecified";
+    if (workType === "unspecified") return type === "unspecified" || type === "other";
+    return type === workType;
   });
 }
 
