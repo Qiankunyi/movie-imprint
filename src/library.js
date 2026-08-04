@@ -78,12 +78,11 @@ export function normalizeReleaseDates(releaseDates = {}) {
   }
 
   entries.sort((a, b) => a.date.localeCompare(b.date));
-  return {
-    jp: source.jp ?? null,
-    cn: source.cn ?? null,
-    other: Array.isArray(source.other) ? source.other : [],
-    entries
-  };
+  // 关键：旧的 jp/cn/other 一旦搬进 entries 就必须清空。
+  // 之前这里原样保留了它们，导致 removeReleaseDate 删掉 entries 里的条目后，
+  // 下一次 normalizeReleaseDates 又从 jp/cn 把它"复活"回来——表现就是用户点删除
+  // 完全没反应，而且同一个日期会同时出现"日本"和"中国大陆"两条。
+  return { jp: null, cn: null, other: [], entries };
 }
 
 /** 新增一条上映日。同地区同日期视为同一条，不会重复添加。 */

@@ -190,6 +190,9 @@ export function promoteWorkToMatched(work, subjectId, bangumiData = {}) {
     related_refs: Array.isArray(bangumiData.relatedRefs) && bangumiData.relatedRefs.length
       ? bangumiData.relatedRefs
       : (work.related_refs || []),
+    // 完整简介原文留着——「一句话简介」的 AI 概括要拿它当输入，
+    // 抽首句抽不出来时也能在面板里给用户看原文。
+    summary: bangumiData.summary || work.summary || null,
     tagline: work.tagline
       || (bangumiData.summary ? buildTagline(taglineFromSummary(bangumiData.summary), "bangumi") : null),
     poster_subject_id: Number(subjectId) || work.poster_subject_id || null,

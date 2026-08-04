@@ -48,8 +48,9 @@ import {
   seriesRelationLabel,
   setReleaseDateRegion,
   setSeriesRelation,
+  taglineFromSummary,
   taglineSourceLabel
-} from "./library.js?v=1";
+} from "./library.js?v=2";
 import {
   captureTransition,
   toggleEventType,
@@ -82,7 +83,7 @@ import {
   reconcileLocalWorkTitle,
   recommendationLabel,
   resolveWork
-} from "./domain.js?v=13";
+} from "./domain.js?v=14";
 import {
   MIME_TYPES,
   copyExportText,
@@ -180,7 +181,9 @@ const state = {
   currentSeriesId: null,      // R5：系列页当前显示的系列
   currentCollectionId: null,  // R5：片单详情页当前显示的片单
   seriesReturnView: "work",   // R5：系列页从哪进来的，决定返回去哪
-  taglineBusy: false          // R5：AI 概括一句话简介进行中
+  taglineBusy: false,         // R5：AI 概括一句话简介进行中
+  taglineSummary: "",         // R5：当前作品抓回来的完整简介原文（AI 概括的输入）
+  taglineSummaryState: "idle" // "idle" | "loading" | "ready" | "missing"
 };
 
 let toastTimer = null;
@@ -590,10 +593,12 @@ const SHELF_TYPE_FILTERS = [
   ["unspecified", "未分类"]
 ];
 
+// 标签用用户自己的说法（最近观看 / 最多观看 / 首次记录），既贴近他的原话，
+// 也比"观看次数""首次记录时间"短，第二行在窄屏上才塞得下全部标签。
 const SHELF_SORTS = [
   ["recent", "最近观看"],
-  ["count", "观看次数"],
-  ["first", "首次记录时间"]
+  ["count", "最多观看"],
+  ["first", "首次记录"]
 ];
 
 function shelfHeader() {
@@ -759,22 +764,23 @@ function taglineRow(work) {
   </button>`;
 }
 
+// 用户反馈：系列和片单两行"上下没对齐"。原因是系列那行的值是纯文本、片单那行的值是
+// 带边框内边距的 chip，两者文字起点自然差了一截。现在两行用同一个网格
+// （`.work-relation-row` 固定的标签列 + 值列），值也统一成同一种 chip，视觉上严格对齐。
+
 /** R5：所属系列 + 系列内位置。点进去是系列页。 */
 function seriesRow(work) {
   const series = findSeriesForWork(state.series, work.id);
-  if (!series) {
-    return `<button type="button" class="work-relation-row empty" data-action="edit-series" data-testid="edit-series">
-      <span class="work-relation-label">系列</span>
-      <span class="work-relation-value placeholder">＋ 归入一个系列</span>
-    </button>`;
-  }
-  const index = (series.member_ids || []).indexOf(work.id);
+  const index = series ? (series.member_ids || []).indexOf(work.id) : -1;
+  const value = series
+    ? `<button type="button" class="collection-chip" data-action="open-series" data-series-id="${escapeHtml(series.id)}" data-testid="open-series">
+        ${escapeHtml(series.title)}${index >= 0 ? `<span class="work-relation-index">第 ${index + 1} 部</span>` : ""}
+      </button>
+      <button type="button" class="collection-chip add" data-action="edit-series" data-testid="edit-series">改</button>`
+    : `<button type="button" class="collection-chip add" data-action="edit-series" data-testid="edit-series">＋ 归入一个系列</button>`;
   return `<div class="work-relation-row" data-testid="work-series-row">
     <span class="work-relation-label">系列</span>
-    <button type="button" class="work-relation-value link" data-action="open-series" data-series-id="${escapeHtml(series.id)}" data-testid="open-series">
-      ${escapeHtml(series.title)}${index >= 0 ? `<span class="work-relation-index">第 ${index + 1} 部</span>` : ""}
-    </button>
-    <button type="button" class="icon-button small" data-action="edit-series" aria-label="编辑系列">${icon("edit")}</button>
+    <span class="work-relation-values">${value}</span>
   </div>`;
 }
 
@@ -784,7 +790,7 @@ function collectionsRow(work) {
   const chips = mine.map((collection) => `<button type="button" class="collection-chip" data-action="open-collection" data-collection-id="${escapeHtml(collection.id)}" data-testid="work-collection-${escapeHtml(collection.id)}">${escapeHtml(collection.title)}</button>`).join("");
   return `<div class="work-relation-row" data-testid="work-collections-row">
     <span class="work-relation-label">片单</span>
-    <span class="work-collection-chips">${chips}<button type="button" class="collection-chip add" data-action="edit-collections" data-testid="edit-collections">＋ 加入片单</button></span>
+    <span class="work-relation-values">${chips}<button type="button" class="collection-chip add" data-action="edit-collections" data-testid="edit-collections">＋ 加入片单</button></span>
   </div>`;
 }
 
@@ -1607,12 +1613,13 @@ function historyEventEditorOverlay(event) {
  */
 function releaseDateEditorOverlay(work) {
   const { entries } = normalizeReleaseDates(work.release_dates);
+  // 地区和日期都可改（抓错的日期本身也要能改，不能只让改地区），删除按钮独立成行尾。
   const rows = entries.map((entry) => `<div class="release-row" data-testid="release-row-${escapeHtml(entry.id)}">
     <select data-action="set-release-region" data-entry-id="${escapeHtml(entry.id)}" aria-label="上映地区">
       ${RELEASE_REGIONS.map(([value, label]) => `<option value="${value}" ${entry.region === value ? "selected" : ""}>${label}</option>`).join("")}
     </select>
-    <span class="release-row-date">${escapeHtml(formatShortDate(entry.date))}</span>
-    <button type="button" class="icon-button small" data-action="remove-release-date" data-entry-id="${escapeHtml(entry.id)}" aria-label="删除这条上映日">${icon("trash")}</button>
+    <input type="date" class="release-row-date" value="${escapeHtml(entry.date)}" data-action="set-release-date" data-entry-id="${escapeHtml(entry.id)}" aria-label="上映日期" />
+    <button type="button" class="icon-button small danger" data-action="remove-release-date" data-entry-id="${escapeHtml(entry.id)}" aria-label="删除这条上映日" data-testid="remove-release-${escapeHtml(entry.id)}">${icon("trash")}</button>
   </div>`).join("");
 
   return `<div class="overlay" data-testid="release-date-editor">
@@ -1635,23 +1642,51 @@ function releaseDateEditorOverlay(work) {
   </div>`;
 }
 
-/** R5：一句话简介编辑。AI 概括是手动触发的按钮，不自动消耗额度。 */
+/**
+ * R5 补丁：一句话简介编辑。
+ *
+ * 上一版把这里做错了——AI 只收到片名，等于让模型凭印象自己编一句介绍，而用户要的是
+ * "把抓回来的完整简介压缩成一句话"。现在面板里会明确显示抓到的完整简介原文，
+ * AI 概括就是对着这段原文做压缩；抓不到原文时按钮直接禁用并说明原因，
+ * 不再出现"点了没反应"。
+ */
 function taglineEditorOverlay(work) {
   const tagline = work.tagline;
   const aiReady = Boolean(state.aiPreference?.provider);
+  const summary = state.taglineSummary;
+  const loading = state.taglineSummaryState === "loading";
+  const hasSummary = Boolean(summary && summary.trim());
+  const disabledReason = !aiReady
+    ? "未配置 AI —— 先在偏好设置里选一个服务商"
+    : loading
+      ? "正在取简介原文…"
+      : !hasSummary
+        ? "没有抓到简介原文，无法概括——可以自己写一句"
+        : "";
+
+  const summaryBlock = loading
+    ? `<p class="tagline-summary loading">正在从 Bangumi 取完整简介…</p>`
+    : hasSummary
+      ? `<details class="tagline-summary" data-testid="tagline-summary">
+          <summary>抓到的完整简介（AI 会对着它概括）</summary>
+          <p>${escapeHtml(summary)}</p>
+        </details>`
+      : `<p class="tagline-summary empty">没有抓到这部作品的简介原文。</p>`;
+
   return `<div class="overlay" data-testid="tagline-editor">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
     <section class="bottom-sheet tagline-editor" role="dialog" aria-modal="true" aria-labelledby="tagline-title">
       <div class="sheet-handle" aria-hidden="true"></div>
       <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="tagline-title">一句话简介</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
-      <p class="settings-note">最能代表这部作品的一句话——可以是官方介绍的开头，也可以是你自己的概括。</p>
+      <p class="settings-note">最能代表这部作品的一句话。简介原文本来就只有一句、或者第一句已经够用时，会直接填好，不需要动用 AI。</p>
+      ${summaryBlock}
       <form id="tagline-form">
         <label><span>正文</span><textarea name="text" rows="3" maxlength="120" data-testid="tagline-input" placeholder="例如：少女们签下契约，换取一个愿望">${escapeHtml(tagline?.text || "")}</textarea></label>
         <div class="tagline-actions">
-          <button type="button" class="text-action" data-action="generate-tagline" ${aiReady && !state.taglineBusy ? "" : "disabled"} data-testid="generate-tagline">
+          <button type="button" class="text-action" data-action="generate-tagline" ${aiReady && hasSummary && !state.taglineBusy && !loading ? "" : "disabled"} data-testid="generate-tagline">
             ${state.taglineBusy ? "AI 概括中…" : "让 AI 概括一句"}
           </button>
-          ${aiReady ? "" : `<span class="settings-note inline">未配置 AI，先在偏好设置里选一个服务商</span>`}
+          ${disabledReason ? `<span class="settings-note inline">${escapeHtml(disabledReason)}</span>` : ""}
         </div>
         <button class="sheet-done" type="submit">保存</button>
       </form>
@@ -2562,12 +2597,70 @@ async function deleteCurrentCollection() {
 }
 
 /**
- * 让 AI 把作品简介压成一句话。手动触发——不在匹配作品时自动跑，避免每匹配一部
- * 电影就静默消耗一次 AI 额度。失败时保留用户已经输入的内容，只提示，不清空。
+ * 打开一句话简介面板时，确保手上有这部作品的**完整简介原文**。
+ *
+ * 优先用匹配时存下来的 work.summary；没有（历史数据、或搜索接口给的是截断版）就按
+ * subjectId 去 /api/bangumi/subject 拉一次并顺手存回 work，下次不用再请求。
+ *
+ * 顺带处理用户列出的"不需要 AI"的两种情况：简介原文本来就一句话、或者第一句就很合适
+ * ——taglineFromSummary 能抽出来的话直接把输入框填好，用户看一眼就能保存，不动 AI。
+ */
+async function loadTaglineSummary() {
+  const work = findWorkById(state.works, state.currentWorkId);
+  if (!work) return;
+
+  const applySummary = (summary) => {
+    state.taglineSummary = summary || "";
+    state.taglineSummaryState = summary ? "ready" : "missing";
+    if (state.overlay !== "tagline") return;
+    render();
+    // 还没有简介时，先用"首句"填好输入框——够用就不必动 AI
+    const input = document.querySelector("[data-testid='tagline-input']");
+    if (input && !input.value.trim()) {
+      const firstSentence = taglineFromSummary(summary);
+      if (firstSentence) input.value = firstSentence;
+    }
+  };
+
+  if (work.summary?.trim()) { applySummary(work.summary); return; }
+
+  const bangumiRef = (work.external_refs || []).find((ref) => ref.source === "bangumi");
+  const subjectId = bangumiRef?.id || work.poster_subject_id;
+  if (!subjectId) { applySummary(""); return; }
+
+  state.taglineSummary = "";
+  state.taglineSummaryState = "loading";
+  if (state.overlay === "tagline") render();
+
+  try {
+    const response = await apiFetch(`/api/bangumi/subject?id=${encodeURIComponent(subjectId)}`, {
+      headers: { accept: "application/json" }
+    });
+    if (!response.ok) throw new Error(`subject_${response.status}`);
+    const payload = await response.json();
+    const summary = String(payload?.summary || "").trim();
+    if (summary) {
+      // 存回 work，下次打开不用再请求
+      await updateCurrentWork((current) => ({ ...current, summary }));
+    }
+    applySummary(summary);
+  } catch (error) {
+    console.error("[tagline-summary]", error);
+    applySummary("");
+  }
+}
+
+/**
+ * 让 AI 把**抓回来的完整简介**压成一句话。手动触发——不在匹配作品时自动跑，
+ * 避免每匹配一部电影就静默消耗一次 AI 额度。
+ * 失败时保留用户已经输入的内容，只提示，不清空。
  */
 async function generateTaglineWithAi() {
   const work = findWorkById(state.works, state.currentWorkId);
   if (!work || state.taglineBusy) return;
+  const summary = state.taglineSummary?.trim();
+  if (!summary) { showToast("没有简介原文可概括，可以自己写一句"); return; }
+
   state.taglineBusy = true;
   render();
   try {
@@ -2578,24 +2671,27 @@ async function generateTaglineWithAi() {
         provider: state.aiPreference?.provider || null,
         title: work.title,
         originalTitle: work.original_title,
-        year: releaseYearOf(work)
+        year: releaseYearOf(work),
+        summary
       })
     });
-    if (!response.ok) throw new Error(`tagline_${response.status}`);
-    const payload = await response.json();
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(payload?.message || `tagline_${response.status}`);
     const text = String(payload?.tagline || "").trim();
-    if (!text) throw new Error("tagline_empty");
+    if (!text) throw new Error("AI 没能从这段简介里概括出一句话");
     state.taglineBusy = false;
     render();
     // render() 之后才填输入框——AI 结果只是"填进草稿框"，不直接落库，
     // 用户看过、点了保存才算数（和 App 里其余 AI 产出的处理方式一致）。
     const input = document.querySelector("[data-testid='tagline-input']");
     if (input) { input.value = text; input.focus(); }
-    announce("AI 已给出一句话，确认后记得保存");
+    showToast("AI 已给出一句话，确认后记得保存");
   } catch (error) {
     state.taglineBusy = false;
     render();
-    announce("AI 概括失败，可以自己写一句");
+    // 这里必须用可见的 toast：上一版只 announce()（屏幕阅读器专用的隐藏区域），
+    // 看得见屏幕的用户点了按钮完全看不到任何反馈，就是用户说的"点了几次都没反应"。
+    showToast(String(error.message || "AI 概括失败，可以自己写一句").slice(0, 60));
     console.error("[tagline]", error);
   }
 }
@@ -2680,10 +2776,11 @@ app.addEventListener("click", async (event) => {
       release_dates: removeReleaseDate(work.release_dates, trigger.dataset.entryId)
     }));
     render();
-    announce("已删除这条上映日");
+    showToast("已删除这条上映日");
   } else if (action === "edit-tagline") {
     state.overlay = "tagline";
     render();
+    void loadTaglineSummary();
   } else if (action === "generate-tagline") {
     await generateTaglineWithAi();
   } else if (action === "edit-series") {
@@ -3264,7 +3361,21 @@ app.addEventListener("change", async (event) => {
       release_dates: setReleaseDateRegion(work.release_dates, entryId, region)
     }));
     render();
-    announce(`已标注为${releaseRegionLabel(region)}上映`);
+    showToast(`已标注为${releaseRegionLabel(region)}上映`);
+  } else if (event.target.dataset.action === "set-release-date") {
+    // 抓错的日期本身也要能改，不是只能改地区
+    const entryId = event.target.dataset.entryId;
+    const date = event.target.value;
+    if (!date) return;
+    await updateCurrentWork((work) => {
+      const before = normalizeReleaseDates(work.release_dates);
+      const target = before.entries.find((entry) => entry.id === entryId);
+      if (!target) return work;
+      const without = removeReleaseDate(before, entryId);
+      return { ...work, release_dates: addReleaseDate(without, { region: target.region, date, source: "manual" }) };
+    });
+    render();
+    showToast("已更新上映日期");
   }
 });
 
@@ -3540,10 +3651,43 @@ document.addEventListener("focusout", () => setTimeout(updateVisualViewport, 180
 // 用户原话"我是安卓手机，一切要以安卓的交互理念为先"。这里把开/关两个方向的手势
 // 合到一组 touchstart/touchmove/touchend 里，跟手拖动 + 松手按位移阈值判定，
 // 不接入动画库，和这个项目里其余交互的实现规模一致。
-const SIDEBAR_EDGE_ZONE_PX = 28; // 触点落在屏幕左边缘这个范围内，才可能是"打开"手势
-const SIDEBAR_OPEN_ARM_PX = 10; // 边缘触点要先横滑这么多才确认是"打开"而不是误触/纵向滚动
-const SIDEBAR_OPEN_COMMIT_RATIO = 0.35; // 打开手势：松手时超过抽屉宽度这个比例才算打开
+// 起手要先横滑这么多才确认是"打开"。因为现在允许从画面中间任意位置起手，
+// 阈值要比边缘手势时代高一些，并且要求横向位移明显压过纵向（见 touchmove），
+// 否则斜着滚页面容易误触。
+const SIDEBAR_OPEN_ARM_PX = 16;
+const SIDEBAR_OPEN_DOMINANCE = 1.5; // 横向位移至少是纵向的这个倍数，才算"横划"
+const SIDEBAR_OPEN_COMMIT_PX = 90; // 打开手势：松手时横向位移超过这个像素就算打开
 const SIDEBAR_CLOSE_COMMIT_PX = 80; // 关闭手势：已经打开时，右滑超过这个像素才算关闭
+
+/**
+ * "打开"手势的起手识别区：**屏幕中央的一大片区域，从哪里起手都行**。
+ *
+ * 前几版一直把它做成"必须从屏幕最左边缘起手"，这是两个错误叠在一起：
+ * 一是用户要的本来就不是边缘手势，而是"在画面中间随便哪儿从左往右一划就拉出抽屉"；
+ * 二是安卓（尤其小米 HyperOS）把屏幕最左侧约 20–24dp 划给**系统返回手势**，
+ * 落在那条窄边里的触摸由系统消费、网页根本收不到 touchstart/touchmove——
+ * 于是识别区越贴边，越是永远不会被触发。
+ *
+ * 现在两个问题一起解决：不再限制起手位置，只排除右侧一小条（留给系统的前进手势）。
+ * 误触由"横向位移必须明显大于纵向"和"横向可滚动容器让位"两道判定挡住。
+ */
+function sidebarSwipeStartAllowed(clientX) {
+  return clientX <= innerWidth * 0.92;
+}
+
+/**
+ * 起手点是否落在一个横向可滚动的容器里（书架筛选条、徽章行等）。
+ * 是的话让位给它自己的横向滚动，不抢手势。
+ */
+function inHorizontalScroller(element) {
+  for (let node = element; node && node !== document.body; node = node.parentElement) {
+    if (node.scrollWidth > node.clientWidth + 4) {
+      const overflowX = getComputedStyle(node).overflowX;
+      if (overflowX === "auto" || overflowX === "scroll") return true;
+    }
+  }
+  return false;
+}
 
 // mode: "opening" | "closing"；armed: 是否已确认为侧边栏手势（opening 才需要"确认"这一步）
 let sidebarGesture = null;
@@ -3609,7 +3753,7 @@ document.addEventListener("touchstart", (event) => {
     return;
   }
 
-  if (state.overlay === null && touch.clientX <= SIDEBAR_EDGE_ZONE_PX) {
+  if (state.overlay === null && sidebarSwipeStartAllowed(touch.clientX) && !inHorizontalScroller(event.target)) {
     sidebarGesture = {
       mode: "opening",
       startX: touch.clientX,
@@ -3635,6 +3779,8 @@ document.addEventListener("touchmove", (event) => {
     // 纵向位移更大 → 用户是在竖着滚页面，直接放弃这次手势，别跟页面抢
     if (Math.abs(deltaY) > Math.abs(deltaX)) { sidebarGesture = null; return; }
     if (deltaX < SIDEBAR_OPEN_ARM_PX) return;
+    // 从画面中间起手时，必须是一次明确的"横划"才认，避免斜着滚动被误判
+    if (deltaX < Math.abs(deltaY) * SIDEBAR_OPEN_DOMINANCE) return;
 
     sidebarGesture.armed = true;
     // 关键：这里绝不能 render()。把抽屉塞进 #app 之外的常驻手势层，
@@ -3674,7 +3820,7 @@ function finishSidebarGesture(cancelled = false) {
   const overlayEl = drawer.closest(".overlay");
 
   if (gesture.mode === "opening") {
-    const committed = !cancelled && deltaX >= gesture.width * SIDEBAR_OPEN_COMMIT_RATIO;
+    const committed = !cancelled && deltaX >= SIDEBAR_OPEN_COMMIT_PX;
     if (committed) {
       // 提交：现在才切状态并 render()。此时手指已经离开，重建 DOM 不会打断任何事件序列。
       clearGestureLayer();

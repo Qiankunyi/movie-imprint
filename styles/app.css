@@ -190,12 +190,15 @@ svg {
 
 /* R3 补丁 1：海报直接占据卡片整个左侧（参考票务 App 的海报占位比例），
    不再是四周留白里的一个小缩略图。button 本身变成横向 flex：海报贴边，文字区域单独留白。 */
-/* min-height 必须严格等于 海报宽度 × 1.5（标准电影海报 2:3）——见下方 .record-poster
-   的说明。两个数字是一组的，改一个就要改另一个（含下面两处媒体查询）。 */
+/* 高度必须严格等于 海报宽度 × 1.5（标准电影海报 2:3）——见下方 .record-poster 的说明。
+   这里是 height 而不是 min-height：只有卡片高度被钉死，海报盒子才恒定是 2:3，
+   海报才可能"既占满上下左三边、又完整显示、又不变形"。文字区域因此需要自己
+   overflow: hidden，内容再多也不许把卡片撑高。
+   这两个数字是一组的，改一个就要改另一个（含下面的媒体查询）。 */
 .record-card-button {
   display: flex;
   width: 100%;
-  min-height: 168px;
+  height: 168px;
   align-items: stretch;
   padding: 0;
   text-align: left;
@@ -212,20 +215,20 @@ svg {
    背景色，看着像贴歪了的贴纸。用户第四轮的要求很明确："海报要占满卡片的上下左三边，
    同时不允许拉伸变形"。
 
-   这两件事看似矛盾（盒子被拉高，比例就会变），但拉伸变形的其实只有"图片"这一层，
-   不是"盒子"这一层：`object-fit: cover` 在盒子比例变化时是**裁切**而不是拉伸，
-   画面本身永远不会被压扁。所以正确解法是反过来的——让盒子放心地 stretch 占满
-   卡片全高，图片交给 cover 去适配：
+   第四轮用了 `min-height` + `object-fit: cover`：盒子会被长内容撑高、不再是 2:3，
+   cover 于是从左右裁掉一部分——用户第五轮的反馈正是"海报左边被裁掉了一部分"。
 
-   - `.record-poster` 用 `align-self: stretch`（不再是 flex-start），宽度固定，
-     高度跟着卡片走 → 上下左三边天然贴满，因为卡片自己 `overflow: hidden` +
-     圆角，海报的左上/左下角会被卡片圆角自动裁好，不需要单独写 border-radius。
-   - `.record-card-button` 的 `min-height` 设成海报宽度 × 1.5（标准海报 2:3），
-     保证"内容较少"这个最常见的情况下，盒子恰好就是 2:3，画面一个像素都不裁。
-   - 内容比这更高时，盒子变高、cover 从左右两侧对称裁掉一点点，比例观感仍然正确。
+   第五轮（当前）把三个要求拆开看，发现它们只有在**卡片高度被钉死**时才能同时成立：
+   - 要"占满上下左三边" → 海报盒子必须 stretch 到卡片全高；
+   - 要"比例不变且完整显示" → 盒子必须恰好是 2:3，且图片用 contain 而不是 cover。
+   盒子高度 = 卡片高度，盒子宽度固定，所以只要 `卡片高度 === 海报宽度 × 1.5`，
+   盒子就恒定是 2:3。因此 `.record-card-button` 改用固定 `height`（不是 min-height），
+   由 `.record-card-body` 自己 overflow: hidden 承担"内容再多也不撑高卡片"。
 
-   代价：内容极长的卡片上海报会被裁掉一些左右边缘。相比"底部空一截背景色"，
-   这个代价在视觉上明显更小，也是各家票务/影视 App 的通行做法。 */
+   图片用 `object-fit: contain` 而不是 cover：contain 保证**整张海报完整可见**，
+   并且永远不拉伸。万一某张图源不是标准 2:3（Bangumi 偶有例外），contain 会留一点点
+   两侧留白，而不是像 cover 那样把画面裁掉——按用户明确的优先级（完整 > 铺满每一寸），
+   留白是可接受的，裁切不是。 */
 .record-poster {
   position: relative;
   width: 112px;
@@ -249,7 +252,9 @@ svg {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* contain：整张海报完整可见且永不变形（见上方 .record-poster 的说明）。
+     不要改回 cover——那正是"海报左边被裁掉一部分"的原因。 */
+  object-fit: contain;
 }
 
 /* R3 补丁 2：「仅保存原文」/「待确认作品」不再是 footer 里的一整行文字，改成叠在海报
@@ -276,7 +281,9 @@ svg {
   background: var(--film);
 }
 
-/* 文字区域：与海报同高的一列，主内容顶部对齐、footer 贴底，卡片再高也不会松散 */
+/* 文字区域：与海报同高的一列，主内容顶部对齐、footer 贴底。
+   卡片高度已被钉死（见 .record-card-button），所以这里必须 overflow: hidden——
+   内容再多也只能被裁掉，不许把卡片撑高，否则海报盒子就不再是 2:3。 */
 .record-card-body {
   display: flex;
   min-width: 0;
@@ -285,6 +292,7 @@ svg {
   justify-content: space-between;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4) var(--space-4);
+  overflow: hidden;
 }
 
 .record-card-main {
@@ -2012,13 +2020,13 @@ svg {
     font-size: 20px;
   }
 
-  /* 宽度与 min-height 必须成对改：min-height = 宽度 × 1.5（海报 2:3） */
+  /* 宽度与 height 必须成对改：height = 宽度 × 1.5（海报 2:3） */
   .record-poster {
     width: 96px;
   }
 
   .record-card-button {
-    min-height: 144px;
+    height: 144px;
   }
 
   .record-card-body {
@@ -2743,29 +2751,33 @@ svg {
   padding: 0 var(--space-4) var(--space-3);
 }
 
+/* 用户反馈：手机上最右端的筛选标签被"截断"。要求是**严格两行、全部标签同时可见**——
+   既不横向滚动（滚动就会有东西藏在屏幕外），也不换行（换行就不止两行了）。
+   所以这里 nowrap，靠 chip 自身随视口收缩来塞进一行：内边距与字号用 clamp 跟着
+   视口宽度缩，窄屏下自动变紧凑，但文字始终完整显示，不出省略号。 */
 .shelf-chip-row,
 .shelf-sort-row {
   display: flex;
-  gap: var(--space-2);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.shelf-chip-row::-webkit-scrollbar,
-.shelf-sort-row::-webkit-scrollbar {
-  display: none;
+  flex-wrap: nowrap;
+  gap: clamp(4px, 1.6vw, 8px);
+  align-items: center;
 }
 
 .shelf-chip,
 .shelf-sort {
   min-height: 36px;
-  padding: 0 var(--space-3);
+  /* 内边距与字号随视口收缩，保证一行塞得下全部标签且文字不被截断。
+     flex-shrink 允许它们在极窄屏进一步压缩，min-width: 0 让压缩真正生效。 */
+  padding: 0 clamp(6px, 2.4vw, 12px);
+  flex: 0 1 auto;
+  min-width: 0;
   color: var(--ink);
   white-space: nowrap;
   border: 1px solid var(--outline-soft);
   border-radius: 999px;
   background: var(--surface-container);
   font: var(--type-meta);
+  font-size: clamp(11px, 3.1vw, 12px);
 }
 
 .shelf-chip.selected,
@@ -3429,19 +3441,20 @@ svg {
 }
 
 .release-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 40px;
   gap: var(--space-2);
   align-items: center;
 }
 
-.release-row select {
-  flex: 0 0 auto;
+.release-row select,
+.release-row-date {
+  min-width: 0;
+  width: 100%;
 }
 
-.release-row-date {
-  flex: 1 1 auto;
-  color: var(--ink-soft);
-  font: var(--type-meta);
+.icon-button.small.danger {
+  color: var(--danger);
 }
 
 .release-add-form {
@@ -3449,51 +3462,36 @@ svg {
   gap: var(--space-3);
 }
 
+/* 系列行与片单行共用同一个两列网格，标签列宽度固定 —— 这样两行的值永远从同一个
+   x 起点开始。值也统一成 .collection-chip，不再是"一行纯文本、一行带边框 chip"
+   那种天然对不齐的组合（用户反馈：系列和片单上下都没对齐）。 */
 .work-relation-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 40px 1fr;
   gap: var(--space-2);
-  align-items: center;
+  align-items: start;
   width: 100%;
   text-align: left;
   background: transparent;
 }
 
 .work-relation-label {
-  flex: 0 0 auto;
-  width: 40px;
+  padding-top: 5px; /* 与 chip 的文字基线对齐 */
   color: var(--ink-soft);
   font: var(--type-meta);
 }
 
-.work-relation-value {
-  flex: 1 1 auto;
+.work-relation-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   min-width: 0;
-  color: var(--ink);
-  font: var(--type-body);
-  background: transparent;
-  text-align: left;
-}
-
-.work-relation-value.link {
-  color: var(--accent-strong);
-}
-
-.work-relation-value.placeholder {
-  color: var(--accent-strong);
-  font: var(--type-meta);
 }
 
 .work-relation-index {
-  margin-left: var(--space-2);
+  margin-left: 6px;
   color: var(--ink-soft);
   font: var(--type-meta);
-}
-
-.work-collection-chips {
-  display: flex;
-  flex: 1 1 auto;
-  flex-wrap: wrap;
-  gap: 6px;
 }
 
 .collection-chip {
@@ -3689,6 +3687,32 @@ svg {
   gap: var(--space-2);
   align-items: center;
   margin-bottom: var(--space-3);
+}
+
+/* 抓回来的完整简介原文——AI 概括的输入。默认折叠，展开能看到 AI 到底在概括什么，
+   而不是让用户面对一个"点了没反应"的黑盒按钮。 */
+.tagline-summary {
+  padding: var(--space-3);
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-tag);
+  background: var(--surface-low);
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.tagline-summary summary {
+  color: var(--accent-strong);
+  cursor: pointer;
+}
+
+.tagline-summary p {
+  margin: var(--space-2) 0 0;
+  line-height: 1.6;
+}
+
+.tagline-summary.loading,
+.tagline-summary.empty {
+  margin-bottom: var(--space-4);
 }
 
 .settings-note.inline {

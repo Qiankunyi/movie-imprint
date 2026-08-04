@@ -235,12 +235,14 @@ export async function requestAiAnalysis({ provider, title, rawText, env = proces
 // 核心红线（AI 先帮用户整理记忆素材，而不是替用户写影评）不冲突：它写的是客观作品
 // 简介，不碰用户的感想，也永远不会自动落库，必须用户确认后手动保存。
 const AI_TAGLINE_PROMPT = [
-  "你在为一个私人观影记录 App 生成电影的「一句话简介」。",
+  "你在为一个私人观影记录 App 把一段电影简介**压缩成一句话**。",
+  "用户会给你这部作品的完整简介原文（summary）。你的任务是概括它，不是自己另写一个。",
   "要求：",
-  "1. 只输出一句话，不超过 40 个汉字，不加书名号、不加句号以外的标点堆砌。",
-  "2. 描述这部作品「讲了什么」或「是什么样的作品」，写客观介绍，不写评价、不写推荐语、不剧透结局。",
-  "3. 不要复述片名，不要用「这部电影讲述了」这类套话开头。",
-  "4. 如果你并不确切知道这部作品，把 tagline 留空字符串，不要编造剧情。"
+  "1. 只输出一句话，不超过 40 个汉字。",
+  "2. 内容必须来自给定的简介原文——不要引入原文里没有的设定、人物或情节。",
+  "3. 写客观介绍（讲了什么 / 是什么样的作品），不写评价、不写推荐语、不剧透结局与关键转折。",
+  "4. 不要复述片名，不要用「这部电影讲述了」这类套话开头。",
+  "5. 如果没有提供简介原文，或原文信息不足以概括，把 tagline 留空字符串，不要凭印象编造。"
 ].join("\n");
 
 const AI_TAGLINE_SCHEMA = {
@@ -253,22 +255,33 @@ const AI_TAGLINE_SCHEMA = {
 };
 
 /**
- * 生成一句话简介。不接受用户感想原文作为输入——这里要的是作品客观介绍，
- * 把用户的私人记录发出去既没必要也不合适。
+ * 把作品的完整简介压缩成一句话。
+ *
+ * summary（抓回来的完整简介原文）是**必需**的——这个功能的定义就是"概括已有简介"，
+ * 而不是让模型凭印象自己写一段作品介绍（那样很容易编造剧情）。拿不到简介时上层
+ * 应该提示用户手写，而不是调用这里。
+ *
+ * 不接受用户的感想原文作为输入——这里要的是作品客观介绍，把私人记录发出去没必要。
  */
-export async function requestAiTagline({ provider, title, originalTitle = null, year = null, env = process.env, fetchImpl = fetch }) {
+export async function requestAiTagline({ provider, title, originalTitle = null, year = null, summary = "", env = process.env, fetchImpl = fetch }) {
   if (typeof title !== "string" || !title.trim()) throw new Error("invalid_ai_input");
+  if (typeof summary !== "string" || !summary.trim()) throw new Error("missing_summary");
   const selected = provider || listAiProviders(env).active;
   const config = providerConfig(selected, env);
   const startedAt = Date.now();
-  const input = { title, rawText: title };
+  const input = { title, rawText: summary };
   const options = {
     systemPrompt: AI_TAGLINE_PROMPT,
     schema: AI_TAGLINE_SCHEMA,
     schemaName: "movie_imprint_tagline",
     toolName: "submit_tagline",
-    toolDescription: "提交这部作品的一句话简介",
-    inputText: JSON.stringify({ title, original_title: originalTitle, release_year: year })
+    toolDescription: "把这部作品的完整简介压缩成一句话",
+    inputText: JSON.stringify({
+      title,
+      original_title: originalTitle,
+      release_year: year,
+      summary: summary.slice(0, 4000)
+    })
   };
   const result = selected === "gemini"
     ? await callGemini(config, input, fetchImpl, options)

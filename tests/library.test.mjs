@@ -41,6 +41,16 @@ test("normalizeReleaseDates：R1 旧格式的 jp/cn/other 被搬进 entries 且�
   assert.ok(result.entries.every((entry) => entry.source === "legacy"));
 });
 
+test("normalizeReleaseDates：旧的 jp/cn 搬进 entries 后必须清空，否则删除会被复活", () => {
+  const normalized = normalizeReleaseDates({ jp: "2012-10-06", cn: "2013-01-01", other: [] });
+  assert.equal(normalized.jp, null);
+  assert.equal(normalized.cn, null);
+  assert.deepEqual(normalized.other, []);
+  // 真正的回归点：删掉一条之后再归一化一次，不能又冒出来
+  const afterDelete = removeReleaseDate(normalized, "jp_2012-10-06");
+  assert.deepEqual(normalizeReleaseDates(afterDelete).entries.map((e) => e.id), ["cn_2013-01-01"]);
+});
+
 test("normalizeReleaseDates：非法日期被丢弃，空输入不炸", () => {
   assert.deepEqual(normalizeReleaseDates().entries, []);
   assert.deepEqual(normalizeReleaseDates(null).entries, []);

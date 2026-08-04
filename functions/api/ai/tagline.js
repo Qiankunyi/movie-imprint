@@ -24,21 +24,26 @@ export async function onRequest(context) {
       title: typeof body.title === "string" ? body.title.slice(0, 160) : "",
       originalTitle: typeof body.originalTitle === "string" ? body.originalTitle.slice(0, 160) : null,
       year: Number.isInteger(body.year) ? body.year : null,
+      // 完整简介原文——这是"概括"的输入，缺了它就没有可概括的东西
+      summary: typeof body.summary === "string" ? body.summary.slice(0, 4000) : "",
       env: context.env
     });
     return jsonResponse(200, result);
   } catch (error) {
+    const missingSummary = error.message === "missing_summary";
     const invalid = ["invalid_json", "request_too_large", "invalid_ai_input", "invalid_ai_output", "unsupported_ai_provider"].includes(error.message);
     const notConfigured = error.message === "ai_provider_not_configured";
     return jsonResponse(
-      invalid ? 400 : notConfigured ? 503 : 502,
+      missingSummary || invalid ? 400 : notConfigured ? 503 : 502,
       {
-        error: invalid ? error.message : notConfigured ? "ai_not_configured" : "ai_tagline_failed",
-        message: invalid
-          ? "这部作品的信息不足以生成简介"
-          : notConfigured
-            ? "所选整理服务尚未配置"
-            : describeAiError(error, "这次没能生成一句话简介")
+        error: missingSummary ? "missing_summary" : invalid ? error.message : notConfigured ? "ai_not_configured" : "ai_tagline_failed",
+        message: missingSummary
+          ? "没有拿到这部作品的简介原文，无法概括——可以自己写一句"
+          : invalid
+            ? "这部作品的信息不足以生成简介"
+            : notConfigured
+              ? "所选整理服务尚未配置"
+              : describeAiError(error, "这次没能生成一句话简介")
       }
     );
   }
