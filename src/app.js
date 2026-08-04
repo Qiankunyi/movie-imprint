@@ -5,7 +5,7 @@ import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
 import { runMigrationIfNeeded } from "./migrate.js?v=3";
 import { EVENT_TYPES } from "./event-types.js?v=1";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
-import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=5";
+import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=6";
 import { memoryListMarkup } from "./memory-list.js?v=1";
 import { formatBadge, eventBadges } from "./format-badge.js";
 import {
@@ -183,7 +183,8 @@ const state = {
   seriesReturnView: "work",   // R5：系列页从哪进来的，决定返回去哪
   taglineBusy: false,         // R5：AI 概括一句话简介进行中
   taglineSummary: "",         // R5：当前作品抓回来的完整简介原文（AI 概括的输入）
-  taglineSummaryState: "idle" // "idle" | "loading" | "ready" | "missing"
+  taglineSummaryState: "idle", // "idle" | "loading" | "ready" | "missing"
+  fabOpen: false              // R5 补丁 4：右下角 FAB 二级菜单是否展开
 };
 
 let toastTimer = null;
@@ -491,14 +492,82 @@ async function loadWorkEventsFor(workId) {
 }
 
 function topBar() {
+  // R5 补丁 4：顶栏只保留侧边栏入口。主题切换、搜索、开始记录全部下沉到右下角的
+  // FAB 二级菜单——大屏手机单手拿着时，拇指够不到屏幕最上排。
   return `<header class="top-bar">
     <div class="brand-lockup"><span class="brand-mark" aria-hidden="true"></span><h1>电影印记</h1></div>
     <div class="top-actions">
-      <button class="icon-button" type="button" data-action="theme" aria-label="切换到${state.theme === "dark" ? "浅色" : "深色"}主题">${icon(state.theme === "dark" ? "sun" : "theme")}</button>
-      <button class="icon-button" type="button" aria-label="搜索（尚未接入）" disabled>${icon("search")}</button>
       <button class="icon-button" type="button" data-action="open-sidebar" aria-label="打开菜单" data-testid="open-sidebar">${icon("menu")}</button>
     </div>
   </header>`;
+}
+
+/**
+ * R5 补丁 4 · 右下角 FAB 二级菜单。
+ *
+ * 用户要求：所有页面都尽量不要把点击区域放在画面最上方（大屏手机单手够不到），
+ * 所以顶栏的操作、以及各页面顶部的返回/更多按钮，统一收进右下角这个圆形按钮里：
+ * 点一下主按钮 → 主按钮旋转 45°（＋ 变 ×），二级菜单从下往上依次弹出。
+ *
+ * 每个视图的菜单项不同，由 fabActionsFor() 决定；主按钮本身只负责开合，
+ * 不再直接触发"开始记录"——那也变成菜单里的一项（用户明确指定的交互）。
+ */
+function fabActionsFor() {
+  const themeItem = {
+    action: "theme",
+    icon: state.theme === "dark" ? "sun" : "theme",
+    label: state.theme === "dark" ? "浅色模式" : "深色模式"
+  };
+  const searchItem = { action: "search-placeholder", icon: "search", label: "搜索", disabled: true };
+
+  if (state.view === "detail") {
+    return [
+      themeItem,
+      { action: "open-record-menu", icon: "more", label: "更多操作", testId: "open-record-menu" },
+      { action: "open-export", icon: "export", label: "导出这条记录" },
+      { action: "close-detail", icon: "back", label: state.detailReturnView === "work" ? "返回作品页" : "返回时间线", testId: "detail-back" }
+    ];
+  }
+  if (state.view === "work") {
+    return [
+      themeItem,
+      { action: "open-supplement", icon: "edit", label: "补充记录", testId: "open-supplement-fab" },
+      { action: "close-work", icon: "back", label: "返回作品书架", testId: "work-back" }
+    ];
+  }
+  if (state.view === "shelf") {
+    return [themeItem, searchItem, { action: "close-shelf", icon: "back", label: "返回时间线", testId: "shelf-back" }];
+  }
+  if (state.view === "series") {
+    return [themeItem, { action: "close-series", icon: "back", label: "返回", testId: "series-back" }];
+  }
+  if (state.view === "collections") {
+    return [themeItem, { action: "go-home", icon: "back", label: "返回时间线" }];
+  }
+  if (state.view === "collection") {
+    return [
+      themeItem,
+      { action: "delete-collection", icon: "trash", label: "删除这个片单", testId: "delete-collection" },
+      { action: "open-collections", icon: "back", label: "返回片单列表", testId: "collection-back" }
+    ];
+  }
+  return [themeItem, searchItem, { action: "open-capture", icon: "edit", label: "开始记录", testId: "add-record" }];
+}
+
+function fabMenu() {
+  const items = fabActionsFor();
+  const open = state.fabOpen;
+  // 菜单项从下往上排：数组最后一项离主按钮最近（最常用的放最后）
+  const list = items.map((item, index) => `<li class="fab-item" style="--fab-index:${items.length - index}">
+    <span class="fab-item-label">${escapeHtml(item.label)}</span>
+    <button class="fab-item-button" type="button" ${item.disabled ? "disabled" : `data-action="${item.action}"`} aria-label="${escapeHtml(item.label)}" ${item.testId ? `data-testid="${item.testId}"` : ""}>${icon(item.icon)}</button>
+  </li>`).join("");
+
+  return `<div class="fab-stack ${open ? "open" : ""}" data-testid="fab-stack">
+    ${open ? `<button class="fab-scrim" type="button" data-action="close-fab" aria-label="收起菜单"></button>` : ""}
+    <ul class="fab-items" ${open ? "" : "hidden"}>${list}</ul>
+    <button class="fab ${open ? "open" : ""}" type="button" data-action="toggle-fab" aria-expanded="${open}" aria-label="${open ? "收起操作菜单" : "展开操作菜单"}" data-testid="fab-toggle">＋</button>
+  </div>`;
 }
 
 /**
@@ -562,20 +631,15 @@ function renderHome() {
       ${cards}
       ${hasAnyCard ? "" : emptyHomeStateMarkup()}
     </section>
-    <button class="fab" type="button" data-action="open-capture" aria-label="开始记录" data-testid="add-record">＋</button>
+    ${fabMenu()}
   </main>`;
 }
 
-function detailHeader(record) {
-  // R4：详情页可能从时间线或作品页进入，返回按钮要回到正确的上一级（见 src/routing.js）。
-  const backLabel = state.detailReturnView === "work" ? "返回作品页" : "返回记录流";
-  return `<header class="detail-header">
-    <button class="icon-button" type="button" data-action="close-detail" aria-label="${backLabel}" data-testid="detail-back">${icon("back")}</button>
-    <div class="detail-header-actions">
-      <button class="icon-button" type="button" data-action="open-export" aria-label="导出这条记录">${icon("export")}</button>
-      <button class="icon-button" type="button" data-action="open-record-menu" aria-label="更多操作" data-testid="open-record-menu">${icon("more")}</button>
-    </div>
-  </header>`;
+// R5 补丁 4：详情页顶部那一排（返回 / 导出 / 更多）整体下沉到右下角 FAB 菜单，
+// 正文因此可以往上顶掉原来的按钮区。这里保留一个空函数返回空串，
+// 是为了让 renderDetail() 的结构改动最小、也方便以后需要时再放回顶部内容。
+function detailHeader() {
+  return "";
 }
 
 // ═══ R4 · 作品书架 ══════════════════════════════════════════════════════════
@@ -602,11 +666,9 @@ const SHELF_SORTS = [
 ];
 
 function shelfHeader() {
-  return `<header class="detail-header">
-    <button class="icon-button" type="button" data-action="close-shelf" aria-label="返回时间线" data-testid="shelf-back">${icon("back")}</button>
-    <h1 class="shelf-title">作品书架</h1>
-    <span class="detail-header-actions"></span>
-  </header>`;
+  // R5 补丁 4：书架页去掉顶部标题与返回按钮，筛选栏和作品网格整体上移。
+  // 返回时间线改由右下角 FAB 菜单提供（侧边栏也随时能切换）。
+  return "";
 }
 
 function shelfPosterMarkup(work) {
@@ -651,6 +713,7 @@ function renderShelf() {
     <section class="shelf-grid" aria-label="作品书架" data-testid="shelf-grid">
       ${grid || `<p class="shelf-empty" data-testid="shelf-empty">这个筛选下还没有作品</p>`}
     </section>
+    ${fabMenu()}
   </main>`;
 }
 
@@ -867,10 +930,6 @@ function renderWork() {
   if (!work) return renderShelf();
   const view = buildWorkView(work, recordsForWork(work), state.currentWorkEvents);
   return `<main class="work-view" data-testid="work">
-    <header class="detail-header work-header">
-      <button class="icon-button" type="button" data-action="close-work" aria-label="返回作品书架" data-testid="work-back">${icon("back")}</button>
-      <span class="detail-header-actions"></span>
-    </header>
     <div class="work-panel" data-testid="work-panel">
       <div class="work-poster-col">${workHeroMarkup(work)}</div>
       <div class="work-info-col">
@@ -893,6 +952,7 @@ function renderWork() {
       ${impressionsListMarkup(view.impressions)}
       <button type="button" class="sheet-done work-supplement-button" data-action="open-supplement" data-testid="open-supplement">＋ 补充记录</button>
     </article>
+    ${fabMenu()}
   </main>`;
 }
 
@@ -933,12 +993,8 @@ function renderSeries() {
   const memberOptions = members.map((work) => `<option value="${escapeHtml(work.id)}">${escapeHtml(work.title || "未命名作品")}</option>`).join("");
 
   return `<main class="series-view" data-testid="series">
-    <header class="detail-header">
-      <button class="icon-button" type="button" data-action="close-series" aria-label="返回" data-testid="series-back">${icon("back")}</button>
-      <h1 class="shelf-title">${escapeHtml(series.title)}</h1>
-      <span class="detail-header-actions"></span>
-    </header>
     <article class="work-content">
+      <h1 class="page-title">${escapeHtml(series.title)}</h1>
       <section class="work-section">
         <h2 class="work-section-title">系列作品 · ${members.length} 部</h2>
         <p class="settings-note">顺序由你手动排定——上映顺序、观看顺序、故事时间线顺序，取决于你想怎么看这个系列。</p>
@@ -956,6 +1012,7 @@ function renderSeries() {
         </form>` : `<p class="settings-note">系列里至少要有两部作品，才能标注它们之间的关系。</p>`}
       </section>
     </article>
+    ${fabMenu()}
   </main>`;
 }
 
@@ -970,12 +1027,8 @@ function renderCollections() {
   </button>`).join("");
 
   return `<main class="shelf-view" data-testid="collections">
-    <header class="detail-header">
-      <button class="icon-button" type="button" data-action="go-home" aria-label="返回时间线">${icon("back")}</button>
-      <h1 class="shelf-title">片单</h1>
-      <span class="detail-header-actions"></span>
-    </header>
     <article class="work-content">
+      <h1 class="page-title">片单</h1>
       <p class="settings-note">片单是你自己定义的主题列表：想怎么归类都可以，和作品客观所属的「系列」互不影响。</p>
       <div class="collection-rows">${rows || `<p class="work-section-empty">还没有片单，先建一个吧</p>`}</div>
       <form id="collection-create-form">
@@ -983,6 +1036,7 @@ function renderCollections() {
         <button class="sheet-done" type="submit">创建</button>
       </form>
     </article>
+    ${fabMenu()}
   </main>`;
 }
 
@@ -992,16 +1046,11 @@ function renderCollection() {
   if (!collection) return renderCollections();
   const works = collectionWorks(collection, state.works);
   return `<main class="shelf-view" data-testid="collection">
-    <header class="detail-header">
-      <button class="icon-button" type="button" data-action="open-collections" aria-label="返回片单列表" data-testid="collection-back">${icon("back")}</button>
-      <h1 class="shelf-title">${escapeHtml(collection.title)}</h1>
-      <span class="detail-header-actions">
-        <button class="icon-button" type="button" data-action="delete-collection" aria-label="删除这个片单" data-testid="delete-collection">${icon("trash")}</button>
-      </span>
-    </header>
     <article class="work-content">
+      <h1 class="page-title">${escapeHtml(collection.title)}</h1>
       ${workGridMarkup(works, "这个片单还没有作品——到作品页点「＋ 加入片单」把它放进来")}
     </article>
+    ${fabMenu()}
   </main>`;
 }
 
@@ -1175,6 +1224,7 @@ function renderDetail() {
       ${viewingEventsSection(state.viewingEvents)}
       ${record.status === "raw_only_confirmed" ? "" : `<div class="memory-heading"><h2>留下来的片段</h2><div class="memory-heading-actions"><button class="text-action" type="button" data-action="request-ai-cards" data-testid="request-ai-cards" ${record.cardSuggestionStatus === "running" ? "disabled" : ""}>${record.cardSuggestionStatus === "running" ? "AI 整理中…" : "AI 建议卡片"}</button><button class="text-action add-card" type="button" data-action="add-card">＋ 添加卡片</button></div></div>${record.cardSuggestionStatus === "failed" && record.cardSuggestionError ? `<p class="card-suggestion-error" data-testid="card-suggestion-error">AI 建议没有完成：${escapeHtml(record.cardSuggestionError)}</p>` : ""}${memoryCard(record)}`}
     </article>
+    ${fabMenu()}
   </main>`;
 }
 
@@ -2726,6 +2776,20 @@ app.addEventListener("click", async (event) => {
   const trigger = event.target.closest("[data-action]");
   if (!trigger) return;
   const { action } = trigger.dataset;
+  // R5 补丁 4：点了 FAB 菜单里的任何一项之后，菜单都要收起来——
+  // 除了开合按钮本身，以及不改变当前页面的主题切换（切完还能继续点别的）。
+  if (state.fabOpen && action !== "toggle-fab" && action !== "theme") state.fabOpen = false;
+  if (action === "toggle-fab") {
+    state.fabOpen = !state.fabOpen;
+    render();
+    return;
+  }
+  if (action === "close-fab") {
+    state.fabOpen = false;
+    render();
+    return;
+  }
+  if (action === "search-placeholder") return;
   if (action === "theme") {
     applyTheme(state.theme === "dark" ? "light" : "dark");
     render();
@@ -3614,7 +3678,14 @@ window.addEventListener("popstate", (event) => {
 });
 
 window.addEventListener("keydown", async (event) => {
-  if (event.key !== "Escape" || !state.overlay) return;
+  if (event.key !== "Escape") return;
+  // FAB 菜单展开时，Esc 先收菜单（它是最上层的临时 UI）
+  if (state.fabOpen) {
+    state.fabOpen = false;
+    render();
+    return;
+  }
+  if (!state.overlay) return;
   if (state.overlay === "compose") {
     await saveDraft(document.querySelector("#composer-input")?.value || "", true);
     applyCaptureTransition("close");
@@ -3868,6 +3939,8 @@ function finishSidebarGesture(cancelled = false) {
   sidebarGesture = null;
   const drawer = sidebarDrawerEl();
   if (!gesture.armed || !drawer) return;
+  // 手势真的发生过 → 拦掉浏览器随后补发的那一次合成 click（见 suppressClickAfterGesture）
+  suppressClickAfterGesture();
 
   const deltaX = gesture.lastX - gesture.startX;
   // 先摘掉拖动态（并取消挂起的绘制帧），CSS 的 transition 才能接管回弹动画
@@ -3910,6 +3983,31 @@ function finishSidebarGesture(cancelled = false) {
 document.addEventListener("touchend", () => finishSidebarGesture(false));
 // 系统/浏览器抢走触摸序列时（来电、手势冲突等）要有兜底，否则抽屉会停在半开状态
 document.addEventListener("touchcancel", () => finishSidebarGesture(true));
+
+/**
+ * 抑制滑动手势结束后浏览器补发的那一次合成 click。
+ *
+ * 这是"右滑时像同时点了右上角按钮、两个侧边栏动画叠加"以及"在侧边栏上拖动时主页
+ * 闪屏、海报重新载入"的真正原因：手指抬起后，浏览器会在松手位置补发一个 click。
+ * 此时手势层的 .overlay 正盖满全屏，这个 click 于是落在遮罩上（data-action="close-overlay"）
+ * 或落在抽屉的菜单项上，触发一次 render() —— app.innerHTML 被整体重建，
+ * 所有 <img> 重新创建并重新加载（海报"强制刷新"），叠在正在播的手势动画上就是闪屏。
+ *
+ * 用捕获阶段拦下手势结束后的第一次 click 即可。只在手势真正 armed 过时才拦，
+ * 普通点击完全不受影响。
+ */
+let suppressNextClickUntil = 0;
+
+function suppressClickAfterGesture() {
+  suppressNextClickUntil = Date.now() + 500;
+}
+
+document.addEventListener("click", (event) => {
+  if (Date.now() > suppressNextClickUntil) return;
+  suppressNextClickUntil = 0;
+  event.stopPropagation();
+  event.preventDefault();
+}, true);
 window.addEventListener("pagehide", () => {
   const input = document.querySelector("#composer-input");
   if (input) {

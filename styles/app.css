@@ -324,6 +324,26 @@ svg {
   align-items: center;
 }
 
+/* .record-badge-row 自带 margin-top: var(--space-2)（那是给作品页的徽章行用的）。
+   在卡片的影院名这一行里必须清零，否则徽章会比左边的影院名标签低 8px——
+   这正是用户看到的"影城图标和影厅制式图标没有平齐"。 */
+.record-card-venue-row .record-badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 0;
+}
+
+/* 影院名与制式徽章的盒模型对齐：统一用 border-box 撑到同一个高度，
+   两者的边框/阴影差异就不会造成 1–2px 的错位。 */
+.record-card-venue,
+.record-card-venue-row .format-badge {
+  box-sizing: border-box;
+  height: 24px;
+  min-height: 0;
+}
+
 /* 影院名（或"线上观看"等）也做成标签，高度/内边距/圆角与右侧的制式徽章完全一致，
    两者并排时才是齐整的一行，而不是"一段裸文字 + 一个方块"。 */
 .record-card-venue {
@@ -596,13 +616,92 @@ svg {
   font-weight: 600;
 }
 
-.fab {
+/* ── R5 补丁 4：右下角 FAB 二级菜单 ─────────────────────────────────────────
+   所有页面的主要操作都收在这里。理由（用户提出）：大屏手机单手握持时，
+   拇指够不到屏幕最上排，把返回/更多/搜索这类按钮留在顶栏很难用。 */
+.fab-stack {
   position: fixed;
-  z-index: 5;
+  z-index: 15;
   right: max(24px, calc((100vw - 680px) / 2 + 24px));
   bottom: calc(24px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+/* 展开时铺一层透明遮罩：点空白处收起菜单，而不是必须精准点回那个圆按钮 */
+.fab-scrim {
+  position: fixed;
+  z-index: -1;
+  inset: 0;
+  background: rgb(6 12 14 / 28%);
+  animation: scrim-in var(--motion-fast) ease;
+}
+
+.fab-items {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-3);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.fab-item {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  /* 逐项错开弹出，越靠近主按钮的越先出现 */
+  animation: fab-item-in var(--motion-standard) cubic-bezier(0.2, 0, 0, 1) backwards;
+  animation-delay: calc(var(--fab-index, 1) * 28ms);
+}
+
+@keyframes fab-item-in {
+  from { transform: translateY(12px) scale(0.85); opacity: 0; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+.fab-item-label {
+  padding: 4px 10px;
+  color: var(--ink);
+  border-radius: var(--radius-tag);
+  background: var(--surface-container);
+  box-shadow: var(--shadow-float);
+  white-space: nowrap;
+  font: var(--type-meta);
+}
+
+.fab-item-button {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  color: var(--accent-strong);
+  border-radius: 50%;
+  background: var(--surface-container);
+  box-shadow: var(--shadow-float);
+}
+
+.fab-item-button svg {
+  width: 20px;
+  height: 20px;
+}
+
+.fab-item-button:disabled {
+  color: var(--outline);
+}
+
+.fab-item-button:not(:disabled):active {
+  background: var(--accent-container);
+}
+
+.fab {
+  display: grid;
   width: var(--fab);
   height: var(--fab);
+  place-items: center;
   border-radius: 50%;
   color: var(--on-accent);
   background: var(--accent);
@@ -610,11 +709,17 @@ svg {
   font-size: 32px;
   font-weight: 300;
   line-height: 1;
+  transition: transform var(--motion-standard) cubic-bezier(0.2, 0, 0, 1), background var(--motion-fast) ease;
+}
+
+/* 展开时主按钮旋转 45°：＋ 变成 ×，同时也是"菜单已展开"的状态提示 */
+.fab.open {
+  background: var(--accent-strong);
+  transform: rotate(45deg);
 }
 
 .fab:active {
   background: var(--accent-strong);
-  transform: scale(0.96);
 }
 
 .detail-view {
@@ -633,12 +738,15 @@ svg {
   background: var(--surface);
 }
 
+/* R5 补丁 4：顶部那排按钮已经下沉到 FAB 菜单，正文顶上来占掉原先的位置。
+   顶部内边距只保留安全区 + 一点呼吸空间；底部留出 FAB 的高度，
+   免得最后一段内容被那个圆按钮压住。 */
 .detail-content {
   position: relative;
   z-index: 1;
   max-width: 680px;
-  min-height: calc(100dvh - 64px);
-  padding: var(--space-5) var(--space-5) calc(40px + env(safe-area-inset-bottom));
+  min-height: 100dvh;
+  padding: calc(env(safe-area-inset-top) + var(--space-4)) var(--space-5) calc(112px + env(safe-area-inset-bottom));
   margin: 0 auto;
   background: var(--surface);
 }
@@ -2792,10 +2900,11 @@ svg {
   font: var(--type-title);
 }
 
+/* R5 补丁 4：书架页去掉了标题栏与返回按钮，筛选栏顶上来占掉那块区域 */
 .shelf-filters {
   display: grid;
   gap: var(--space-3);
-  padding: 0 var(--space-4) var(--space-3);
+  padding: calc(env(safe-area-inset-top) + var(--space-4)) var(--space-4) var(--space-3);
 }
 
 /* 用户反馈：手机上最右端的筛选标签被"截断"。要求是**严格两行、全部标签同时可见**——
@@ -2949,13 +3058,14 @@ svg {
 /* 海报缩略图 + 标题信息区合并成一个网格区域，和 .work-content 共用同一条
    左右内边距与 max-width，保证"海报列"与"正文列"在任何视口宽度下都对得齐——
    这是这轮排版问题的核心修复点，宽屏也不用另起一套结构，只调列宽/间距。 */
+/* R5 补丁 4：作品页顶部的返回按钮已下沉到 FAB，海报/标题区顶上来 */
 .work-panel {
   display: flex;
   width: 100%;
   max-width: 680px;
   gap: var(--space-4);
   align-items: flex-start;
-  padding: var(--space-2) var(--space-4) var(--space-4);
+  padding: calc(env(safe-area-inset-top) + var(--space-4)) var(--space-4) var(--space-4);
   margin: 0 auto;
 }
 
@@ -2998,11 +3108,20 @@ svg {
   font-size: 28px;
 }
 
+/* 底部留出 FAB 的空间（56px 按钮 + 上下间距），最后一段内容不会被圆按钮压住 */
 .work-content {
   width: 100%;
   max-width: 680px;
-  padding: 0 var(--space-4) calc(var(--space-10) + env(safe-area-inset-bottom));
+  padding: 0 var(--space-4) calc(112px + env(safe-area-inset-bottom));
   margin: 0 auto;
+}
+
+/* 系列页 / 片单页去掉顶部标题栏后，标题以正文大标题的形式留在内容区顶部 */
+.page-title {
+  padding-top: calc(env(safe-area-inset-top) + var(--space-4));
+  margin: 0 0 var(--space-4);
+  color: var(--ink);
+  font: var(--type-display);
 }
 
 .work-title {
