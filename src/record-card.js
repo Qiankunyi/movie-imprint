@@ -33,7 +33,7 @@ const YMD_FMT = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-di
 const WEEKDAY_FMT = new Intl.DateTimeFormat("ja-JP", { weekday: "short", timeZone: "Asia/Tokyo" });
 const TIME_FMT = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Tokyo" });
 
-function eventDateLabel(event, { withTime = false } = {}) {
+export function eventDateLabel(event, { withTime = false } = {}) {
   if (!event) return "";
   const raw = event.screening_at || (event.viewed_on ? `${event.viewed_on}T12:00:00+09:00` : null);
   if (!raw) return "";
@@ -77,7 +77,7 @@ function attitudeTagMarkup(record) {
   return `<span class="record-attitude-tag ${record.attitude ? "selected" : "empty"}">${escapeHtml(attitudeLabel(record.attitude))}</span>`;
 }
 
-function badgeChipMarkup(badge) {
+export function badgeChipMarkup(badge) {
   return `<span class="format-badge ${badge.style} tone-${badge.tone}" data-badge-key="${escapeHtml(badge.key)}">${badge.icon ? `<i class="format-badge-icon icon-${badge.icon}" aria-hidden="true"></i>` : ""}${escapeHtml(badge.label)}</span>`;
 }
 
@@ -147,7 +147,7 @@ function viewingCardMarkup(record, work, event, { buildPosterUrl } = {}) {
   </article>`;
 }
 
-function supplementDistanceLabel(work, record) {
+export function supplementDistanceLabel(work, record) {
   const first = work?.first_recorded_at;
   if (!first) return "";
   const start = new Date(first);

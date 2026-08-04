@@ -5,8 +5,25 @@ import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
 import { runMigrationIfNeeded } from "./migrate.js?v=1";
 import { EVENT_TYPES } from "./event-types.js?v=1";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
-import { recordCard, emptyHomeStateMarkup } from "./record-card.js?v=1";
+import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=2";
 import { memoryListMarkup } from "./memory-list.js?v=1";
+import { formatBadge, eventBadges } from "./format-badge.js";
+import {
+  enterShelf as routeEnterShelf,
+  exitShelf as routeExitShelf,
+  enterWork as routeEnterWork,
+  exitWork as routeExitWork,
+  enterRecord as routeEnterRecord,
+  exitRecord as routeExitRecord,
+  goHome as routeGoHome
+} from "./routing.js?v=1";
+import {
+  buildWorkView,
+  findWorkById,
+  summarizeWorksForShelf,
+  filterShelfEntries,
+  sortShelfEntries
+} from "./work-view.js?v=1";
 import {
   captureTransition,
   toggleEventType,
@@ -94,19 +111,29 @@ function apiBangumiImageUrl(subjectId) {
 }
 
 const state = {
+  // R4：view 扩展为四值 —— home（时间线）/ shelf（作品书架）/ work（作品页）/ detail（感想详情）。
+  // 返回路径 detail ← work ← shelf ← home，具体转移规则在 src/routing.js（纯函数，见 tests/routing.test.mjs）。
   view: "home",
   overlay: null,
   records: [],
   works: [],
   worksById: new Map(),        // R3：work_id → work，首页卡片渲染 O(1) 查表
   recordEventById: new Map(),  // R3：record_id → 该记录关联的 ViewingEvent，首页卡片渲染 O(1) 查表
+  allViewingEvents: [],        // R4：全量 ViewingEvent，供书架按作品聚合观看次数/最近观看/是否有活动场次
+  currentWorkId: null,         // R4：作品页当前显示的 work id
+  currentWorkEvents: [],       // R4：作品页当前 work 的全部 ViewingEvent（含 merged_from 旧 id 下的）
+  detailReturnView: "home",    // R4："home" | "work" —— 详情页从哪个视图进入，决定返回去哪
+  returnScrollY: 0,            // 时间线离开时的滚动位置（R3 已有字段，R4 沿用同一套约定）
+  shelfScrollY: 0,             // R4：作品书架离开时的滚动位置
+  workScrollY: 0,              // R4：作品页离开时的滚动位置
+  shelfFilter: { workType: "all", eventsOnly: false, sort: "recent" }, // R4：书架筛选/排序，运行时状态，不持久化
+  editingHistoryEventId: null, // R4：正在编辑/补充信息的 ViewingEvent id
   recordingPreference: null,
   aiPreference: null,
   aiProviders: { active: null, providers: [] },
   draft: null,
   activeRecordId: null,
   editingCardId: null,
-  returnScrollY: 0,
   saveTimer: null,
   saveState: "saved",
   theme: "light",
@@ -141,6 +168,32 @@ function applyCaptureTransition(action) {
   state.overlay = CAPTURE_STATE_TO_OVERLAY[state.captureFlowState] ?? null;
 }
 
+// ─── R4：四视图路由 ───────────────────────────────────────────────────────────
+// src/routing.js 是纯函数模块，只算"下一个 route 长什么样"；这里把它跟 state 的
+// 扁平字段（state.view / currentWorkId / activeRecordId / detailReturnView / 三个
+// 滚动位置）互相同步，历史记录（pushState）与实际滚动交给具体的 nav* 函数处理，
+// 这样既复用了一份可测试的转移规则，又不用把已有代码里大量读取 state.view 的地方
+// 都改成读嵌套对象。
+function routeSnapshot() {
+  return {
+    view: state.view,
+    currentWorkId: state.currentWorkId,
+    activeRecordId: state.activeRecordId,
+    detailReturnView: state.detailReturnView,
+    scroll: { home: state.returnScrollY, shelf: state.shelfScrollY, work: state.workScrollY }
+  };
+}
+
+function applyRoute(route) {
+  state.view = route.view;
+  state.currentWorkId = route.currentWorkId;
+  state.activeRecordId = route.activeRecordId;
+  state.detailReturnView = route.detailReturnView;
+  state.returnScrollY = route.scroll.home;
+  state.shelfScrollY = route.scroll.shelf;
+  state.workScrollY = route.scroll.work;
+}
+
 // 剪贴板原文只放在内存里，绝不写入 state（避免被渲染或被草稿持久化捕获到原文）。
 let pendingClipboardText = null;
 let sceneTitleMatchTimer = null;
@@ -160,7 +213,11 @@ const icons = {
   chevron: '<path d="m9 5 7 7-7 7"/>',
   share: '<path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v13"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
-  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/><path d="M10 11v6M14 11v6"/>'
+  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/><path d="M10 11v6M14 11v6"/>',
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  timeline: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2.5"/>',
+  shelf: '<path d="M4 4v16M20 4v16M4 9h16M4 15h16"/>',
+  calendar: '<rect x="4" y="5.5" width="16" height="14.5" rx="2"/><path d="M8 3.5v3.5M16 3.5v3.5M4 10h16"/>'
 };
 
 // 单条记录导出：文件扩展名与 MIME 类型映射
@@ -342,12 +399,51 @@ function currentWork(record = currentRecord()) {
 async function indexHomeCardData() {
   state.worksById = new Map(state.works.map((work) => [work.id, work]));
   const allEvents = await db.getAll("viewingEvents");
-  const eventsById = new Map((allEvents || []).map((event) => [event.id, event]));
+  state.allViewingEvents = allEvents || []; // R4：书架按作品聚合观看次数/最近观看/有无活动场次要用到全量
+  const eventsById = new Map(state.allViewingEvents.map((event) => [event.id, event]));
   state.recordEventById = new Map();
   for (const record of state.records) {
     const event = record.viewing_event_id ? eventsById.get(record.viewing_event_id) : null;
     if (event) state.recordEventById.set(record.id, event);
   }
+}
+
+/** R4：work.id（含 merged_from 里的旧 id）对应的全部 record，供作品页聚合。 */
+function recordsForWork(work) {
+  if (!work) return [];
+  const ids = new Set([work.id, ...(work.merged_from || [])]);
+  return state.records.filter((record) => ids.has(record.work_id || record.workId));
+}
+
+/**
+ * R4：按 work id（含 merged_from）拉取全部 ViewingEvent。db.getViewingEventsByWork
+ * 只按精确 work_id 匹配，不感知 merged_from（这与 db.getRecordsByWork 不同）——
+ * 任何要"这部作品全部观影事件"的地方都要过这个函数，不能直接调 db.getViewingEventsByWork(work.id)，
+ * 否则合并过的旧作品（升格匹配 Bangumi 后 id 变了）会漏掉合并前的场次，
+ * 初看/重看推定会算错（见 assignViewingRelations 的输入必须是"该作品全部事件"这条前提）。
+ * 纯粹只读，不碰 state，方便在写入路径（finishCompose 等）里复用。
+ * @param {string} workId
+ * @returns {Promise<object[]>}
+ */
+async function fetchWorkEvents(workId) {
+  const canonical = findWorkById(state.works, workId) || { id: workId, merged_from: [] };
+  const ids = [canonical.id, ...(canonical.merged_from || [])];
+  try {
+    const groups = await Promise.all(ids.map((id) => db.getViewingEventsByWork(id).catch(() => [])));
+    return groups.flat();
+  } catch (_) {
+    return [];
+  }
+}
+
+/** 作品页专用：拉取后直接写回 state.currentWorkEvents 并重渲染（仅当仍在看这个作品页时）。 */
+async function loadWorkEventsFor(workId) {
+  const events = await fetchWorkEvents(workId);
+  if (state.view === "work" && state.currentWorkId === workId) {
+    state.currentWorkEvents = events;
+    renderPreservingScroll();
+  }
+  return events;
 }
 
 function topBar() {
@@ -356,9 +452,38 @@ function topBar() {
     <div class="top-actions">
       <button class="icon-button" type="button" data-action="theme" aria-label="切换到${state.theme === "dark" ? "浅色" : "深色"}主题">${icon(state.theme === "dark" ? "sun" : "theme")}</button>
       <button class="icon-button" type="button" aria-label="搜索（尚未接入）" disabled>${icon("search")}</button>
-      <button class="icon-button" type="button" data-action="open-settings" aria-label="偏好设置">${icon("more")}</button>
+      <button class="icon-button" type="button" data-action="open-sidebar" aria-label="打开菜单" data-testid="open-sidebar">${icon("menu")}</button>
     </div>
   </header>`;
+}
+
+/**
+ * R4 · 侧边栏抽屉：时间线 / 作品书架 / 偏好设置 + 统计行。
+ * 只挂在首页顶栏（与 R4_WORK_SHELF.md 描述一致）；从左侧滑入，点遮罩或右滑关闭。
+ */
+function sidebarDrawer() {
+  const recordCount = state.records.length;
+  const workCount = state.works.length;
+  return `<div class="overlay sidebar-overlay" data-testid="sidebar">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭菜单"></button>
+    <nav class="sidebar-drawer" aria-label="主菜单" data-testid="sidebar-drawer">
+      <div class="sidebar-brand"><span class="brand-mark" aria-hidden="true"></span><h2>电影印记</h2></div>
+      <button type="button" class="sidebar-item ${state.view === "home" ? "active" : ""}" data-action="go-home" data-testid="sidebar-home">
+        <span class="sidebar-item-icon" aria-hidden="true">${icon("timeline")}</span><span>时间线</span>
+      </button>
+      <button type="button" class="sidebar-item ${state.view === "shelf" || state.view === "work" ? "active" : ""}" data-action="open-shelf" data-testid="sidebar-shelf">
+        <span class="sidebar-item-icon" aria-hidden="true">${icon("shelf")}</span><span>作品书架</span>
+      </button>
+      <div class="sidebar-divider" role="separator"></div>
+      <button type="button" class="sidebar-item" data-action="open-settings" data-testid="sidebar-settings">
+        <span class="sidebar-item-icon" aria-hidden="true">${icon("more")}</span><span>偏好设置</span>
+      </button>
+      <div class="sidebar-stats" data-testid="sidebar-stats">
+        <span>已记录 ${recordCount} 条</span>
+        <span>${workCount} 部作品</span>
+      </div>
+    </nav>
+  </div>`;
 }
 
 function seriesHintContent(text) {
@@ -395,13 +520,227 @@ function renderHome() {
 }
 
 function detailHeader(record) {
+  // R4：详情页可能从时间线或作品页进入，返回按钮要回到正确的上一级（见 src/routing.js）。
+  const backLabel = state.detailReturnView === "work" ? "返回作品页" : "返回记录流";
   return `<header class="detail-header">
-    <button class="icon-button" type="button" data-action="go-home" aria-label="返回记录流">${icon("back")}</button>
+    <button class="icon-button" type="button" data-action="close-detail" aria-label="${backLabel}" data-testid="detail-back">${icon("back")}</button>
     <div class="detail-header-actions">
       <button class="icon-button" type="button" data-action="open-export" aria-label="导出这条记录">${icon("export")}</button>
       <button class="icon-button" type="button" data-action="open-record-menu" aria-label="更多操作" data-testid="open-record-menu">${icon("more")}</button>
     </div>
   </header>`;
+}
+
+// ═══ R4 · 作品书架 ══════════════════════════════════════════════════════════
+
+const SHELF_TYPE_FILTERS = [
+  ["all", "全部"],
+  ["animation_film", "动画电影"],
+  ["live_action_film", "真人电影"],
+  ["event", "活动"],
+  ["other", "其他"],
+  ["unspecified", "未分类"]
+];
+
+const SHELF_SORTS = [
+  ["recent", "最近观看"],
+  ["count", "观看次数"],
+  ["first", "首次记录时间"]
+];
+
+function shelfHeader() {
+  return `<header class="detail-header">
+    <button class="icon-button" type="button" data-action="close-shelf" aria-label="返回时间线" data-testid="shelf-back">${icon("back")}</button>
+    <h1 class="shelf-title">作品书架</h1>
+    <span class="detail-header-actions"></span>
+  </header>`;
+}
+
+function shelfPosterMarkup(work) {
+  const title = work?.title || "";
+  const initial = escapeHtml((title.trim() || "?").charAt(0));
+  const hasPoster = Boolean(work?.identity_status === "matched" && work?.poster_subject_id);
+  const src = hasPoster ? apiBangumiImageUrl(work.poster_subject_id) : "";
+  return `<div class="shelf-poster">
+    <span class="shelf-poster-fallback" aria-hidden="true">${initial}</span>
+    ${hasPoster ? `<img class="shelf-poster-img" src="${escapeHtml(src)}" alt="" loading="lazy" />` : ""}
+  </div>`;
+}
+
+function renderShelf() {
+  const filter = state.shelfFilter;
+  const summaries = summarizeWorksForShelf(state.works, state.allViewingEvents);
+  const entries = sortShelfEntries(filterShelfEntries(summaries, filter), filter.sort);
+
+  const grid = entries.map(({ work, watchCount }) => `<button type="button" class="shelf-item" data-action="open-work" data-work-id="${escapeHtml(work.id)}" data-testid="shelf-item-${escapeHtml(work.id)}">
+    <span class="shelf-poster-wrap">
+      ${shelfPosterMarkup(work)}
+      ${watchCount > 1 ? `<span class="shelf-count-badge" data-testid="shelf-count-${escapeHtml(work.id)}">${watchCount}</span>` : ""}
+    </span>
+    <span class="shelf-item-title">${escapeHtml(work.title || "未命名作品")}</span>
+  </button>`).join("");
+
+  return `<main class="shelf-view" data-testid="shelf">
+    ${shelfHeader()}
+    <div class="shelf-filters" data-testid="shelf-filters">
+      <div class="shelf-chip-row" role="group" aria-label="按类型筛选">
+        ${SHELF_TYPE_FILTERS.map(([value, label]) => `<button type="button" class="shelf-chip ${filter.workType === value ? "selected" : ""}" data-action="set-shelf-type-filter" data-value="${value}" aria-pressed="${filter.workType === value}">${label}</button>`).join("")}
+        <button type="button" class="shelf-chip ${filter.eventsOnly ? "selected" : ""}" data-action="toggle-shelf-events-filter" aria-pressed="${filter.eventsOnly}" data-testid="shelf-events-only">有活动场次</button>
+      </div>
+      <div class="shelf-sort-row" role="group" aria-label="排序方式">
+        ${SHELF_SORTS.map(([value, label]) => `<button type="button" class="shelf-sort ${filter.sort === value ? "selected" : ""}" data-action="set-shelf-sort" data-value="${value}" aria-pressed="${filter.sort === value}">${label}</button>`).join("")}
+      </div>
+    </div>
+    <section class="shelf-grid" aria-label="作品书架" data-testid="shelf-grid">
+      ${grid || `<p class="shelf-empty" data-testid="shelf-empty">这个筛选下还没有作品</p>`}
+    </section>
+  </main>`;
+}
+
+// ═══ R4 · 作品页 ════════════════════════════════════════════════════════════
+
+const WORK_TYPE_LABELS = {
+  animation_film: "动画电影",
+  live_action_film: "真人电影",
+  event: "活动",
+  other: "其他",
+  unspecified: "未分类"
+};
+
+const WORK_LOCATION_LABELS = { home: "在家观看", online: "线上观看", other: "其他方式观看" };
+
+function formatShortDate(isoLike) {
+  if (!isoLike) return "";
+  const datePart = String(isoLike).slice(0, 10);
+  const [y, m, d] = datePart.split("-");
+  return y && m && d ? `${y}/${m}/${d}` : datePart;
+}
+
+function workHeroMarkup(work) {
+  const hasPoster = Boolean(work.identity_status === "matched" && work.poster_subject_id);
+  const src = hasPoster ? apiBangumiImageUrl(work.poster_subject_id) : "";
+  return `<div class="work-hero" data-testid="work-hero">
+    ${hasPoster
+      ? `<img class="work-hero-img" src="${escapeHtml(src)}" alt="" />`
+      : `<div class="work-hero-fallback" aria-hidden="true">${escapeHtml((work.title || "?").trim().charAt(0) || "?")}</div>`}
+    <div class="work-hero-scrim" aria-hidden="true"></div>
+  </div>`;
+}
+
+function workMetaLine(work) {
+  const year = work.release_year || (work.release_dates?.jp ? Number(work.release_dates.jp.slice(0, 4)) : null);
+  const typeLabel = WORK_TYPE_LABELS[work.work_type] || WORK_TYPE_LABELS.unspecified;
+  const bangumiRef = (work.external_refs || []).find((ref) => ref.source === "bangumi");
+  const parts = [year, typeLabel].filter(Boolean).map(String).map(escapeHtml);
+  const bangumiLink = bangumiRef ? `<a href="https://bangumi.tv/subject/${encodeURIComponent(bangumiRef.id)}" target="_blank" rel="noreferrer">Bangumi ↗</a>` : "";
+  return `<div class="work-meta-line">${[...parts, bangumiLink].filter(Boolean).join(" · ")}</div>`;
+}
+
+/**
+ * R4 §3.1b：日本上映日只读（R1 从 Bangumi 采集），中国上映日提供手动填写入口；
+ * 两者都为空时整行不显示，不留空标签。
+ */
+function releaseDateRow(work) {
+  const dates = work.release_dates || {};
+  if (!dates.jp && !dates.cn) return "";
+  const parts = [];
+  if (dates.jp) parts.push(`日本上映 ${escapeHtml(formatShortDate(dates.jp))}`);
+  if (dates.cn) parts.push(`中国上映 ${escapeHtml(formatShortDate(dates.cn))}`);
+  else parts.push(`中国上映 <button type="button" class="text-action inline" data-action="edit-release-date-cn" data-testid="edit-release-date-cn">＋填写</button>`);
+  return `<div class="work-release-row" data-testid="work-release-row">${parts.join(" · ")}</div>`;
+}
+
+function workHistoryRow(item, index) {
+  const ctx = item.viewing_context || {};
+  const isCinema = item.location_type === "cinema";
+  const dateLabel = eventDateLabel(item, { withTime: isCinema }) || formatShortDate(item.viewed_on);
+  const locationLabel = isCinema ? (ctx.cinema_name || "影院观看") : (WORK_LOCATION_LABELS[item.location_type] || WORK_LOCATION_LABELS.home);
+  const fmtBadge = isCinema ? formatBadge(ctx.format) : null;
+  const { badges: evBadges } = eventBadges(ctx.event_types || [], { max: 99 }); // 作品页不做首页的截断，全部显示
+  const relationLabel = item.viewing_relation === "first" ? "初看" : item.viewing_relation === "rewatch" ? "重看" : "";
+  const metaBits = [
+    item.duration_minutes ? `${item.duration_minutes}分` : "",
+    ctx.seats?.length ? `座位 ${ctx.seats.join("、")}` : "",
+    item.ticket_price?.amount ? `￥${Number(item.ticket_price.amount).toLocaleString("ja-JP")}` : ""
+  ].filter(Boolean);
+  const badgeRow = fmtBadge || evBadges.length
+    ? `<div class="record-badge-row">${[fmtBadge ? badgeChipMarkup(fmtBadge) : "", ...evBadges.map(badgeChipMarkup)].join("")}</div>`
+    : "";
+
+  return `<article class="work-history-row" data-testid="work-history-row">
+    <div class="work-history-index" aria-hidden="true">${index + 1}</div>
+    <div class="work-history-body">
+      <div class="work-history-top">
+        <div class="work-history-top-labels">
+          <span class="work-history-date">${escapeHtml(dateLabel)}</span>
+          ${relationLabel ? `<span class="work-history-relation">${relationLabel}</span>` : ""}
+        </div>
+        <button type="button" class="icon-button" data-action="edit-history-event" data-event-id="${escapeHtml(item.id)}" aria-label="编辑这次观影" data-testid="edit-history-${escapeHtml(item.id)}">${icon("edit")}</button>
+      </div>
+      <div class="work-history-location">${escapeHtml(locationLabel)}</div>
+      ${metaBits.length ? `<div class="work-history-meta">${metaBits.map(escapeHtml).join(" · ")}</div>` : ""}
+      ${badgeRow}
+      ${ctx.bonus_note ? `<div class="work-history-bonus">特典：${escapeHtml(ctx.bonus_note)}</div>` : ""}
+      ${item.relation_conflict ? `<div class="work-history-conflict" data-testid="relation-conflict-${escapeHtml(item.id)}">
+        <p>这次被标为${item.viewing_relation === "first" ? "初看" : "重看"}，但时间上不是最早的一次</p>
+        <div class="work-history-conflict-actions">
+          <button type="button" class="text-action" data-action="clear-relation-lock" data-event-id="${escapeHtml(item.id)}">改回按时间判断</button>
+          <button type="button" class="text-action" data-action="keep-relation-choice" data-event-id="${escapeHtml(item.id)}">保持我的选择</button>
+        </div>
+      </div>` : ""}
+      ${item.needs_review ? `<div class="work-history-review" data-testid="needs-review-${escapeHtml(item.id)}">
+        <p>这次观看的场景待确认</p>
+        <button type="button" class="text-action" data-action="review-history-event" data-event-id="${escapeHtml(item.id)}">补充信息</button>
+      </div>` : ""}
+    </div>
+  </article>`;
+}
+
+function attitudeTimelineMarkup(timeline) {
+  if (!timeline.length) return "";
+  const nodes = timeline.map((node, i) => `<div class="attitude-timeline-node"><span class="attitude-timeline-date">${escapeHtml(formatShortDate(node.date))}</span><span class="attitude-timeline-value">${escapeHtml(attitudeLabel(node.attitude))}</span></div>${i < timeline.length - 1 ? `<span class="attitude-timeline-arrow" aria-hidden="true">→</span>` : ""}`).join("");
+  return `<section class="work-section" data-testid="attitude-timeline">
+    <h2 class="work-section-title">评价变迁</h2>
+    <div class="attitude-timeline-track">${nodes}</div>
+  </section>`;
+}
+
+function impressionsListMarkup(impressions) {
+  if (!impressions.length) return "";
+  const rows = impressions.map((item) => `<button type="button" class="work-impression-row" data-action="open-record" data-record-id="${escapeHtml(item.recordId)}" data-testid="work-impression-${escapeHtml(item.recordId)}">
+    <span class="work-impression-date">${escapeHtml(formatShortDate(item.date))}</span>
+    <span class="work-impression-kind">${escapeHtml(item.kindLabel)}</span>
+    ${item.cardCount ? `<span class="work-impression-count">${item.cardCount} 张卡片</span>` : ""}
+  </button>`).join("");
+  return `<section class="work-section" data-testid="work-impressions">
+    <h2 class="work-section-title">感想</h2>
+    <div class="work-impressions-list">${rows}</div>
+  </section>`;
+}
+
+function renderWork() {
+  const work = findWorkById(state.works, state.currentWorkId);
+  if (!work) return renderShelf();
+  const view = buildWorkView(work, recordsForWork(work), state.currentWorkEvents);
+  return `<main class="work-view" data-testid="work">
+    <header class="detail-header work-header">
+      <button class="icon-button" type="button" data-action="close-work" aria-label="返回作品书架" data-testid="work-back">${icon("back")}</button>
+      <span class="detail-header-actions"></span>
+    </header>
+    ${workHeroMarkup(work)}
+    <article class="work-content">
+      <h1 class="work-title">《${escapeHtml(work.title || "未命名作品")}》</h1>
+      ${workMetaLine(work)}
+      ${releaseDateRow(work)}
+      <section class="work-section" data-testid="work-history">
+        <h2 class="work-section-title">观影履历</h2>
+        ${view.history.length ? view.history.map((item, i) => workHistoryRow(item, i)).join("") : `<p class="work-section-empty">还没有观影场次</p>`}
+      </section>
+      ${attitudeTimelineMarkup(view.attitudeTimeline)}
+      ${impressionsListMarkup(view.impressions)}
+      <button type="button" class="sheet-done work-supplement-button" data-action="open-supplement" data-testid="open-supplement">＋ 补充记录</button>
+    </article>
+  </main>`;
 }
 
 /** R3 补丁 4：之前「更多」按钮完全没有接入，唯一能做的操作是删除这条记录。 */
@@ -583,6 +922,14 @@ function renderDetail() {
  */
 function captureContextBar(ctx) {
   if (!ctx) return "";
+  if (ctx.mode === "supplement") {
+    // R4 §3.4：补充记录场景已由作品页明确，这一行不可点击回退到 Step 2（没有对应的场景层）。
+    const work = findWorkById(state.works, ctx.workId);
+    const distance = work ? supplementDistanceLabel(work, { createdAt: new Date().toISOString() }) : "";
+    const parts = [`《${ctx.workTitle?.trim() || work?.title || "未命名作品"}》`, "补充记录"];
+    if (distance) parts.push(`距首次观看 ${distance}`);
+    return `<div class="capture-context-bar" data-testid="capture-context-bar">${parts.map(escapeHtml).join(" · ")}</div>`;
+  }
   const firstEvent = ctx.pendingEvents?.[0];
   const dateStr = firstEvent?.viewed_on
     ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo" }).format(new Date(firstEvent.viewed_on))
@@ -931,9 +1278,95 @@ function sceneChoiceOverlay() {
   </div>`;
 }
 
+// ═══ R4 · 作品页：观影场次编辑 / 中国上映日 ══════════════════════════════════════
+
+/** "YYYY-MM-DDTHH:mm:ss+09:00" → <input type="datetime-local"> 需要的 "YYYY-MM-DDTHH:mm"（按日本时间）。 */
+function isoToLocalDateTimeInputValue(iso) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const fmt = new Intl.DateTimeFormat("sv-SE", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Tokyo" });
+  return fmt.format(date).replace(" ", "T");
+}
+
+/**
+ * <input type="datetime-local"> 给出的是不带时区的裸字符串；这个 App 面向日本观影场景，
+ * 统一按日本时间（+09:00）解释，与其余展示逻辑（Asia/Tokyo）保持一致。
+ */
+function localDateTimeInputToIso(value) {
+  if (!value) return null;
+  const withSeconds = value.length === 16 ? `${value}:00` : value;
+  return `${withSeconds}+09:00`;
+}
+
+/**
+ * R4 §3.1「每一行都要有编辑入口，可改地点、时间、影院、制式、活动、初看／重看」，
+ * 同一个表单也承担 needs_review 场次的「补充信息」——两者本质是同一件事：把这场
+ * ViewingEvent 的字段补全或改对。
+ */
+function historyEventEditorOverlay(event) {
+  const ctx = event.viewing_context || {};
+  const isCinema = event.location_type === "cinema";
+  // 只有真的有 screening_at 才回填时间——event.viewed_on 只是"哪一天"，没有具体时刻。
+  // 如果把 "00:00" 塞进 <input type="datetime-local"> 当默认值，用户不碰这个字段直接保存，
+  // 就会把一个"只知道日期、不知道时间"的场次悄悄写成"零点场"，这是假数据，不是缺省值。
+  const localDateTime = event.screening_at ? isoToLocalDateTimeInputValue(event.screening_at) : "";
+  const knownDateOnly = !event.screening_at && event.viewed_on ? formatShortDate(event.viewed_on) : "";
+  const isReview = Boolean(event.needs_review);
+  return `<div class="overlay" data-testid="history-event-editor">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭编辑"></button>
+    <section class="bottom-sheet history-editor" role="dialog" aria-modal="true" aria-labelledby="history-editor-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">观影场次</span><h2 id="history-editor-title">${isReview ? "补充这次观看的信息" : "编辑这次观影"}</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <form id="history-event-form" data-event-id="${escapeHtml(event.id)}">
+        <div class="location-choice" role="group" aria-label="观看地点">
+          <label class="location-option ${!isCinema ? "selected" : ""}"><input type="radio" name="locationType" value="home" ${!isCinema ? "checked" : ""} data-testid="history-location-home" />在家／线上</label>
+          <label class="location-option ${isCinema ? "selected" : ""}"><input type="radio" name="locationType" value="cinema" ${isCinema ? "checked" : ""} data-testid="history-location-cinema" />在影院</label>
+        </div>
+        <label><span>观看时间${knownDateOnly ? `（当前只记了日期：${escapeHtml(knownDateOnly)}，没有具体时刻）` : ""}</span><input type="datetime-local" name="screeningAt" value="${escapeHtml(localDateTime)}" data-testid="history-datetime" /></label>
+        <div class="cinema-only-fields" data-testid="history-cinema-fields" ${isCinema ? "" : "hidden"}>
+          <label><span>影院名</span><input type="text" name="cinemaName" value="${escapeHtml(ctx.cinema_name || "")}" placeholder="影院名称" /></label>
+          <label><span>制式</span><select name="format">
+            <option value="">未填写</option>
+            ${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${ctx.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}
+          </select></label>
+          <fieldset class="event-tags-row" aria-label="活动类型">
+            ${EVENT_TYPES.map(([key, label]) => `<label class="event-tag-chip ${(ctx.event_types || []).includes(key) ? "selected" : ""}"><input type="checkbox" name="eventTypes" value="${key}" ${(ctx.event_types || []).includes(key) ? "checked" : ""} />${escapeHtml(label)}</label>`).join("")}
+          </fieldset>
+          <label><span>特典备注（选了"入場者特典"才会保留）</span><input type="text" name="bonusNote" value="${escapeHtml(ctx.bonus_note || "")}" placeholder="如：第3週 色紙" /></label>
+        </div>
+        <div class="relation-toggle" role="group" aria-label="初看或重看">
+          <label class="relation-choice ${event.viewing_relation === "first" ? "selected" : ""}"><input type="radio" name="relation" value="first" ${event.viewing_relation === "first" ? "checked" : ""} />初看</label>
+          <label class="relation-choice ${event.viewing_relation === "rewatch" ? "selected" : ""}"><input type="radio" name="relation" value="rewatch" ${event.viewing_relation === "rewatch" ? "checked" : ""} />重看</label>
+        </div>
+        <button class="sheet-done" type="submit">保存</button>
+      </form>
+    </section>
+  </div>`;
+}
+
+function releaseDateEditorOverlay(work) {
+  return `<div class="overlay" data-testid="release-date-editor">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet release-date-editor" role="dialog" aria-modal="true" aria-labelledby="release-date-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="release-date-title">中国上映日期</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <form id="release-date-form">
+        <label><span>日期</span><input type="date" name="cnDate" value="${escapeHtml(work.release_dates?.cn || "")}" data-testid="release-date-cn-input" /></label>
+        <button class="sheet-done" type="submit">保存</button>
+      </form>
+    </section>
+  </div>`;
+}
+
 function render() {
-  const base = state.view === "detail" ? renderDetail() : renderHome();
+  const base = state.view === "detail" ? renderDetail()
+    : state.view === "shelf" ? renderShelf()
+    : state.view === "work" ? renderWork()
+    : renderHome();
   const record = currentRecord();
+  const currentWorkForOverlay = state.view === "work" ? findWorkById(state.works, state.currentWorkId) : null;
+  const editingHistoryEvent = state.currentWorkEvents.find((event) => event.id === state.editingHistoryEventId) || null;
   const overlay = state.overlay === "capture-entry"
     ? captureEntryOverlay()
     : state.overlay === "ticket-confirm"
@@ -944,6 +1377,8 @@ function render() {
       ? composerOverlay()
     : state.overlay === "settings"
       ? settingsOverlay()
+    : state.overlay === "sidebar"
+      ? sidebarDrawer()
     : state.overlay === "attitude" && record
       ? attitudeOverlay(record)
       : state.overlay === "card" && record
@@ -954,6 +1389,10 @@ function render() {
         ? recordMenuOverlay(record)
       : state.overlay === "impression" && record
         ? impressionEditorOverlay(record)
+      : state.overlay === "history-event" && editingHistoryEvent
+        ? historyEventEditorOverlay(editingHistoryEvent)
+      : state.overlay === "release-date-cn" && currentWorkForOverlay
+        ? releaseDateEditorOverlay(currentWorkForOverlay)
         : "";
   app.innerHTML = `${base}${overlay}`;
   document.body.classList.toggle("overlay-open", Boolean(state.overlay));
@@ -1024,20 +1463,29 @@ async function finishCompose() {
   record.title = resolvedTitle;
   record.inputHints = { ...(record.inputHints || {}), workTitle: resolvedTitle };
 
-  // R1：同一部电影无论写几条感想，只解析出一个 Work（按标题/别名查重，不新建 1:1 Work）
-  const { work } = resolveWork(state.works, {
-    title: resolvedTitle,
-    subjectId: state.captureContext?.subjectId ?? null,
-    aliases: []
-  });
+  // R4 §3.4：补充记录从作品页发起，作品已经明确——直接用 captureContext.workId 对应的
+  // work，不再走 resolveWork 的标题模糊匹配（避免撞到另一部同名作品）。
+  const isSupplement = state.captureContext?.mode === "supplement";
+  let work;
+  if (isSupplement && state.captureContext.workId) {
+    work = findWorkById(state.works, state.captureContext.workId);
+  }
+  if (!work) {
+    // R1：同一部电影无论写几条感想，只解析出一个 Work（按标题/别名查重，不新建 1:1 Work）
+    ({ work } = resolveWork(state.works, {
+      title: resolvedTitle,
+      subjectId: state.captureContext?.subjectId ?? null,
+      aliases: []
+    }));
+  }
   record.work_id = work.id;
   record.workId = work.id;              // 兼容期保留，供旧读取点过渡
-  record.record_kind = "viewing";
-  record.viewing_event_id = null;       // 有 Event 时下方回填
+  record.record_kind = isSupplement ? "supplement" : "viewing";
+  record.viewing_event_id = null;       // 有 Event 时下方回填（补充记录永远不产生 ViewingEvent）
 
   await db.putRecordWithWork(record, work);
 
-  const pendingEvents = state.captureContext?.pendingEvents || [];
+  const pendingEvents = isSupplement ? [] : (state.captureContext?.pendingEvents || []);
   if (pendingEvents.length > 0) {
     const confirmedAt = new Date().toISOString();
     const newEvents = pendingEvents.map((e) => ({
@@ -1049,8 +1497,10 @@ async function finishCompose() {
     }));
     // 每次写入 ViewingEvent 后，都要对该 work 下全部事件重跑初看/重看推定并整体回写，
     // 不能只给新事件递增编号——补录更早的一次观看时，原来的"初看"要正确变成"重看"。
-    let existingEvents = [];
-    try { existingEvents = await db.getViewingEventsByWork(work.id); } catch (_) { /* 首次记录该作品，允许为空 */ }
+    // 用 fetchWorkEvents 而不是直接查 db（见该函数注释）：这个 work 如果之前升格匹配过
+    // Bangumi、id 变过，合并前的场次挂在 merged_from 里的旧 id 下，直接查会漏掉，
+    // 导致这次重新推定漏掉历史场次、把不该是"初看"的一场错判成"初看"。
+    const existingEvents = await fetchWorkEvents(work.id);
     const newEventIds = new Set(newEvents.map((e) => e.id));
     const allEvents = assignViewingRelations([...existingEvents.filter((e) => !newEventIds.has(e.id)), ...newEvents]);
     await db.putViewingEvents(allEvents);
@@ -1070,9 +1520,17 @@ async function finishCompose() {
   state.draft = null;
   state.records.unshift(record);
   if (!state.works.some((item) => item.id === work.id)) state.works.push(work);
-  render();
-  requestAnimationFrame(() => scrollTo({ top: state.returnScrollY, behavior: "instant" }));
-  announce("原文已保存在本机");
+  await indexHomeCardData();
+  if (isSupplement) {
+    // 补充记录从作品页发起，完成后停留在作品页（state.view 全程没变过），
+    // 只需要把新记录反映到画面上，不做首页那套滚动位置恢复。
+    renderPreservingScroll();
+    announce("补充记录已保存在本机");
+  } else {
+    render();
+    requestAnimationFrame(() => scrollTo({ top: state.returnScrollY, behavior: "instant" }));
+    announce("原文已保存在本机");
+  }
   void requestWorkMatch(record.id);
   if (state.recordingPreference?.autoAnalyze !== false) void runAiAnalysis(record.id);
 }
@@ -1282,8 +1740,14 @@ async function confirmWorkMatch(subjectId) {
 
   state.works = state.works.filter((item) => item.id !== oldId && item.id !== conflictingWork?.id);
   state.works.push(finalWork);
+  if (state.currentWorkId === oldId || state.currentWorkId === conflictingWork?.id) state.currentWorkId = finalWork.id;
 
-  await resolveDailyWallpaper();
+  // R3 移除轮换壁纸后这里曾遗留一处对已删除函数 resolveDailyWallpaper() 的调用——
+  // 顺手清掉；改成刷新首页/书架都要用到的全量 ViewingEvent 索引，因为上面可能合并了场次。
+  await indexHomeCardData();
+  if (state.view === "work" && state.currentWorkId === finalWork.id) {
+    void loadWorkEventsFor(finalWork.id);
+  }
   render();
   announce(`已确认作品：${finalWork.title}`);
 }
@@ -1388,15 +1852,10 @@ async function refreshCaptureHistoryFlag() {
   if (!title?.trim()) { ctx.hasHistory = false; ctx.existingHistoryCount = 0; render(); return; }
   const { work, isNew } = resolveWork(state.works, { title, subjectId: ctx.subjectId, aliases: [] });
   if (isNew) { ctx.hasHistory = false; ctx.existingHistoryCount = 0; render(); return; }
-  try {
-    const events = await db.getViewingEventsByWork(work.id);
-    if (state.captureContext !== ctx) return;
-    ctx.hasHistory = events.length > 0;
-    ctx.existingHistoryCount = events.length;
-  } catch (_) {
-    ctx.hasHistory = false;
-    ctx.existingHistoryCount = 0;
-  }
+  const events = await fetchWorkEvents(work.id); // 含 merged_from——否则合并过的作品会被误判成"第一次看"
+  if (state.captureContext !== ctx) return;
+  ctx.hasHistory = events.length > 0;
+  ctx.existingHistoryCount = events.length;
   render();
 }
 
@@ -1415,66 +1874,206 @@ async function updateRecord(mutator) {
  */
 async function deleteRecord(record) {
   const workId = record.work_id || record.workId;
-  let siblingEvents = [];
-  if (workId) {
-    try { siblingEvents = await db.getViewingEventsByWork(workId); } catch (_) { /* 允许为空 */ }
-  }
+  const siblingEvents = workId ? await fetchWorkEvents(workId) : [];
   await db.delete("records", record.id);
   if (record.viewing_event_id) {
     await db.delete("viewingEvents", record.viewing_event_id);
     const remaining = siblingEvents.filter((event) => event.id !== record.viewing_event_id);
     if (remaining.length) await db.putViewingEvents(assignViewingRelations(remaining));
+    if (workId === state.currentWorkId) state.currentWorkEvents = state.currentWorkEvents.filter((event) => event.id !== record.viewing_event_id);
   }
   state.records = state.records.filter((item) => item.id !== record.id);
   await indexHomeCardData();
   state.overlay = null;
-  state.activeRecordId = null;
-  state.view = "home";
-  render();
+  // R4：删除记录后回到"从哪进来的"，而不是无条件回时间线——从作品页删记录应该回作品页。
+  leaveDetail({ replace: true });
   announce("这条记录已删除");
 }
 
 async function buildAllExportEntries() {
   return Promise.all(state.records.map(async (record) => {
     const work = state.works.find((item) => item.id === record.workId) || null;
-    let viewingEvents = [];
-    if (record.workId) {
-      try { viewingEvents = await db.getViewingEventsByWork(record.workId); } catch (_) { /* 单条场次加载失败不影响整体导出 */ }
-    }
+    const viewingEvents = record.workId ? await fetchWorkEvents(record.workId) : [];
     return { record, work, viewingEvents };
   }));
 }
 
+/**
+ * R4：详情页可以从时间线或作品页进入（见 src/routing.js 的 enterRecord）。这里用
+ * routeSnapshot/applyRoute 把"从哪来、回哪去、离开那个视图时的滚动位置"都记下来，
+ * 历史记录里额外带上 from/workId，popstate 时才能正确还原返回路径。
+ */
 async function openRecord(recordId) {
-  state.returnScrollY = scrollY;
-  state.activeRecordId = recordId;
-  state.view = "detail";
+  applyRoute(routeEnterRecord(routeSnapshot(), recordId, { scrollY }));
   state.viewingEvents = [];
-  history.pushState({ recordId }, "", `#record=${encodeURIComponent(recordId)}`);
+  const historyPayload = { view: "detail", recordId, from: state.detailReturnView, workId: state.currentWorkId };
+  history.pushState(historyPayload, "", `#record=${encodeURIComponent(recordId)}`);
   render();
   scrollTo(0, 0);
   // 异步加载该记录关联的观影场次，加载完成后刷新详情页
   const record = state.records.find((r) => r.id === recordId);
   if (record?.workId) {
-    try {
-      const events = await db.getViewingEventsByWork(record.workId);
-      if (state.activeRecordId === recordId && state.view === "detail") {
-        state.viewingEvents = events;
-        if (events.length > 0) renderPreservingScroll();
-      }
-    } catch (_) { /* 场次加载失败不影响详情页其他内容 */ }
+    const events = await fetchWorkEvents(record.workId);
+    if (state.activeRecordId === recordId && state.view === "detail") {
+      state.viewingEvents = events;
+      if (events.length > 0) renderPreservingScroll();
+    }
   }
 }
 
+/** 详情页返回：按 detailReturnView 回时间线或作品页，恢复对应视图当时的滚动位置。 */
+function leaveDetail({ replace = false } = {}) {
+  applyRoute(routeExitRecord(routeSnapshot()));
+  state.overlay = null;
+  state.viewingEvents = [];
+  const url = state.view === "work" ? `#work=${encodeURIComponent(state.currentWorkId)}` : location.pathname + location.search;
+  const historyPayload = state.view === "work" ? { view: "work", workId: state.currentWorkId } : {};
+  if (replace) history.replaceState(historyPayload, "", url);
+  else history.pushState(historyPayload, "", url);
+  render();
+  const targetScroll = state.view === "work" ? state.workScrollY : state.returnScrollY;
+  requestAnimationFrame(() => scrollTo({ top: targetScroll, behavior: "instant" }));
+}
+
 function goHome({ replace = false } = {}) {
-  state.view = "home";
-  state.activeRecordId = null;
+  applyRoute(routeGoHome(routeSnapshot()));
   state.overlay = null;
   state.viewingEvents = [];
   if (replace) history.replaceState({}, "", location.pathname + location.search);
   else history.pushState({}, "", location.pathname + location.search);
   render();
   requestAnimationFrame(() => scrollTo({ top: state.returnScrollY, behavior: "instant" }));
+}
+
+/** R4：首页 → 作品书架。 */
+function openShelf() {
+  state.overlay = null;
+  applyRoute(routeEnterShelf(routeSnapshot(), { scrollY }));
+  history.pushState({ view: "shelf" }, "", "#shelf");
+  render();
+  scrollTo(0, 0);
+}
+
+/** R4：作品书架 → 首页。 */
+function closeShelf() {
+  applyRoute(routeExitShelf(routeSnapshot()));
+  history.pushState({}, "", location.pathname + location.search);
+  render();
+  requestAnimationFrame(() => scrollTo({ top: state.returnScrollY, behavior: "instant" }));
+}
+
+/** R4：作品书架 → 作品页。 */
+function openWork(workId) {
+  applyRoute(routeEnterWork(routeSnapshot(), workId, { scrollY }));
+  state.currentWorkEvents = [];
+  history.pushState({ view: "work", workId }, "", `#work=${encodeURIComponent(workId)}`);
+  render();
+  scrollTo(0, 0);
+  void loadWorkEventsFor(workId);
+}
+
+/** R4：作品页 → 作品书架（本窗口里作品页只能从书架进入，所以固定回书架）。 */
+function closeWork() {
+  applyRoute(routeExitWork(routeSnapshot()));
+  history.pushState({ view: "shelf" }, "", "#shelf");
+  render();
+  requestAnimationFrame(() => scrollTo({ top: state.shelfScrollY, behavior: "instant" }));
+}
+
+/**
+ * R4：编辑一条 ViewingEvent 后，对该 work 的全部事件重跑初看/重看推定并整体回写——
+ * 不能只改这一场，否则补录/改时间后其余场次的编号会错位（见 R1 的 assignViewingRelations）。
+ */
+async function updateHistoryEvent(eventId, mutator) {
+  const target = state.currentWorkEvents.find((event) => event.id === eventId);
+  if (!target) return;
+  const draft = { ...target };
+  mutator(draft);
+  const merged = state.currentWorkEvents.map((event) => (event.id === eventId ? draft : event));
+  const reassigned = assignViewingRelations(merged);
+  await db.putViewingEvents(reassigned);
+  state.currentWorkEvents = reassigned;
+  await indexHomeCardData();
+  renderPreservingScroll();
+}
+
+/**
+ * 观影场次编辑表单的保存逻辑。两遍算 viewing_relation：先按"完全不锁定"跑一遍
+ * assignViewingRelations，看时间顺序自然算出的结果是什么；只有用户这次选的初看/
+ * 重看和这个自然结果不一样，才真正锁定（relation_locked: true）——这样光打开表单
+ * 点"保存"、没碰过初看/重看单选框，也不会被静默锁死。
+ */
+async function saveHistoryEventForm(form) {
+  const eventId = form.dataset.eventId;
+  const target = state.currentWorkEvents.find((event) => event.id === eventId);
+  if (!target) return;
+
+  const data = new FormData(form);
+  const locationType = data.get("locationType") === "cinema" ? "cinema" : "home";
+  const screeningAtLocal = String(data.get("screeningAt") || "").trim();
+  const screeningAt = screeningAtLocal ? localDateTimeInputToIso(screeningAtLocal) : null;
+  const viewedOn = screeningAt ? screeningAt.slice(0, 10) : (target.viewed_on || null);
+  const eventTypes = locationType === "cinema" ? [...new Set(data.getAll("eventTypes").map(String))] : [];
+  const bonusNoteInput = String(data.get("bonusNote") || "").trim() || null;
+  const chosenRelation = ["first", "rewatch"].includes(data.get("relation")) ? data.get("relation") : null;
+
+  const updatedUnlocked = {
+    ...target,
+    location_type: locationType,
+    viewed_on: viewedOn,
+    screening_at: screeningAt,
+    viewing_context: {
+      ...target.viewing_context,
+      cinema_name: locationType === "cinema" ? (String(data.get("cinemaName") || "").trim() || null) : null,
+      format: locationType === "cinema" ? (String(data.get("format") || "").trim() || null) : null,
+      event_types: eventTypes,
+      bonus_note: eventTypes.includes("bonus_distribution") ? bonusNoteInput : null
+    },
+    needs_review: false,
+    source: target.source === "ticket_paste" ? target.source : "manual",
+    relation_locked: false
+  };
+  delete updatedUnlocked.relation_conflict;
+
+  const naturalPass = assignViewingRelations(state.currentWorkEvents.map((event) => (event.id === eventId ? updatedUnlocked : event)));
+  const naturalRelation = naturalPass.find((event) => event.id === eventId)?.viewing_relation;
+  const finalDraft = chosenRelation && chosenRelation !== naturalRelation
+    ? { ...updatedUnlocked, viewing_relation: chosenRelation, relation_locked: true }
+    : updatedUnlocked;
+
+  const finalEvents = assignViewingRelations(state.currentWorkEvents.map((event) => (event.id === eventId ? finalDraft : event)));
+  await db.putViewingEvents(finalEvents);
+  state.currentWorkEvents = finalEvents;
+  await indexHomeCardData();
+  state.overlay = null;
+  state.editingHistoryEventId = null;
+  renderPreservingScroll();
+  announce("这次观影已更新");
+}
+
+async function updateCurrentWorkReleaseDateCn(cnDate) {
+  const work = findWorkById(state.works, state.currentWorkId);
+  if (!work) return;
+  const updated = { ...work, release_dates: { jp: null, cn: null, other: [], ...work.release_dates, cn: cnDate } };
+  await db.put("works", updated);
+  state.works = state.works.map((item) => (item.id === updated.id ? updated : item));
+}
+
+/**
+ * R4 §3.4 补充记录（提案 E）：从作品页发起，直接进入 Step 3 书写层，不经过
+ * Step 1/2（场景已经明确——就是这个作品）。生成的 record 是 record_kind: "supplement"，
+ * viewing_event_id: null，finishCompose() 里据此跳过 ViewingEvent 的创建。
+ */
+function openSupplementCompose(workId) {
+  const work = findWorkById(state.works, workId);
+  if (!work) return;
+  state.captureContext = { source: "manual", mode: "supplement", workId: work.id, workTitle: work.title };
+  state.captureTagsExpanded = new Set();
+  state.captureFlowState = "capture:compose";
+  state.overlay = "compose";
+  state.draft = null;
+  render();
+  focusComposer();
 }
 
 app.addEventListener("click", async (event) => {
@@ -1487,6 +2086,46 @@ app.addEventListener("click", async (event) => {
   } else if (action === "open-settings") {
     state.overlay = "settings";
     render();
+  } else if (action === "open-sidebar") {
+    state.overlay = "sidebar";
+    render();
+  } else if (action === "open-shelf") {
+    openShelf();
+  } else if (action === "close-shelf") {
+    closeShelf();
+  } else if (action === "open-work") {
+    const workId = trigger.dataset.workId;
+    if (workId) openWork(workId);
+  } else if (action === "close-work") {
+    closeWork();
+  } else if (action === "close-detail") {
+    leaveDetail();
+  } else if (action === "set-shelf-type-filter") {
+    state.shelfFilter.workType = trigger.dataset.value;
+    render();
+  } else if (action === "toggle-shelf-events-filter") {
+    state.shelfFilter.eventsOnly = !state.shelfFilter.eventsOnly;
+    render();
+  } else if (action === "set-shelf-sort") {
+    state.shelfFilter.sort = trigger.dataset.value;
+    render();
+  } else if (action === "edit-history-event" || action === "review-history-event") {
+    state.editingHistoryEventId = trigger.dataset.eventId;
+    state.overlay = "history-event";
+    render();
+  } else if (action === "clear-relation-lock") {
+    await updateHistoryEvent(trigger.dataset.eventId, (event) => {
+      event.relation_locked = false;
+    });
+    announce("已改回按时间判断");
+  } else if (action === "keep-relation-choice") {
+    // 默认本就保持用户的选择——这里不改任何数据，只是给一个明确的反馈。
+    announce("已保持你的选择");
+  } else if (action === "edit-release-date-cn") {
+    state.overlay = "release-date-cn";
+    render();
+  } else if (action === "open-supplement") {
+    if (state.currentWorkId) openSupplementCompose(state.currentWorkId);
   } else if (action === "toggle-auto-analysis") {
     state.recordingPreference = {
       id: "recording-preference",
@@ -2009,6 +2648,10 @@ app.addEventListener("change", async (event) => {
     announce("推荐说明已保存");
   } else if (event.target.id === "scene-format-select") {
     if (state.captureContext) state.captureContext.format = event.target.value;
+  } else if (event.target.name === "locationType" && event.target.closest("#history-event-form")) {
+    // 直接切换字段可见性，不走 render()——避免清空用户已经在其他输入框里打的字。
+    const cinemaFields = document.querySelector("[data-testid='history-cinema-fields']");
+    if (cinemaFields) cinemaFields.hidden = event.target.value !== "cinema";
   }
 });
 
@@ -2056,20 +2699,95 @@ app.addEventListener("submit", async (event) => {
     state.overlay = null;
     renderPreservingScroll();
     announce("原文已更新");
+    return;
+  }
+  if (event.target.id === "history-event-form") {
+    event.preventDefault();
+    await saveHistoryEventForm(event.target);
+    return;
+  }
+  if (event.target.id === "release-date-form") {
+    event.preventDefault();
+    const data = new FormData(event.target);
+    const cnDate = String(data.get("cnDate") || "").trim() || null;
+    await updateCurrentWorkReleaseDateCn(cnDate);
+    state.overlay = null;
+    renderPreservingScroll();
+    announce(cnDate ? "已保存中国上映日期" : "已清空中国上映日期");
   }
 });
 
-window.addEventListener("popstate", () => {
-  const recordId = location.hash.startsWith("#record=") ? decodeURIComponent(location.hash.slice(8)) : null;
+// R4：交给浏览器原生的滚动恢复和这里手动维护的 state.*ScrollY 会互相打架
+// （两边都想在 popstate 后把页面滚到某个位置），关掉原生的那一套，滚动位置
+// 完全由下面 popstate 处理器里 render() 之后的 scrollTo 负责。
+if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+
+// R4：地址栏现在要区分四种视图。#record= 沿用 R3 已有的写法；新增 #shelf 与 #work=；
+// 详情页的返回路径（回时间线还是回作品页）从 pushState 时存的 history.state 里读，
+// 读不到（比如用户直接改地址栏，或者是很旧的历史记录）就安全降级为回时间线。
+window.addEventListener("popstate", (event) => {
+  const hash = location.hash;
   state.overlay = null;
-  if (recordId && state.records.some((record) => record.id === recordId)) {
-    state.view = "detail";
-    state.activeRecordId = recordId;
-  } else {
+  if (hash.startsWith("#record=")) {
+    const recordId = decodeURIComponent(hash.slice(8));
+    if (recordId && state.records.some((record) => record.id === recordId)) {
+      const fromWork = event.state?.from === "work" && event.state?.workId;
+      state.view = "detail";
+      state.activeRecordId = recordId;
+      state.detailReturnView = fromWork ? "work" : "home";
+      if (fromWork) state.currentWorkId = event.state.workId;
+      state.viewingEvents = [];
+      render();
+      scrollTo(0, 0);
+      const record = state.records.find((r) => r.id === recordId);
+      if (record?.workId) {
+        fetchWorkEvents(record.workId).then((events) => {
+          if (state.activeRecordId === recordId && state.view === "detail") {
+            state.viewingEvents = events;
+            renderPreservingScroll();
+          }
+        });
+      }
+      return;
+    }
     state.view = "home";
     state.activeRecordId = null;
+    state.currentWorkId = null;
+    render();
+    requestAnimationFrame(() => scrollTo({ top: state.returnScrollY, behavior: "instant" }));
+    return;
   }
+  if (hash === "#shelf") {
+    state.view = "shelf";
+    state.currentWorkId = null;
+    render();
+    requestAnimationFrame(() => scrollTo({ top: state.shelfScrollY, behavior: "instant" }));
+    return;
+  }
+  if (hash.startsWith("#work=")) {
+    const workId = decodeURIComponent(hash.slice(6));
+    // 深链指向一个不存在的作品（脏数据、旧书签）——安全降级回书架，不留一个显示
+    // 书架内容但 state.view 还停在 "work" 的不一致状态。
+    if (!findWorkById(state.works, workId)) {
+      state.view = "shelf";
+      state.currentWorkId = null;
+      history.replaceState({ view: "shelf" }, "", "#shelf");
+      render();
+      return;
+    }
+    state.view = "work";
+    state.currentWorkId = workId;
+    state.currentWorkEvents = [];
+    render();
+    scrollTo(0, 0);
+    void loadWorkEventsFor(workId);
+    return;
+  }
+  state.view = "home";
+  state.activeRecordId = null;
+  state.currentWorkId = null;
   render();
+  requestAnimationFrame(() => scrollTo({ top: state.returnScrollY, behavior: "instant" }));
 });
 
 window.addEventListener("keydown", async (event) => {
@@ -2105,6 +2823,38 @@ window.visualViewport?.addEventListener("resize", updateVisualViewport);
 window.visualViewport?.addEventListener("scroll", updateVisualViewport);
 document.addEventListener("focusin", updateVisualViewport);
 document.addEventListener("focusout", () => setTimeout(updateVisualViewport, 180));
+
+// R4：侧边栏抽屉可右滑关闭（点遮罩关闭已经复用通用的 close-overlay 动作）。
+// 只做位移跟手 + 松手判定，不接入动画库——和这个项目里其余交互的实现规模一致。
+let sidebarSwipeStartX = null;
+let sidebarSwipeCurrentX = 0;
+document.addEventListener("touchstart", (event) => {
+  if (!event.target.closest("[data-testid='sidebar-drawer']")) return;
+  sidebarSwipeStartX = event.touches[0].clientX;
+  sidebarSwipeCurrentX = sidebarSwipeStartX;
+}, { passive: true });
+document.addEventListener("touchmove", (event) => {
+  if (sidebarSwipeStartX === null) return;
+  const drawer = document.querySelector("[data-testid='sidebar-drawer']");
+  if (!drawer) return;
+  sidebarSwipeCurrentX = event.touches[0].clientX;
+  const delta = Math.max(0, sidebarSwipeCurrentX - sidebarSwipeStartX);
+  drawer.style.transition = "none";
+  drawer.style.transform = `translateX(${delta}px)`;
+}, { passive: true });
+document.addEventListener("touchend", () => {
+  if (sidebarSwipeStartX === null) return;
+  const drawer = document.querySelector("[data-testid='sidebar-drawer']");
+  const delta = Math.max(0, sidebarSwipeCurrentX - sidebarSwipeStartX);
+  sidebarSwipeStartX = null;
+  if (!drawer) return;
+  drawer.style.transition = "";
+  drawer.style.transform = "";
+  if (delta > 80) {
+    state.overlay = null;
+    render();
+  }
+});
 window.addEventListener("pagehide", () => {
   const input = document.querySelector("#composer-input");
   if (input) {
