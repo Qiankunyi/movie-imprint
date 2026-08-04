@@ -163,3 +163,18 @@ R4 交付后用户在安卓真机上试用，反馈 4 点 + 追加 1 点，均�
 `tests/work-view.test.mjs` 的 `filterShelfEntries` 用例补了 `work_type: "other"` 的断言，确认它和 `unspecified` 一起被"未分类"筛选命中、且不会被 `workType: "event"` 误命中（原有断言本来就覆盖了基础筛选逻辑，这次是在同一个 test 里加断言，不是新增 test，总数仍是 284）。全量测试 284 通过（`node --test tests/*.test.mjs`），`node --check` 过 `src/app.js`/`src/work-view.js` 无语法错误，`styles/app.css` 花括号配对数确认无误（471 对 471）。`index.html`/`sw.js` 版本号已 bump（`app.css`/`app.js` v26→v27，SW shell 缓存 v27→v28）。
 
 侧边栏边缘手势、作品页新排版均未做真机截图验证（本窗口无浏览器环境，延续 R3/R4 起的已知限制），建议用户下次实机测试时重点看这两处。
+
+## R4 补丁 2：书架幽灵重复条目
+
+用户反馈：已经匹配过 Bangumi 条目的作品，书架上出现两个条目——一个是正常的（有海报、挂着感想记录），另一个只有标题、海报是首字母占位符、点进去没有任何观影履历。
+
+排查定位到 `src/app.js` 的 `confirmWorkMatch()`：本地作品升格匹配到 Bangumi 后会生成一个新 id 的 work 文档（`promoteWorkToMatched`），原有代码只做了 `state.works = state.works.filter(item => item.id !== oldId ...)` 把旧 id 从**内存**里过滤掉，从来没有调用 `db.delete("works", oldId)` 把旧文档从数据库（IndexedDB / D1）里真正删掉——刷新页面重新 `getAll("works")` 时，旧文档又被读回来，变成书架上的幽灵条目。`src/migrate.js` 的 R1 一次性迁移里其实已经有完全一样的删除步骤（`staleWorkIds` + `db.delete`），注释原话就写着"否则会在 works store 里留下幽灵重复条目"——`confirmWorkMatch()` 这条实时匹配路径是后加的，漏做了同一步。
+
+修复两处：
+
+1. `confirmWorkMatch()` 里，`staleIds`（原本只用来把 record/viewingEvent 重新指向新 id）现在额外补一步 `await Promise.all(staleIds.map(id => db.delete("works", id)))`，从源头阻止今后再产生新的幽灵条目。
+2. 光修代码不会让用户已经攒下的历史幽灵条目消失——`src/migrate.js` 的 `MIGRATION_VERSION` 从 `"r1-work-dedup"` 提到 `"r1-work-dedup-2"`，触发应用下次启动时按已有的备份+去重+物理删除流程（`runMigrationIfNeeded`）再跑一遍。`buildMigratedDataset` 本身是幂等的：干净数据重跑一遍不会有任何变化，只有真正存在冲突分组（幽灵条目的旧标题会作为 alias 出现在正常条目的 `aliases` 里，被 `sameWork()` 判定为同一部作品）才会被合并、删除多余的一份。迁移前依旧会先弹出一份完整 JSON 备份下载，失败则整个迁移终止、不写库。
+
+### 测试
+
+`tests/migrate.test.mjs` 新增一条用例，直接构造"已匹配作品 + 残留的旧 local 幽灵条目（无海报无记录，标题在新作品 aliases 里）"这个真实场景，断言 `buildMigratedDataset` 后只剩已匹配的一方、`poster_subject_id` 与 `merged_from` 都正确；`migration_version` 断言同步改成新值。全量测试 285 通过（+1），`node --check` 过 `src/app.js`/`src/migrate.js` 无语法错误。`index.html`/`sw.js` 再次 bump（`app.js` v27→v28，SW shell 缓存 v28→v29，`migrate.js` 的模块内部版本号 v1→v2）。

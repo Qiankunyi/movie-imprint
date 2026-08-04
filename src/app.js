@@ -2,7 +2,7 @@ import { db, clearLocalData, migrateLocalToCloud } from "./db.js?v=12";
 import { parseTicketText, draftViewingEvent } from "./ticket.js";
 import { buildWorkSearchQuery } from "./bangumi.js?v=11";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
-import { runMigrationIfNeeded } from "./migrate.js?v=1";
+import { runMigrationIfNeeded } from "./migrate.js?v=2";
 import { EVENT_TYPES } from "./event-types.js?v=1";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
 import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=2";
@@ -1785,6 +1785,13 @@ async function confirmWorkMatch(subjectId) {
       await db.putViewingEvents(merged);
       if (state.activeRecordId) state.viewingEvents = merged.filter((event) => event.work_id === finalWork.id);
     }
+    // 用户反馈：书架里同一部电影出现两个条目——一个正常（有海报有记录），另一个只有
+    // 标题、没有海报没有记录。原因是这里只把旧 id 从内存 state.works 里过滤掉
+    // （见下），从来没有从数据库里删掉——下次加载又会把旧的本地 work 文档重新读回来。
+    // src/migrate.js 的一次性迁移里其实已经有同样的删除步骤（那条注释原话就是
+    // "否则会在 works store 里留下幽灵重复条目"），这里的实时匹配流程漏了同一步，
+    // 现在补上。
+    await Promise.all(staleIds.map((id) => db.delete("works", id).catch(() => {})));
   }
 
   state.works = state.works.filter((item) => item.id !== oldId && item.id !== conflictingWork?.id);

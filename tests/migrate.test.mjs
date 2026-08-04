@@ -130,6 +130,36 @@ test("viewing_relation 与 watch_index 正确回填", () => {
   assert.equal(byId.ve1.watch_index, 2);
 });
 
+test("幽灵重复条目：升格后残留的旧 local work（无记录、无海报）应被去重删除，只留匹配到 Bangumi 的一方", () => {
+  // 复现用户反馈的真实场景：confirmWorkMatch() 升格 work 时曾经漏删旧的本地 work
+  // 文档——旧文档的 title 会被并入新 work 的 aliases（promoteWorkToMatched 的行为），
+  // 但旧文档自己既没有海报（poster_subject_id 为空）也没有任何 record/viewingEvent
+  // 指向它（升格时全部改指到新 id 了）。
+  const ghost = work({
+    id: "work_local_old-title",
+    title: "旧标题",
+    identity_status: "local_only",
+    poster_subject_id: null
+  });
+  const matched = work({
+    id: "work_bgm_555",
+    title: "新标题",
+    identity_status: "matched",
+    poster_subject_id: 555,
+    external_refs: [{ source: "bangumi", id: "555" }],
+    aliases: ["旧标题"], // 升格时并入的旧标题别名
+    merged_from: ["work_local_old-title"]
+  });
+  const records = [record({ id: "r1", work_id: "work_bgm_555", workId: "work_bgm_555" })];
+
+  const result = buildMigratedDataset({ records, works: [ghost, matched], viewingEvents: [] });
+
+  assert.equal(result.works.length, 1, "幽灵条目应被合并删除，只剩已匹配的一方");
+  assert.equal(result.works[0].id, "work_bgm_555");
+  assert.equal(result.works[0].poster_subject_id, 555);
+  assert.ok(result.works[0].merged_from.includes("work_local_old-title"));
+});
+
 // ─── runMigrationIfNeeded：备份、幂等、回滚 ───────────────────────────────────
 
 test("迁移前先备份；备份失败则不写库，返回 ok:false", async () => {
@@ -172,7 +202,7 @@ test("迁移成功：备份被调用、写入去重后的数据、写入 migrati
   assert.equal(db.stores.works.length, 1, "迁移后应只剩 1 个 work");
   assert.equal(db.stores.records.length, 2, "记录条数不应丢失");
   const meta = db.stores.meta.find((item) => item.id === "migration-status");
-  assert.equal(meta.migration_version, "r1-work-dedup");
+  assert.equal(meta.migration_version, "r1-work-dedup-2");
   assert.ok(meta.migration_ran_at);
 });
 

@@ -22,7 +22,15 @@
 
 import { assignViewingRelations, mergeWorks, normalizeTitle } from "./domain.js";
 
-const MIGRATION_VERSION = "r1-work-dedup";
+// r1-work-dedup-2：R4 补丁里发现 src/app.js 的 confirmWorkMatch()（local work 实时匹配
+// 到 Bangumi 升格时）漏了一步物理删除旧 work 文档——只把旧 id 从内存 state.works 里
+// 过滤掉，数据库里的旧记录一直留着，下次加载又读回来，变成书架上的"幽灵重复条目"
+// （有海报有记录的正常条目 + 一个只剩标题、没海报没记录的空壳条目）。那个 bug 已经在
+// app.js 里修了，但这里的版本号也要跟着提一次——本地/云端已经攒下的历史幽灵条目
+// 不会因为修了实时匹配的代码就自动消失，得让这次迁移的去重+物理删除逻辑再跑一遍
+// 才能把已经产生的重复清掉。buildMigratedDataset 本身是幂等的（对本来就没问题的
+// 数据重跑一遍不会产生任何变化），所以这里只是借用同一套逻辑做一次性收尾清理。
+const MIGRATION_VERSION = "r1-work-dedup-2";
 const MIGRATION_META_ID = "migration-status";
 
 function bangumiRefId(work) {
