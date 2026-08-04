@@ -1,3 +1,5 @@
+import { addReleaseDate, buildTagline, normalizeReleaseDates, taglineFromSummary } from "./library.js";
+
 // ─── Work 标题归一化与 ID ────────────────────────────────────────────────────
 
 /**
@@ -62,8 +64,13 @@ export function createLocalWork(record) {
     work_type: "unspecified",
     aliases,
     release_year: null,
-    release_dates: { jp: null, cn: null, other: [] },
+    // R5：上映日改成"日期 + 地区"的条目数组，不再预设日本/中国两个固定槽位。
+    // jp/cn/other 三个旧字段保留成空值，只为兼容还没迁移的历史数据。
+    release_dates: { jp: null, cn: null, other: [], entries: [] },
     external_refs: [],
+    // R5：Bangumi 关联条目锚点（只存 id，不猜关系类型，关系标签由用户手动连线）
+    related_refs: [],
+    tagline: null,
     identity_status: "local_only",
     poster_subject_id: null,
     merged_from: [],
@@ -144,10 +151,19 @@ export function promoteWorkToMatched(work, subjectId, bangumiData = {}) {
     bangumiData.originalTitle
   ].filter(Boolean))];
 
-  const releaseDateJp = typeof bangumiData.releaseDate === "string" && /^\d{4}/.test(bangumiData.releaseDate)
+  // R5 用户反馈：这里原本把 Bangumi 的 subject.date 直接当作"日本上映日"写进
+  // release_dates.jp。但 Bangumi 的 date 字段不带地区语义——《蜘蛛侠：崭新之日》
+  // 上面标的其实是中国上映日，于是被系统错标成日本上映。现在统一以
+  // region: "unknown"（未标注地区）落库，由用户在作品页认领是哪个地区。
+  const scrapedDate = typeof bangumiData.releaseDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(bangumiData.releaseDate)
     ? bangumiData.releaseDate
     : null;
-  const releaseYear = releaseDateJp ? Number(releaseDateJp.slice(0, 4)) : (work.release_year ?? null);
+  const releaseDates = scrapedDate
+    ? addReleaseDate(work.release_dates, { region: "unknown", date: scrapedDate, source: "bangumi" })
+    : normalizeReleaseDates(work.release_dates);
+  const releaseYear = releaseDates.entries.length
+    ? Number(releaseDates.entries[0].date.slice(0, 4))
+    : (work.release_year ?? null);
 
   const workType = bangumiData.type === "anime"
     ? "animation_film"
@@ -169,11 +185,13 @@ export function promoteWorkToMatched(work, subjectId, bangumiData = {}) {
     work_type: workType,
     aliases,
     release_year: releaseYear,
-    release_dates: {
-      jp: releaseDateJp || work.release_dates?.jp || null,
-      cn: work.release_dates?.cn || null,
-      other: work.release_dates?.other || []
-    },
+    release_dates: releaseDates,
+    // 抓取只留锚点：关联条目的 id + 标题，具体是前作/续作/外传由用户手动标注
+    related_refs: Array.isArray(bangumiData.relatedRefs) && bangumiData.relatedRefs.length
+      ? bangumiData.relatedRefs
+      : (work.related_refs || []),
+    tagline: work.tagline
+      || (bangumiData.summary ? buildTagline(taglineFromSummary(bangumiData.summary), "bangumi") : null),
     poster_subject_id: Number(subjectId) || work.poster_subject_id || null,
     external_refs: [{ source: "bangumi", id: sid, url: `https://bangumi.tv/subject/${sid}` }],
     identity_status: "matched",
@@ -213,18 +231,14 @@ export function mergeWorks(primary, duplicates = []) {
     .filter(Boolean)
     .sort()[0] || base.first_recorded_at || null;
 
-  function pickReleaseDate(field) {
-    const values = allSources.map((work) => work.release_dates?.[field]).filter(Boolean);
-    if (!values.length) return null;
-    if (matchedSource?.release_dates?.[field]) return matchedSource.release_dates[field];
-    return values[0];
+  // R5：上映日改成条目数组后，合并就是"各方条目取并集"——normalizeReleaseDates
+  // 内部按「地区_日期」去重，同一条不会因为来自两个副本而重复。
+  let releaseDates = normalizeReleaseDates(base.release_dates);
+  for (const work of allSources) {
+    for (const entry of normalizeReleaseDates(work.release_dates).entries) {
+      releaseDates = addReleaseDate(releaseDates, entry);
+    }
   }
-
-  const releaseDates = {
-    jp: pickReleaseDate("jp"),
-    cn: pickReleaseDate("cn"),
-    other: [...new Set(allSources.flatMap((work) => work.release_dates?.other || []))]
-  };
 
   return {
     ...base,
@@ -232,6 +246,11 @@ export function mergeWorks(primary, duplicates = []) {
     merged_from: mergedFrom,
     first_recorded_at: firstRecordedAt,
     release_dates: releaseDates,
+    // 一句话简介与关联锚点：以主体（已匹配方）为准，主体没有才从其余副本里捡一个
+    tagline: base.tagline || allSources.map((work) => work.tagline).find(Boolean) || null,
+    related_refs: base.related_refs?.length
+      ? base.related_refs
+      : (allSources.map((work) => work.related_refs).find((refs) => refs?.length) || []),
     release_year: base.release_year ?? allSources.map((work) => work.release_year).find((year) => year != null) ?? null
   };
 }

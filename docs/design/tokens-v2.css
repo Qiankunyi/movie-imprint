@@ -68,6 +68,20 @@
   --event-gold: #937019;
   --event-indigo: #4a4f9c;
   --event-cyan: #1f7f8c;
+
+  /* R4 补丁 3：五种态度各自的配色。用户反馈原来五种态度共用一套颜色，
+     "喜欢"和"不喜欢"完全看不出差别。冷暖分工：超喜欢/喜欢偏暖与主色，
+     不喜欢偏红，无感灰，不好说用中性偏蓝的石板色（避开紫色红线）。 */
+  --attitude-love-ink: #8a5510;
+  --attitude-love-bg: #fbeacc;
+  --attitude-like-ink: #084b57;
+  --attitude-like-bg: #cde7ea;
+  --attitude-neutral-ink: #5b686d;
+  --attitude-neutral-bg: #e3e9e8;
+  --attitude-mixed-ink: #3c5a76;
+  --attitude-mixed-bg: #dce7f1;
+  --attitude-dislike-ink: #8f3b34;
+  --attitude-dislike-bg: #f6ddda;
 }
 
 [data-theme="dark"] {
@@ -101,4 +115,15 @@
   --event-gold: #d1b45c;
   --event-indigo: #9ea3e6;
   --event-cyan: #7fd6e0;
+
+  --attitude-love-ink: #f2c877;
+  --attitude-love-bg: #4b3714;
+  --attitude-like-ink: #9be4ec;
+  --attitude-like-bg: #164a54;
+  --attitude-neutral-ink: #a9b7ba;
+  --attitude-neutral-bg: #263539;
+  --attitude-mixed-ink: #a9c6e2;
+  --attitude-mixed-bg: #24384b;
+  --attitude-dislike-ink: #ffb4ab;
+  --attitude-dislike-bg: #4d2622;
 }

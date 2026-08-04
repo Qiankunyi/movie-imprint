@@ -53,7 +53,11 @@ export function normalizeBangumiSubjects(payload) {
       title,
       originalTitle: originalTitle && originalTitle !== title ? originalTitle : null,
       type: SUBJECT_TYPES[subject.type] || "unknown",
+      // 注意：Bangumi 的 date 只是"上映日期"，不带地区语义。上层不能假设它是
+      // 日本上映日（见 domain.js promoteWorkToMatched 的说明），一律按
+      // region: "unknown" 落库，等用户认领。
       releaseDate: subject.date || null,
+      summary: typeof subject.summary === "string" ? subject.summary : null,
       image: subject.images?.common || subject.images?.medium || null,
       url: `https://bangumi.tv/subject/${subjectId}`
     }];

@@ -1,11 +1,11 @@
-import { db, clearLocalData, migrateLocalToCloud } from "./db.js?v=12";
+import { db, clearLocalData, migrateLocalToCloud } from "./db.js?v=13";
 import { parseTicketText, draftViewingEvent } from "./ticket.js";
-import { buildWorkSearchQuery } from "./bangumi.js?v=11";
+import { buildWorkSearchQuery } from "./bangumi.js?v=12";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
-import { runMigrationIfNeeded } from "./migrate.js?v=2";
+import { runMigrationIfNeeded } from "./migrate.js?v=3";
 import { EVENT_TYPES } from "./event-types.js?v=1";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
-import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=2";
+import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=3";
 import { memoryListMarkup } from "./memory-list.js?v=1";
 import { formatBadge, eventBadges } from "./format-badge.js";
 import {
@@ -24,6 +24,32 @@ import {
   filterShelfEntries,
   sortShelfEntries
 } from "./work-view.js?v=1";
+import {
+  RELEASE_REGIONS,
+  SERIES_RELATION_TYPES,
+  addReleaseDate,
+  addWorkToCollection,
+  addWorkToSeries,
+  buildTagline,
+  collectionWorks,
+  collectionsForWork,
+  createCollection,
+  createSeries,
+  findSeriesForWork,
+  moveWorkInSeries,
+  normalizeReleaseDates,
+  orderedSeriesMembers,
+  releaseRegionLabel,
+  releaseYearOf,
+  removeReleaseDate,
+  removeSeriesRelation,
+  removeWorkFromCollection,
+  removeWorkFromSeries,
+  seriesRelationLabel,
+  setReleaseDateRegion,
+  setSeriesRelation,
+  taglineSourceLabel
+} from "./library.js?v=1";
 import {
   captureTransition,
   toggleEventType,
@@ -56,7 +82,7 @@ import {
   reconcileLocalWorkTitle,
   recommendationLabel,
   resolveWork
-} from "./domain.js?v=12";
+} from "./domain.js?v=13";
 import {
   MIME_TYPES,
   copyExportText,
@@ -146,7 +172,15 @@ const state = {
   clipboardTicketDetected: false, // 只存"是否命中"，不存剪贴板原文
   captureTagsExpanded: new Set(), // 运行时 UI 态：哪些卡片的活动标签行已展开，不持久化
   viewingEvents: [],         // 当前详情页关联的已保存场次
-  syncMigrateStatus: null   // "running" | "done" | "error" | null
+  syncMigrateStatus: null,   // "running" | "done" | "error" | null
+  // R5：系列实体与用户片单。系列描述"作品客观属于哪个系列"（一部作品只属于一个），
+  // 片单描述"我出于自己的用途把哪些作品归在一起"（一部作品可属于多个），两者正交。
+  series: [],
+  collections: [],
+  currentSeriesId: null,      // R5：系列页当前显示的系列
+  currentCollectionId: null,  // R5：片单详情页当前显示的片单
+  seriesReturnView: "work",   // R5：系列页从哪进来的，决定返回去哪
+  taglineBusy: false          // R5：AI 概括一句话简介进行中
 };
 
 let toastTimer = null;
@@ -369,6 +403,13 @@ async function loadState() {
   }
   await ensureWorkLinks(state.records);
   state.works = await db.getAll("works");
+  // R5：系列与片单。两个 store 都是 R5 才建的，老库/旧云端可能还没有，读失败一律当空。
+  [state.series, state.collections] = await Promise.all([
+    db.getAll("series").catch(() => []),
+    db.getAll("collections").catch(() => [])
+  ]);
+  state.series ||= [];
+  state.collections ||= [];
   await indexHomeCardData();
   state.records.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   // R2：草稿必须连同 captureContext 一起恢复——Step 3 中断后再打开 App，
@@ -473,6 +514,9 @@ function sidebarDrawer() {
       </button>
       <button type="button" class="sidebar-item ${state.view === "shelf" || state.view === "work" ? "active" : ""}" data-action="open-shelf" data-testid="sidebar-shelf">
         <span class="sidebar-item-icon" aria-hidden="true">${icon("shelf")}</span><span>作品书架</span>
+      </button>
+      <button type="button" class="sidebar-item ${state.view === "collections" || state.view === "collection" ? "active" : ""}" data-action="open-collections" data-testid="sidebar-collections">
+        <span class="sidebar-item-icon" aria-hidden="true">${icon("shelf")}</span><span>片单</span>
       </button>
       <div class="sidebar-divider" role="separator"></div>
       <button type="button" class="sidebar-item" data-action="open-settings" data-testid="sidebar-settings">
@@ -653,7 +697,8 @@ function workHeroMarkup(work) {
 }
 
 function workMetaLine(work) {
-  const year = work.release_year || (work.release_dates?.jp ? Number(work.release_dates.jp.slice(0, 4)) : null);
+  // R5：年份取最早的一条上映日（不管是哪个地区），不再从写死的 release_dates.jp 读
+  const year = releaseYearOf(work);
   const typeLabel = WORK_TYPE_LABELS[work.work_type] || WORK_TYPE_LABELS.unspecified;
   const bangumiRef = (work.external_refs || []).find((ref) => ref.source === "bangumi");
   const bangumiLink = bangumiRef ? `<a href="https://bangumi.tv/subject/${encodeURIComponent(bangumiRef.id)}" target="_blank" rel="noreferrer">Bangumi ↗</a>` : "";
@@ -680,17 +725,67 @@ function workTypeEditorOverlay(work) {
 }
 
 /**
- * R4 §3.1b：日本上映日只读（R1 从 Bangumi 采集），中国上映日提供手动填写入口；
- * 两者都为空时整行不显示，不留空标签。
+ * R5：上映日不再是"日本/中国"两个写死的槽位。用户反馈《蜘蛛侠：崭新之日》被错标成
+ * 日本上映——实际是 Bangumi 上标的中国上映日，而旧代码假设抓到的都是日本上映日。
+ * 现在每条上映日都自带地区，抓取回来的一律是"未标注地区"，在这一行高亮提示用户认领。
  */
 function releaseDateRow(work) {
-  const dates = work.release_dates || {};
-  if (!dates.jp && !dates.cn) return "";
-  const parts = [];
-  if (dates.jp) parts.push(`日本上映 ${escapeHtml(formatShortDate(dates.jp))}`);
-  if (dates.cn) parts.push(`中国上映 ${escapeHtml(formatShortDate(dates.cn))}`);
-  else parts.push(`中国上映 <button type="button" class="text-action inline" data-action="edit-release-date-cn" data-testid="edit-release-date-cn">＋填写</button>`);
-  return `<div class="work-release-row" data-testid="work-release-row">${parts.join(" · ")}</div>`;
+  const { entries } = normalizeReleaseDates(work.release_dates);
+  const chips = entries.map((entry) => {
+    const unknown = entry.region === "unknown";
+    return `<button type="button" class="release-chip ${unknown ? "unclaimed" : ""}" data-action="edit-release-dates" data-testid="release-chip-${escapeHtml(entry.id)}">
+      <span class="release-chip-region">${escapeHtml(releaseRegionLabel(entry.region))}</span>
+      <span class="release-chip-date">${escapeHtml(formatShortDate(entry.date))}</span>
+      ${unknown ? `<span class="release-chip-hint">待认领</span>` : ""}
+    </button>`;
+  }).join("");
+  return `<div class="work-release-row" data-testid="work-release-row">
+    ${chips}
+    <button type="button" class="release-chip add" data-action="edit-release-dates" data-testid="edit-release-dates">＋ 上映日</button>
+  </div>`;
+}
+
+/** R5：一句话简介。抓取优先 → AI 兜底 → 手动可改，三种来源在 UI 上要能分辨。 */
+function taglineRow(work) {
+  const tagline = work.tagline;
+  if (!tagline?.text) {
+    return `<button type="button" class="work-tagline empty" data-action="edit-tagline" data-testid="edit-tagline">
+      <span class="work-tagline-placeholder">＋ 一句话简介</span>
+    </button>`;
+  }
+  return `<button type="button" class="work-tagline" data-action="edit-tagline" data-testid="edit-tagline">
+    <span class="work-tagline-text">${escapeHtml(tagline.text)}</span>
+    <span class="work-tagline-source">${escapeHtml(taglineSourceLabel(tagline.source))}</span>
+  </button>`;
+}
+
+/** R5：所属系列 + 系列内位置。点进去是系列页。 */
+function seriesRow(work) {
+  const series = findSeriesForWork(state.series, work.id);
+  if (!series) {
+    return `<button type="button" class="work-relation-row empty" data-action="edit-series" data-testid="edit-series">
+      <span class="work-relation-label">系列</span>
+      <span class="work-relation-value placeholder">＋ 归入一个系列</span>
+    </button>`;
+  }
+  const index = (series.member_ids || []).indexOf(work.id);
+  return `<div class="work-relation-row" data-testid="work-series-row">
+    <span class="work-relation-label">系列</span>
+    <button type="button" class="work-relation-value link" data-action="open-series" data-series-id="${escapeHtml(series.id)}" data-testid="open-series">
+      ${escapeHtml(series.title)}${index >= 0 ? `<span class="work-relation-index">第 ${index + 1} 部</span>` : ""}
+    </button>
+    <button type="button" class="icon-button small" data-action="edit-series" aria-label="编辑系列">${icon("edit")}</button>
+  </div>`;
+}
+
+/** R5：片单归属。一部作品可以同时在多个片单里，所以这里是一排 chip 而不是单值。 */
+function collectionsRow(work) {
+  const mine = collectionsForWork(state.collections, work.id);
+  const chips = mine.map((collection) => `<button type="button" class="collection-chip" data-action="open-collection" data-collection-id="${escapeHtml(collection.id)}" data-testid="work-collection-${escapeHtml(collection.id)}">${escapeHtml(collection.title)}</button>`).join("");
+  return `<div class="work-relation-row" data-testid="work-collections-row">
+    <span class="work-relation-label">片单</span>
+    <span class="work-collection-chips">${chips}<button type="button" class="collection-chip add" data-action="edit-collections" data-testid="edit-collections">＋ 加入片单</button></span>
+  </div>`;
 }
 
 function workHistoryRow(item, index) {
@@ -775,10 +870,15 @@ function renderWork() {
       <div class="work-info-col">
         <h1 class="work-title">《${escapeHtml(work.title || "未命名作品")}》</h1>
         ${workMetaLine(work)}
-        ${releaseDateRow(work)}
+        ${taglineRow(work)}
       </div>
     </div>
     <article class="work-content">
+      <section class="work-facts" data-testid="work-facts">
+        ${releaseDateRow(work)}
+        ${seriesRow(work)}
+        ${collectionsRow(work)}
+      </section>
       <section class="work-section" data-testid="work-history">
         <h2 class="work-section-title">观影履历</h2>
         ${view.history.length ? view.history.map((item, i) => workHistoryRow(item, i)).join("") : `<p class="work-section-empty">还没有观影场次</p>`}
@@ -786,6 +886,115 @@ function renderWork() {
       ${attitudeTimelineMarkup(view.attitudeTimeline)}
       ${impressionsListMarkup(view.impressions)}
       <button type="button" class="sheet-done work-supplement-button" data-action="open-supplement" data-testid="open-supplement">＋ 补充记录</button>
+    </article>
+  </main>`;
+}
+
+// ─── R5：系列页与片单页 ───────────────────────────────────────────────────────
+
+function workGridMarkup(works, emptyCopy) {
+  if (!works.length) return `<p class="shelf-empty">${escapeHtml(emptyCopy)}</p>`;
+  return `<section class="shelf-grid" aria-label="作品列表">${works.map((work) => `<button type="button" class="shelf-item" data-action="open-work" data-work-id="${escapeHtml(work.id)}">
+    <span class="shelf-poster-wrap">${shelfPosterMarkup(work)}</span>
+    <span class="shelf-item-title">${escapeHtml(work.title || "未命名作品")}</span>
+  </button>`).join("")}</section>`;
+}
+
+/**
+ * 系列页：系列内成员按手动顺序排列（可上下调整），下面是作品之间的关系连线。
+ * 关系全部由用户手动指定——抓取只提供"这两部有关联"的锚点，不猜具体关系类型。
+ */
+function renderSeries() {
+  const series = state.series.find((item) => item.id === state.currentSeriesId);
+  if (!series) return renderShelf();
+  const members = orderedSeriesMembers(series, state.works);
+  const titleById = new Map(state.works.map((work) => [work.id, work.title || "未命名作品"]));
+
+  const memberRows = members.map((work, index) => `<div class="series-member" data-testid="series-member-${escapeHtml(work.id)}">
+    <span class="series-member-index" aria-hidden="true">${index + 1}</span>
+    <button type="button" class="series-member-title" data-action="open-work" data-work-id="${escapeHtml(work.id)}">${escapeHtml(work.title || "未命名作品")}</button>
+    <span class="series-member-actions">
+      <button type="button" class="icon-button small" data-action="move-series-member" data-work-id="${escapeHtml(work.id)}" data-direction="up" aria-label="上移" ${index === 0 ? "disabled" : ""}>↑</button>
+      <button type="button" class="icon-button small" data-action="move-series-member" data-work-id="${escapeHtml(work.id)}" data-direction="down" aria-label="下移" ${index === members.length - 1 ? "disabled" : ""}>↓</button>
+    </span>
+  </div>`).join("");
+
+  const relationRows = (series.relations || []).map((rel) => `<div class="series-relation" data-testid="series-relation-${escapeHtml(rel.from_work_id)}-${escapeHtml(rel.to_work_id)}">
+    <span class="series-relation-copy">《${escapeHtml(titleById.get(rel.from_work_id) || rel.from_work_id)}》的${escapeHtml(seriesRelationLabel(rel.type))}是《${escapeHtml(titleById.get(rel.to_work_id) || rel.to_work_id)}》</span>
+    <button type="button" class="icon-button small" data-action="remove-series-relation" data-from="${escapeHtml(rel.from_work_id)}" data-to="${escapeHtml(rel.to_work_id)}" aria-label="删除这条关系">${icon("trash")}</button>
+  </div>`).join("");
+
+  const memberOptions = members.map((work) => `<option value="${escapeHtml(work.id)}">${escapeHtml(work.title || "未命名作品")}</option>`).join("");
+
+  return `<main class="series-view" data-testid="series">
+    <header class="detail-header">
+      <button class="icon-button" type="button" data-action="close-series" aria-label="返回" data-testid="series-back">${icon("back")}</button>
+      <h1 class="shelf-title">${escapeHtml(series.title)}</h1>
+      <span class="detail-header-actions"></span>
+    </header>
+    <article class="work-content">
+      <section class="work-section">
+        <h2 class="work-section-title">系列作品 · ${members.length} 部</h2>
+        <p class="settings-note">顺序由你手动排定——上映顺序、观看顺序、故事时间线顺序，取决于你想怎么看这个系列。</p>
+        <div class="series-members">${memberRows || `<p class="work-section-empty">这个系列还没有作品</p>`}</div>
+      </section>
+      <section class="work-section" data-testid="series-relations">
+        <h2 class="work-section-title">作品之间的关系</h2>
+        <p class="settings-note">Bangumi 的关联条目只作为锚点抓回来，具体是前作、外传还是平行世界，由你自己标注——自动解析这类关系很容易出错。</p>
+        <div class="series-relations">${relationRows || `<p class="work-section-empty">还没有标注任何关系</p>`}</div>
+        ${members.length >= 2 ? `<form id="series-relation-form" class="series-relation-form">
+          <label><span>作品</span><select name="fromWorkId">${memberOptions}</select></label>
+          <label><span>关系</span><select name="type">${SERIES_RELATION_TYPES.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></label>
+          <label><span>指向</span><select name="toWorkId">${memberOptions}</select></label>
+          <button class="sheet-done" type="submit" data-testid="add-series-relation">添加关系</button>
+        </form>` : `<p class="settings-note">系列里至少要有两部作品，才能标注它们之间的关系。</p>`}
+      </section>
+    </article>
+  </main>`;
+}
+
+/** 片单列表页（侧边栏入口）。 */
+function renderCollections() {
+  const rows = state.collections.map((collection) => `<button type="button" class="collection-row" data-action="open-collection" data-collection-id="${escapeHtml(collection.id)}" data-testid="collection-row-${escapeHtml(collection.id)}">
+    <span class="collection-row-main">
+      <b>${escapeHtml(collection.title)}</b>
+      ${collection.description ? `<small>${escapeHtml(collection.description)}</small>` : ""}
+    </span>
+    <span class="collection-row-count">${(collection.work_ids || []).length} 部</span>
+  </button>`).join("");
+
+  return `<main class="shelf-view" data-testid="collections">
+    <header class="detail-header">
+      <button class="icon-button" type="button" data-action="go-home" aria-label="返回时间线">${icon("back")}</button>
+      <h1 class="shelf-title">片单</h1>
+      <span class="detail-header-actions"></span>
+    </header>
+    <article class="work-content">
+      <p class="settings-note">片单是你自己定义的主题列表：想怎么归类都可以，和作品客观所属的「系列」互不影响。</p>
+      <div class="collection-rows">${rows || `<p class="work-section-empty">还没有片单，先建一个吧</p>`}</div>
+      <form id="collection-create-form">
+        <label><span>新建片单</span><input type="text" name="title" maxlength="60" placeholder="例如：重看过三次以上" data-testid="new-collection-input" required /></label>
+        <button class="sheet-done" type="submit">创建</button>
+      </form>
+    </article>
+  </main>`;
+}
+
+/** 片单详情页。 */
+function renderCollection() {
+  const collection = state.collections.find((item) => item.id === state.currentCollectionId);
+  if (!collection) return renderCollections();
+  const works = collectionWorks(collection, state.works);
+  return `<main class="shelf-view" data-testid="collection">
+    <header class="detail-header">
+      <button class="icon-button" type="button" data-action="open-collections" aria-label="返回片单列表" data-testid="collection-back">${icon("back")}</button>
+      <h1 class="shelf-title">${escapeHtml(collection.title)}</h1>
+      <span class="detail-header-actions">
+        <button class="icon-button" type="button" data-action="delete-collection" aria-label="删除这个片单" data-testid="delete-collection">${icon("trash")}</button>
+      </span>
+    </header>
+    <article class="work-content">
+      ${workGridMarkup(works, "这个片单还没有作品——到作品页点「＋ 加入片单」把它放进来")}
     </article>
   </main>`;
 }
@@ -1392,15 +1601,108 @@ function historyEventEditorOverlay(event) {
   </div>`;
 }
 
+/**
+ * R5：上映日编辑。每条都是「地区 + 日期」，可以有任意多条（同一部片在不同地区
+ * 上映日不同是常态）。抓取回来的条目地区是"未标注地区"，这里给一个下拉让用户认领。
+ */
 function releaseDateEditorOverlay(work) {
+  const { entries } = normalizeReleaseDates(work.release_dates);
+  const rows = entries.map((entry) => `<div class="release-row" data-testid="release-row-${escapeHtml(entry.id)}">
+    <select data-action="set-release-region" data-entry-id="${escapeHtml(entry.id)}" aria-label="上映地区">
+      ${RELEASE_REGIONS.map(([value, label]) => `<option value="${value}" ${entry.region === value ? "selected" : ""}>${label}</option>`).join("")}
+    </select>
+    <span class="release-row-date">${escapeHtml(formatShortDate(entry.date))}</span>
+    <button type="button" class="icon-button small" data-action="remove-release-date" data-entry-id="${escapeHtml(entry.id)}" aria-label="删除这条上映日">${icon("trash")}</button>
+  </div>`).join("");
+
   return `<div class="overlay" data-testid="release-date-editor">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
     <section class="bottom-sheet release-date-editor" role="dialog" aria-modal="true" aria-labelledby="release-date-title">
       <div class="sheet-handle" aria-hidden="true"></div>
-      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="release-date-title">中国上映日期</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
-      <form id="release-date-form">
-        <label><span>日期</span><input type="date" name="cnDate" value="${escapeHtml(work.release_dates?.cn || "")}" data-testid="release-date-cn-input" /></label>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="release-date-title">上映日期</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <p class="settings-note">从 Bangumi 抓回来的日期不带地区信息，会先记成「未标注地区」——它可能是日本上映日，也可能是中国上映日，需要你确认。</p>
+      <div class="release-rows">${rows || `<p class="work-section-empty">还没有记录上映日</p>`}</div>
+      <form id="release-date-form" class="release-add-form">
+        <label><span>新增日期</span><input type="date" name="date" required data-testid="release-date-input" /></label>
+        <label><span>地区</span>
+          <select name="region" data-testid="release-region-input">
+            ${RELEASE_REGIONS.map(([value, label]) => `<option value="${value}" ${value === "jp" ? "selected" : ""}>${label}</option>`).join("")}
+          </select>
+        </label>
+        <button class="sheet-done" type="submit">添加</button>
+      </form>
+    </section>
+  </div>`;
+}
+
+/** R5：一句话简介编辑。AI 概括是手动触发的按钮，不自动消耗额度。 */
+function taglineEditorOverlay(work) {
+  const tagline = work.tagline;
+  const aiReady = Boolean(state.aiPreference?.provider);
+  return `<div class="overlay" data-testid="tagline-editor">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet tagline-editor" role="dialog" aria-modal="true" aria-labelledby="tagline-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="tagline-title">一句话简介</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <p class="settings-note">最能代表这部作品的一句话——可以是官方介绍的开头，也可以是你自己的概括。</p>
+      <form id="tagline-form">
+        <label><span>正文</span><textarea name="text" rows="3" maxlength="120" data-testid="tagline-input" placeholder="例如：少女们签下契约，换取一个愿望">${escapeHtml(tagline?.text || "")}</textarea></label>
+        <div class="tagline-actions">
+          <button type="button" class="text-action" data-action="generate-tagline" ${aiReady && !state.taglineBusy ? "" : "disabled"} data-testid="generate-tagline">
+            ${state.taglineBusy ? "AI 概括中…" : "让 AI 概括一句"}
+          </button>
+          ${aiReady ? "" : `<span class="settings-note inline">未配置 AI，先在偏好设置里选一个服务商</span>`}
+        </div>
         <button class="sheet-done" type="submit">保存</button>
+      </form>
+    </section>
+  </div>`;
+}
+
+/**
+ * R5：系列编辑。系列是独立实体——这里既能把作品归入已有系列，也能新建一个。
+ * 关系（前作/续作/外传…）在系列页上连线，不在这里，避免这个面板变成大杂烩。
+ */
+function seriesEditorOverlay(work) {
+  const current = findSeriesForWork(state.series, work.id);
+  const options = state.series.map((series) => `<button type="button" class="series-option ${current?.id === series.id ? "selected" : ""}" data-action="assign-series" data-series-id="${escapeHtml(series.id)}" data-testid="assign-series-${escapeHtml(series.id)}">
+    <span class="series-option-title">${escapeHtml(series.title)}</span>
+    <span class="series-option-count">${(series.member_ids || []).length} 部</span>
+  </button>`).join("");
+
+  return `<div class="overlay" data-testid="series-editor">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet series-editor" role="dialog" aria-modal="true" aria-labelledby="series-editor-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="series-editor-title">归入系列</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      ${current ? `<button type="button" class="text-action danger" data-action="leave-series" data-testid="leave-series">移出《${escapeHtml(current.title)}》</button>` : ""}
+      <div class="series-options">${options || `<p class="work-section-empty">还没有任何系列</p>`}</div>
+      <form id="series-form">
+        <label><span>新建系列</span><input type="text" name="title" maxlength="60" placeholder="例如：蜘蛛侠" data-testid="series-title-input" /></label>
+        <button class="sheet-done" type="submit">新建并归入</button>
+      </form>
+    </section>
+  </div>`;
+}
+
+/** R5：片单归属编辑。多选——一部作品可以同时属于多个片单。 */
+function collectionsEditorOverlay(work) {
+  const mine = new Set(collectionsForWork(state.collections, work.id).map((item) => item.id));
+  const options = state.collections.map((collection) => `<button type="button" class="series-option ${mine.has(collection.id) ? "selected" : ""}" data-action="toggle-collection" data-collection-id="${escapeHtml(collection.id)}" data-testid="toggle-collection-${escapeHtml(collection.id)}">
+    <span class="series-option-title">${escapeHtml(collection.title)}</span>
+    <span class="series-option-count">${(collection.work_ids || []).length} 部</span>
+  </button>`).join("");
+
+  return `<div class="overlay" data-testid="collections-editor">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet series-editor" role="dialog" aria-modal="true" aria-labelledby="collections-editor-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="collections-editor-title">加入片单</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <p class="settings-note">片单是你自己定义的主题列表——和「系列」不同，它不描述作品客观上的归属，只描述你想怎么把它们放在一起。</p>
+      <div class="series-options">${options || `<p class="work-section-empty">还没有任何片单</p>`}</div>
+      <form id="collection-form">
+        <label><span>新建片单</span><input type="text" name="title" maxlength="60" placeholder="例如：一个人在影院哭过的" data-testid="collection-title-input" /></label>
+        <button class="sheet-done" type="submit">新建并加入</button>
       </form>
     </section>
   </div>`;
@@ -1410,6 +1712,9 @@ function render() {
   const base = state.view === "detail" ? renderDetail()
     : state.view === "shelf" ? renderShelf()
     : state.view === "work" ? renderWork()
+    : state.view === "series" ? renderSeries()
+    : state.view === "collections" ? renderCollections()
+    : state.view === "collection" ? renderCollection()
     : renderHome();
   const record = currentRecord();
   const currentWorkForOverlay = state.view === "work" ? findWorkById(state.works, state.currentWorkId) : null;
@@ -1438,10 +1743,16 @@ function render() {
         ? impressionEditorOverlay(record)
       : state.overlay === "history-event" && editingHistoryEvent
         ? historyEventEditorOverlay(editingHistoryEvent)
-      : state.overlay === "release-date-cn" && currentWorkForOverlay
+      : state.overlay === "release-dates" && currentWorkForOverlay
         ? releaseDateEditorOverlay(currentWorkForOverlay)
       : state.overlay === "work-type" && currentWorkForOverlay
         ? workTypeEditorOverlay(currentWorkForOverlay)
+      : state.overlay === "tagline" && currentWorkForOverlay
+        ? taglineEditorOverlay(currentWorkForOverlay)
+      : state.overlay === "series" && currentWorkForOverlay
+        ? seriesEditorOverlay(currentWorkForOverlay)
+      : state.overlay === "collections" && currentWorkForOverlay
+        ? collectionsEditorOverlay(currentWorkForOverlay)
         : "";
   app.innerHTML = `${base}${overlay}`;
   document.body.classList.toggle("overlay-open", Boolean(state.overlay));
@@ -1754,7 +2065,10 @@ async function confirmWorkMatch(subjectId) {
     title: candidate.title,
     originalTitle: candidate.originalTitle,
     type: candidate.type,
-    releaseDate: candidate.releaseDate
+    releaseDate: candidate.releaseDate,
+    // R5：Bangumi 的 summary 用来抽"一句话简介"的首句；抽不出（太长/没有）时
+    // tagline 会留空，由用户在作品页手写或点「让 AI 概括一句」。
+    summary: candidate.summary || null
   });
   const oldId = work.id;
   const conflictingWork = promoted.id !== oldId
@@ -2036,6 +2350,51 @@ function closeWork() {
   requestAnimationFrame(() => scrollTo({ top: state.shelfScrollY, behavior: "instant" }));
 }
 
+// R5：系列页与片单页的进出。这三个视图不参与 R4 的 detail←work←shelf←home 返回栈
+// （那条栈描述的是"记录"这条主线），它们是资料侧的旁支，各自记住自己从哪来即可。
+
+function openSeries(seriesId) {
+  if (!seriesId) return;
+  state.seriesReturnView = state.view;
+  state.workScrollY = state.view === "work" ? scrollY : state.workScrollY;
+  state.currentSeriesId = seriesId;
+  state.view = "series";
+  state.overlay = null;
+  history.pushState({ view: "series", seriesId }, "", `#series=${encodeURIComponent(seriesId)}`);
+  render();
+  scrollTo(0, 0);
+}
+
+function closeSeries() {
+  if (state.seriesReturnView === "work" && state.currentWorkId) {
+    state.view = "work";
+    history.pushState({ view: "work", workId: state.currentWorkId }, "", `#work=${encodeURIComponent(state.currentWorkId)}`);
+    render();
+    requestAnimationFrame(() => scrollTo({ top: state.workScrollY, behavior: "instant" }));
+    return;
+  }
+  openShelf();
+}
+
+function openCollections() {
+  state.view = "collections";
+  state.overlay = null;
+  state.currentCollectionId = null;
+  history.pushState({ view: "collections" }, "", "#collections");
+  render();
+  scrollTo(0, 0);
+}
+
+function openCollection(collectionId) {
+  if (!collectionId) return;
+  state.currentCollectionId = collectionId;
+  state.view = "collection";
+  state.overlay = null;
+  history.pushState({ view: "collection", collectionId }, "", `#collection=${encodeURIComponent(collectionId)}`);
+  render();
+  scrollTo(0, 0);
+}
+
 /**
  * R4：编辑一条 ViewingEvent 后，对该 work 的全部事件重跑初看/重看推定并整体回写——
  * 不能只改这一场，否则补录/改时间后其余场次的编号会错位（见 R1 的 assignViewingRelations）。
@@ -2107,12 +2466,138 @@ async function saveHistoryEventForm(form) {
   announce("这次观影已更新");
 }
 
-async function updateCurrentWorkReleaseDateCn(cnDate) {
+// ─── R5：作品资料 / 系列 / 片单的读写 ─────────────────────────────────────────
+
+/** 对当前作品做一次不可变更新并落库。所有 R5 的作品资料编辑都走这一个出口。 */
+async function updateCurrentWork(mutate) {
   const work = findWorkById(state.works, state.currentWorkId);
-  if (!work) return;
-  const updated = { ...work, release_dates: { jp: null, cn: null, other: [], ...work.release_dates, cn: cnDate } };
+  if (!work) return null;
+  const updated = mutate(work);
+  if (!updated) return null;
   await db.put("works", updated);
   state.works = state.works.map((item) => (item.id === updated.id ? updated : item));
+  state.worksById.set(updated.id, updated);
+  return updated;
+}
+
+/** 同上，作用于系列页当前系列。 */
+async function updateCurrentSeries(mutate) {
+  const series = state.series.find((item) => item.id === state.currentSeriesId);
+  if (!series) return null;
+  const updated = mutate(series);
+  if (!updated) return null;
+  await db.put("series", updated);
+  state.series = state.series.map((item) => (item.id === updated.id ? updated : item));
+  return updated;
+}
+
+async function persistSeries(series) {
+  await db.put("series", series);
+  const exists = state.series.some((item) => item.id === series.id);
+  state.series = exists
+    ? state.series.map((item) => (item.id === series.id ? series : item))
+    : [...state.series, series];
+}
+
+async function persistCollection(collection) {
+  await db.put("collections", collection);
+  const exists = state.collections.some((item) => item.id === collection.id);
+  state.collections = exists
+    ? state.collections.map((item) => (item.id === collection.id ? collection : item))
+    : [...state.collections, collection];
+}
+
+/**
+ * 归入系列。一部作品只能属于一个系列，所以先从原系列移出再加入新系列——
+ * 否则同一部作品会同时出现在两个系列的成员表里，顺序与关系都会失去意义。
+ */
+async function assignWorkToSeries(seriesId) {
+  const workId = state.currentWorkId;
+  const target = state.series.find((item) => item.id === seriesId);
+  if (!workId || !target) return;
+  const previous = findSeriesForWork(state.series, workId);
+  if (previous && previous.id !== target.id) await persistSeries(removeWorkFromSeries(previous, workId));
+  await persistSeries(addWorkToSeries(target, workId));
+  state.overlay = null;
+  renderPreservingScroll();
+  announce(`已归入《${target.title}》`);
+}
+
+async function leaveCurrentSeries() {
+  const workId = state.currentWorkId;
+  const previous = workId ? findSeriesForWork(state.series, workId) : null;
+  if (!previous) return;
+  await persistSeries(removeWorkFromSeries(previous, workId));
+  state.overlay = null;
+  renderPreservingScroll();
+  announce(`已移出《${previous.title}》`);
+}
+
+async function moveSeriesMember(workId, direction) {
+  const series = state.series.find((item) => item.id === state.currentSeriesId);
+  if (!series || !workId) return;
+  const index = (series.member_ids || []).indexOf(workId);
+  if (index === -1) return;
+  await updateCurrentSeries((current) => moveWorkInSeries(current, workId, index + (direction === "up" ? -1 : 1)));
+  renderPreservingScroll();
+}
+
+async function toggleWorkInCollection(collectionId) {
+  const workId = state.currentWorkId;
+  const collection = state.collections.find((item) => item.id === collectionId);
+  if (!workId || !collection) return;
+  const isIn = (collection.work_ids || []).includes(workId);
+  await persistCollection(isIn ? removeWorkFromCollection(collection, workId) : addWorkToCollection(collection, workId));
+  renderPreservingScroll();
+  announce(isIn ? `已移出《${collection.title}》` : `已加入《${collection.title}》`);
+}
+
+async function deleteCurrentCollection() {
+  const collection = state.collections.find((item) => item.id === state.currentCollectionId);
+  if (!collection) return;
+  await db.delete("collections", collection.id);
+  state.collections = state.collections.filter((item) => item.id !== collection.id);
+  openCollections();
+  announce(`已删除片单《${collection.title}》`);
+}
+
+/**
+ * 让 AI 把作品简介压成一句话。手动触发——不在匹配作品时自动跑，避免每匹配一部
+ * 电影就静默消耗一次 AI 额度。失败时保留用户已经输入的内容，只提示，不清空。
+ */
+async function generateTaglineWithAi() {
+  const work = findWorkById(state.works, state.currentWorkId);
+  if (!work || state.taglineBusy) return;
+  state.taglineBusy = true;
+  render();
+  try {
+    const response = await apiFetch("/api/ai/tagline", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: state.aiPreference?.provider || null,
+        title: work.title,
+        originalTitle: work.original_title,
+        year: releaseYearOf(work)
+      })
+    });
+    if (!response.ok) throw new Error(`tagline_${response.status}`);
+    const payload = await response.json();
+    const text = String(payload?.tagline || "").trim();
+    if (!text) throw new Error("tagline_empty");
+    state.taglineBusy = false;
+    render();
+    // render() 之后才填输入框——AI 结果只是"填进草稿框"，不直接落库，
+    // 用户看过、点了保存才算数（和 App 里其余 AI 产出的处理方式一致）。
+    const input = document.querySelector("[data-testid='tagline-input']");
+    if (input) { input.value = text; input.focus(); }
+    announce("AI 已给出一句话，确认后记得保存");
+  } catch (error) {
+    state.taglineBusy = false;
+    render();
+    announce("AI 概括失败，可以自己写一句");
+    console.error("[tagline]", error);
+  }
 }
 
 /** 用户手动选择作品类型——不影响任何一次具体观影的"特别场次"标签，两者是独立维度。 */
@@ -2186,9 +2671,49 @@ app.addEventListener("click", async (event) => {
   } else if (action === "keep-relation-choice") {
     // 默认本就保持用户的选择——这里不改任何数据，只是给一个明确的反馈。
     announce("已保持你的选择");
-  } else if (action === "edit-release-date-cn") {
-    state.overlay = "release-date-cn";
+  } else if (action === "edit-release-dates") {
+    state.overlay = "release-dates";
     render();
+  } else if (action === "remove-release-date") {
+    await updateCurrentWork((work) => ({
+      ...work,
+      release_dates: removeReleaseDate(work.release_dates, trigger.dataset.entryId)
+    }));
+    render();
+    announce("已删除这条上映日");
+  } else if (action === "edit-tagline") {
+    state.overlay = "tagline";
+    render();
+  } else if (action === "generate-tagline") {
+    await generateTaglineWithAi();
+  } else if (action === "edit-series") {
+    state.overlay = "series";
+    render();
+  } else if (action === "assign-series") {
+    await assignWorkToSeries(trigger.dataset.seriesId);
+  } else if (action === "leave-series") {
+    await leaveCurrentSeries();
+  } else if (action === "open-series") {
+    openSeries(trigger.dataset.seriesId);
+  } else if (action === "close-series") {
+    closeSeries();
+  } else if (action === "move-series-member") {
+    await moveSeriesMember(trigger.dataset.workId, trigger.dataset.direction);
+  } else if (action === "remove-series-relation") {
+    await updateCurrentSeries((series) => removeSeriesRelation(series, trigger.dataset.from, trigger.dataset.to));
+    renderPreservingScroll();
+    announce("已删除这条关系");
+  } else if (action === "edit-collections") {
+    state.overlay = "collections";
+    render();
+  } else if (action === "toggle-collection") {
+    await toggleWorkInCollection(trigger.dataset.collectionId);
+  } else if (action === "open-collections") {
+    openCollections();
+  } else if (action === "open-collection") {
+    openCollection(trigger.dataset.collectionId);
+  } else if (action === "delete-collection") {
+    await deleteCurrentCollection();
   } else if (action === "edit-work-type") {
     state.overlay = "work-type";
     render();
@@ -2729,6 +3254,17 @@ app.addEventListener("change", async (event) => {
     // 直接切换字段可见性，不走 render()——避免清空用户已经在其他输入框里打的字。
     const cinemaFields = document.querySelector("[data-testid='history-cinema-fields']");
     if (cinemaFields) cinemaFields.hidden = event.target.value !== "cinema";
+  } else if (event.target.dataset.action === "set-release-region") {
+    // R5：认领某条上映日的地区。这是 <select> 的 change，不是 click，
+    // 所以走这里而不是上面的点击分发。
+    const entryId = event.target.dataset.entryId;
+    const region = event.target.value;
+    await updateCurrentWork((work) => ({
+      ...work,
+      release_dates: setReleaseDateRegion(work.release_dates, entryId, region)
+    }));
+    render();
+    announce(`已标注为${releaseRegionLabel(region)}上映`);
   }
 });
 
@@ -2786,11 +3322,72 @@ app.addEventListener("submit", async (event) => {
   if (event.target.id === "release-date-form") {
     event.preventDefault();
     const data = new FormData(event.target);
-    const cnDate = String(data.get("cnDate") || "").trim() || null;
-    await updateCurrentWorkReleaseDateCn(cnDate);
+    const date = String(data.get("date") || "").trim();
+    const region = String(data.get("region") || "unknown");
+    if (!date) return;
+    await updateCurrentWork((work) => ({
+      ...work,
+      release_dates: addReleaseDate(work.release_dates, { region, date, source: "manual" })
+    }));
+    render();
+    announce(`已添加${releaseRegionLabel(region)}上映日`);
+    return;
+  }
+
+  if (event.target.id === "tagline-form") {
+    event.preventDefault();
+    const text = String(new FormData(event.target).get("text") || "").trim();
+    await updateCurrentWork((work) => ({ ...work, tagline: buildTagline(text, "manual") }));
     state.overlay = null;
     renderPreservingScroll();
-    announce(cnDate ? "已保存中国上映日期" : "已清空中国上映日期");
+    announce(text ? "已保存一句话简介" : "已清空一句话简介");
+    return;
+  }
+
+  if (event.target.id === "series-form") {
+    event.preventDefault();
+    const title = String(new FormData(event.target).get("title") || "").trim();
+    if (!title || !state.currentWorkId) return;
+    // 同名系列直接复用，不重复创建——seriesIdFor 是按标题算的稳定 id
+    const existing = state.series.find((item) => item.title === title);
+    const series = existing || createSeries({ title });
+    if (!existing) await persistSeries(series);
+    await assignWorkToSeries(series.id);
+    return;
+  }
+
+  if (event.target.id === "collection-form") {
+    event.preventDefault();
+    const title = String(new FormData(event.target).get("title") || "").trim();
+    if (!title || !state.currentWorkId) return;
+    const collection = addWorkToCollection(createCollection({ title }), state.currentWorkId);
+    await persistCollection(collection);
+    renderPreservingScroll();
+    announce(`已新建片单《${title}》并加入`);
+    return;
+  }
+
+  if (event.target.id === "collection-create-form") {
+    event.preventDefault();
+    const title = String(new FormData(event.target).get("title") || "").trim();
+    if (!title) return;
+    const collection = createCollection({ title });
+    await persistCollection(collection);
+    render();
+    announce(`已新建片单《${title}》`);
+    return;
+  }
+
+  if (event.target.id === "series-relation-form") {
+    event.preventDefault();
+    const data = new FormData(event.target);
+    const fromWorkId = String(data.get("fromWorkId") || "");
+    const toWorkId = String(data.get("toWorkId") || "");
+    const type = String(data.get("type") || "other");
+    if (fromWorkId === toWorkId) { announce("不能把一部作品关联到它自己"); return; }
+    await updateCurrentSeries((series) => setSeriesRelation(series, { fromWorkId, toWorkId, type }));
+    renderPreservingScroll();
+    announce("已添加关系");
   }
 });
 
@@ -2860,6 +3457,44 @@ window.addEventListener("popstate", (event) => {
     void loadWorkEventsFor(workId);
     return;
   }
+  // R5：系列页 / 片单列表 / 片单详情。指向已删除实体的旧链接一律安全降级，
+  // 不留"画面是 A、state.view 却是 B"的不一致状态（沿用 #work= 那条的处理方式）。
+  if (hash.startsWith("#series=")) {
+    const seriesId = decodeURIComponent(hash.slice(8));
+    if (state.series.some((item) => item.id === seriesId)) {
+      state.view = "series";
+      state.currentSeriesId = seriesId;
+      render();
+      scrollTo(0, 0);
+      return;
+    }
+    state.view = "shelf";
+    history.replaceState({ view: "shelf" }, "", "#shelf");
+    render();
+    return;
+  }
+  if (hash === "#collections") {
+    state.view = "collections";
+    state.currentCollectionId = null;
+    render();
+    scrollTo(0, 0);
+    return;
+  }
+  if (hash.startsWith("#collection=")) {
+    const collectionId = decodeURIComponent(hash.slice(12));
+    if (state.collections.some((item) => item.id === collectionId)) {
+      state.view = "collection";
+      state.currentCollectionId = collectionId;
+      render();
+      scrollTo(0, 0);
+      return;
+    }
+    state.view = "collections";
+    state.currentCollectionId = null;
+    history.replaceState({ view: "collections" }, "", "#collections");
+    render();
+    return;
+  }
   state.view = "home";
   state.activeRecordId = null;
   state.currentWorkId = null;
@@ -2905,103 +3540,175 @@ document.addEventListener("focusout", () => setTimeout(updateVisualViewport, 180
 // 用户原话"我是安卓手机，一切要以安卓的交互理念为先"。这里把开/关两个方向的手势
 // 合到一组 touchstart/touchmove/touchend 里，跟手拖动 + 松手按位移阈值判定，
 // 不接入动画库，和这个项目里其余交互的实现规模一致。
-const SIDEBAR_EDGE_ZONE_PX = 24; // 触点落在屏幕左边缘这个范围内，才可能是"打开"手势
-const SIDEBAR_OPEN_ARM_PX = 12; // 边缘触点要先滑动这么多才确认是"打开"而不是误触/纵向滚动
+const SIDEBAR_EDGE_ZONE_PX = 28; // 触点落在屏幕左边缘这个范围内，才可能是"打开"手势
+const SIDEBAR_OPEN_ARM_PX = 10; // 边缘触点要先横滑这么多才确认是"打开"而不是误触/纵向滚动
 const SIDEBAR_OPEN_COMMIT_RATIO = 0.35; // 打开手势：松手时超过抽屉宽度这个比例才算打开
 const SIDEBAR_CLOSE_COMMIT_PX = 80; // 关闭手势：已经打开时，右滑超过这个像素才算关闭
 
-let sidebarGesture = null; // { mode: "opening" | "closing", startX, lastX, width, armed }
+// mode: "opening" | "closing"；armed: 是否已确认为侧边栏手势（opening 才需要"确认"这一步）
+let sidebarGesture = null;
+
+const gestureLayer = document.querySelector("#gesture-layer");
 
 function sidebarDrawerEl() {
   return document.querySelector("[data-testid='sidebar-drawer']");
+}
+
+/** 清空手势临时层。手势取消或提交给真正的 render() 之前都要先调用，避免出现两个抽屉。 */
+function clearGestureLayer() {
+  if (gestureLayer) gestureLayer.innerHTML = "";
 }
 
 /** 侧边栏收起动画：先让抽屉滑回屏幕外，动画结束后再真正从 DOM 里移除。 */
 function closeSidebarAnimated() {
   const drawer = sidebarDrawerEl();
   if (!drawer) {
+    clearGestureLayer();
     state.overlay = null;
     render();
     return;
   }
+  drawer.style.animation = "none"; // 关的过程中不要让入场动画再插一脚
   drawer.style.transition = "";
   drawer.style.transform = "translateX(-100%)";
+  const overlayEl = drawer.closest(".overlay");
+  if (overlayEl) overlayEl.style.setProperty("--scrim-progress", "0");
   setTimeout(() => {
+    clearGestureLayer();
     state.overlay = null;
     render();
   }, 200);
 }
 
+/** 手势进行中，抽屉与遮罩的视觉进度（0 = 完全收起，1 = 完全展开）。 */
+function paintSidebarProgress(drawer, progress) {
+  const clamped = Math.min(1, Math.max(0, progress));
+  drawer.style.transition = "none";
+  drawer.style.transform = `translateX(${(clamped - 1) * 100}%)`;
+  const overlayEl = drawer.closest(".overlay");
+  if (overlayEl) overlayEl.style.setProperty("--scrim-progress", String(clamped));
+}
+
 document.addEventListener("touchstart", (event) => {
+  sidebarGesture = null;
+  if (event.touches.length !== 1) return;
   const touch = event.touches[0];
+
+  // 已经打开的抽屉：拖它本身 = 关闭手势。此时抽屉在 #app 里，但关闭方向
+  // 全程不需要 render()，touchstart 的目标（抽屉自己）不会被销毁，安全。
   if (event.target.closest("[data-testid='sidebar-drawer']")) {
     const drawer = sidebarDrawerEl();
-    sidebarGesture = { mode: "closing", startX: touch.clientX, lastX: touch.clientX, width: drawer?.getBoundingClientRect().width || 320, armed: true };
+    sidebarGesture = {
+      mode: "closing",
+      startX: touch.clientX,
+      startY: touch.clientY,
+      lastX: touch.clientX,
+      width: drawer?.getBoundingClientRect().width || 320,
+      armed: true
+    };
     return;
   }
+
   if (state.overlay === null && touch.clientX <= SIDEBAR_EDGE_ZONE_PX) {
-    sidebarGesture = { mode: "opening", startX: touch.clientX, lastX: touch.clientX, width: 320, armed: false };
+    sidebarGesture = {
+      mode: "opening",
+      startX: touch.clientX,
+      startY: touch.clientY,
+      lastX: touch.clientX,
+      width: 320,
+      armed: false
+    };
   }
 }, { passive: true });
 
+// 这个 touchmove 必须是非 passive 的：手势确认之后要 preventDefault()，
+// 否则 Chrome 会同时把这一滑当成"页面纵向滚动"或它自己的边缘返回手势，
+// 抽屉会一边跟手一边被浏览器抢走。未命中手势时第一行就 return，不影响滚动性能。
 document.addEventListener("touchmove", (event) => {
   if (!sidebarGesture) return;
   const touch = event.touches[0];
   sidebarGesture.lastX = touch.clientX;
   const deltaX = touch.clientX - sidebarGesture.startX;
+  const deltaY = touch.clientY - sidebarGesture.startY;
 
-  if (sidebarGesture.mode === "opening") {
-    if (!sidebarGesture.armed) {
-      if (deltaX < SIDEBAR_OPEN_ARM_PX) return; // 还没滑够，可能只是竖向滚动，先不动手
-      sidebarGesture.armed = true;
-      state.overlay = "sidebar";
-      render();
-      const drawer = sidebarDrawerEl();
-      if (!drawer) { sidebarGesture = null; return; }
-      sidebarGesture.width = drawer.getBoundingClientRect().width || sidebarGesture.width;
-      drawer.style.transition = "none";
-    }
+  if (sidebarGesture.mode === "opening" && !sidebarGesture.armed) {
+    // 纵向位移更大 → 用户是在竖着滚页面，直接放弃这次手势，别跟页面抢
+    if (Math.abs(deltaY) > Math.abs(deltaX)) { sidebarGesture = null; return; }
+    if (deltaX < SIDEBAR_OPEN_ARM_PX) return;
+
+    sidebarGesture.armed = true;
+    // 关键：这里绝不能 render()。把抽屉塞进 #app 之外的常驻手势层，
+    // touchstart 的目标元素因此不会被销毁，后续事件能继续冒泡到 document。
+    if (!gestureLayer) { sidebarGesture = null; return; }
+    gestureLayer.innerHTML = sidebarDrawer();
+    document.body.classList.add("overlay-open");
     const drawer = sidebarDrawerEl();
-    if (!drawer) return;
-    const offset = Math.min(0, Math.max(-sidebarGesture.width, deltaX - sidebarGesture.width));
-    drawer.style.transform = `translateX(${offset}px)`;
-    return;
+    if (!drawer) { sidebarGesture = null; clearGestureLayer(); return; }
+    drawer.style.animation = "none"; // 关掉入场动画，改由手指驱动
+    sidebarGesture.width = drawer.getBoundingClientRect().width || sidebarGesture.width;
   }
 
   const drawer = sidebarDrawerEl();
   if (!drawer) return;
-  const offset = Math.max(0, deltaX);
-  drawer.style.transition = "none";
-  drawer.style.transform = `translateX(${offset}px)`;
-}, { passive: true });
+  event.preventDefault();
 
-document.addEventListener("touchend", () => {
+  if (sidebarGesture.mode === "opening") {
+    paintSidebarProgress(drawer, deltaX / sidebarGesture.width);
+  } else {
+    paintSidebarProgress(drawer, 1 - Math.max(0, deltaX) / sidebarGesture.width);
+  }
+}, { passive: false });
+
+function finishSidebarGesture(cancelled = false) {
   if (!sidebarGesture) return;
   const gesture = sidebarGesture;
   sidebarGesture = null;
   const drawer = sidebarDrawerEl();
+  if (!gesture.armed || !drawer) return;
+
+  const deltaX = gesture.lastX - gesture.startX;
+  // 注意：这里只恢复 transition，绝不恢复 animation。手势期间抽屉被设成
+  // animation:none 由手指驱动，若在这里把 drawer-in 入场动画放回去，松手瞬间
+  // 会从屏幕外重播一遍，看起来像"弹回去又滑出来"。
+  drawer.style.transition = "";
+  const overlayEl = drawer.closest(".overlay");
 
   if (gesture.mode === "opening") {
-    if (!gesture.armed || !drawer) return; // 没滑够识别阈值，什么都没发生
-    const deltaX = gesture.lastX - gesture.startX;
-    drawer.style.transition = "";
-    if (deltaX >= gesture.width * SIDEBAR_OPEN_COMMIT_RATIO) {
-      drawer.style.transform = "";
+    const committed = !cancelled && deltaX >= gesture.width * SIDEBAR_OPEN_COMMIT_RATIO;
+    if (committed) {
+      // 提交：现在才切状态并 render()。此时手指已经离开，重建 DOM 不会打断任何事件序列。
+      clearGestureLayer();
+      state.overlay = "sidebar";
+      render();
+      // 新渲染出来的抽屉同样要压掉入场动画——它在视觉上已经接近全开，
+      // 再从 -100% 播一遍就是明显的倒退跳帧。
+      const fresh = sidebarDrawerEl();
+      if (fresh) {
+        fresh.style.animation = "none";
+        requestAnimationFrame(() => { fresh.style.animation = ""; });
+      }
     } else {
-      closeSidebarAnimated();
+      drawer.style.transform = "translateX(-100%)";
+      if (overlayEl) overlayEl.style.setProperty("--scrim-progress", "0");
+      setTimeout(() => {
+        clearGestureLayer();
+        document.body.classList.toggle("overlay-open", Boolean(state.overlay));
+      }, 200);
     }
     return;
   }
 
-  if (!drawer) return;
-  const deltaX = Math.max(0, gesture.lastX - gesture.startX);
-  drawer.style.transition = "";
-  if (deltaX > SIDEBAR_CLOSE_COMMIT_PX) {
+  if (!cancelled && Math.max(0, deltaX) > SIDEBAR_CLOSE_COMMIT_PX) {
     closeSidebarAnimated();
   } else {
     drawer.style.transform = "";
+    if (overlayEl) overlayEl.style.removeProperty("--scrim-progress");
   }
-});
+}
+
+document.addEventListener("touchend", () => finishSidebarGesture(false));
+// 系统/浏览器抢走触摸序列时（来电、手势冲突等）要有兜底，否则抽屉会停在半开状态
+document.addEventListener("touchcancel", () => finishSidebarGesture(true));
 window.addEventListener("pagehide", () => {
   const input = document.querySelector("#composer-input");
   if (input) {

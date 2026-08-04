@@ -73,8 +73,14 @@ function posterMarkup(work, record, { buildPosterUrl } = {}) {
   </div>`;
 }
 
+/**
+ * 态度标签。用户反馈：原来五种态度共用同一套配色，"喜欢"和"不喜欢"长得一模一样，
+ * 完全看不出差别。现在按态度输出 `attitude-<key>` 类，由 CSS 给每种态度配独立的
+ * 底色/文字色/圆点样式——和制式徽章一样，扫一眼就能分辨，而不是必须读文字。
+ */
 function attitudeTagMarkup(record) {
-  return `<span class="record-attitude-tag ${record.attitude ? "selected" : "empty"}">${escapeHtml(attitudeLabel(record.attitude))}</span>`;
+  const key = record.attitude || "empty";
+  return `<span class="record-attitude-tag ${record.attitude ? "selected" : "empty"} attitude-${escapeHtml(key)}" data-attitude="${escapeHtml(key)}">${escapeHtml(attitudeLabel(record.attitude))}</span>`;
 }
 
 export function badgeChipMarkup(badge) {

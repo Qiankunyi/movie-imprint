@@ -231,6 +231,75 @@ export async function requestAiAnalysis({ provider, title, rawText, env = proces
   };
 }
 
+// R5：一句话简介。这是全项目里唯一一处 AI 直接产出"介绍作品"的文字——和 App 的
+// 核心红线（AI 先帮用户整理记忆素材，而不是替用户写影评）不冲突：它写的是客观作品
+// 简介，不碰用户的感想，也永远不会自动落库，必须用户确认后手动保存。
+const AI_TAGLINE_PROMPT = [
+  "你在为一个私人观影记录 App 生成电影的「一句话简介」。",
+  "要求：",
+  "1. 只输出一句话，不超过 40 个汉字，不加书名号、不加句号以外的标点堆砌。",
+  "2. 描述这部作品「讲了什么」或「是什么样的作品」，写客观介绍，不写评价、不写推荐语、不剧透结局。",
+  "3. 不要复述片名，不要用「这部电影讲述了」这类套话开头。",
+  "4. 如果你并不确切知道这部作品，把 tagline 留空字符串，不要编造剧情。"
+].join("\n");
+
+const AI_TAGLINE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["tagline"],
+  properties: {
+    tagline: { type: "string", description: "一句话简介；不确定这部作品时返回空字符串" }
+  }
+};
+
+/**
+ * 生成一句话简介。不接受用户感想原文作为输入——这里要的是作品客观介绍，
+ * 把用户的私人记录发出去既没必要也不合适。
+ */
+export async function requestAiTagline({ provider, title, originalTitle = null, year = null, env = process.env, fetchImpl = fetch }) {
+  if (typeof title !== "string" || !title.trim()) throw new Error("invalid_ai_input");
+  const selected = provider || listAiProviders(env).active;
+  const config = providerConfig(selected, env);
+  const startedAt = Date.now();
+  const input = { title, rawText: title };
+  const options = {
+    systemPrompt: AI_TAGLINE_PROMPT,
+    schema: AI_TAGLINE_SCHEMA,
+    schemaName: "movie_imprint_tagline",
+    toolName: "submit_tagline",
+    toolDescription: "提交这部作品的一句话简介",
+    inputText: JSON.stringify({ title, original_title: originalTitle, release_year: year })
+  };
+  const result = selected === "gemini"
+    ? await callGemini(config, input, fetchImpl, options)
+    : selected === "openai"
+      ? await callOpenAi(config, input, fetchImpl, options)
+      : selected === "anthropic"
+        ? await callAnthropic(config, input, fetchImpl, options)
+        : await callOpenAiCompatible(config, input, fetchImpl, selected, options);
+
+  let tagline = "";
+  try {
+    tagline = String(JSON.parse(result.text || "{}")?.tagline || "").trim();
+  } catch {
+    throw new Error("invalid_ai_output");
+  }
+  // 超长就当没拿到——宁可让用户自己写，也不给一句被截断的半截话
+  if (tagline.length > 60) tagline = "";
+
+  return {
+    tagline,
+    metadata: {
+      provider: selected,
+      model: config.model,
+      prompt_version: AI_PROMPT_VERSION,
+      schema_version: "0.1-tagline",
+      duration_ms: Date.now() - startedAt,
+      usage: result.usage
+    }
+  };
+}
+
 export async function requestAiRecommendation({ provider, title, rawText, recommendation, presets = [], env = process.env, fetchImpl = fetch }) {
   if (typeof rawText !== "string" || !rawText.trim() || rawText.length > 20000) throw new Error("invalid_ai_input");
   if (!new Set(["yes", "depends", "no"]).has(recommendation)) throw new Error("invalid_recommendation_choice");

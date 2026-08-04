@@ -114,8 +114,10 @@ test("每条本地记录先获得稳定作品身份且保留匹配别名", () =>
     work_type: "unspecified",
     aliases: ["哆啦A梦/大雄与动物行星", "大雄与动物行星"],
     release_year: null,
-    release_dates: { jp: null, cn: null, other: [] },
+    release_dates: { jp: null, cn: null, other: [], entries: [] },
     external_refs: [],
+    related_refs: [],
+    tagline: null,
     identity_status: "local_only",
     poster_subject_id: null,
     merged_from: [],
@@ -221,7 +223,7 @@ test("resolveWork：全不命中则新建，且同一标题连续三次 resolve 
 
 // ─── R1：promoteWorkToMatched ─────────────────────────────────────────────────
 
-test("promoteWorkToMatched：id 变更、merged_from 记录、aliases 合并，release_dates.jp 与 release_year 一致", () => {
+test("promoteWorkToMatched：id 变更、merged_from 记录、aliases 合并，上映日按未标注地区落库", () => {
   const local = createLocalWork({
     id: "record_1",
     workId: "work_local_abc",
@@ -240,14 +242,19 @@ test("promoteWorkToMatched：id 变更、merged_from 记录、aliases 合并，r
   assert.ok(promoted.aliases.includes("魔法少女まどか☆マギカ"));
   assert.equal(promoted.work_type, "animation_film");
   assert.equal(promoted.identity_status, "matched");
-  assert.equal(promoted.release_dates.jp, "2012-10-06");
+  // R5：Bangumi 的 date 字段不带地区语义（实测《蜘蛛侠：崭新之日》标的是中国上映日），
+  // 所以抓取回来的日期一律记 region: "unknown"，绝不能自动写成日本上映日。
+  assert.deepEqual(promoted.release_dates.entries, [
+    { id: "unknown_2012-10-06", region: "unknown", date: "2012-10-06", source: "bangumi" }
+  ]);
+  assert.equal(promoted.release_dates.jp, null, "不得擅自认定为日本上映日");
   assert.equal(promoted.release_year, 2012);
 });
 
-test("promoteWorkToMatched：Bangumi 条目无 date 字段时 release_dates.jp 为 null 且不清空原有 release_year", () => {
+test("promoteWorkToMatched：Bangumi 条目无 date 字段时不产生上映日条目，且不清空原有 release_year", () => {
   const local = { ...createLocalWork({ id: "r2", workId: "work_local_x", title: "某片", inputHints: {} }), release_year: 1999 };
   const promoted = promoteWorkToMatched(local, 42, { title: "某片", type: "real" });
-  assert.equal(promoted.release_dates.jp, null);
+  assert.deepEqual(promoted.release_dates.entries, []);
   assert.equal(promoted.release_year, 1999);
   assert.equal(promoted.work_type, "live_action_film");
   assert.doesNotThrow(() => promoteWorkToMatched(local, 42, {}));
@@ -280,8 +287,12 @@ test("mergeWorks：别名并集去重、已匹配优先、first_recorded_at 取�
   assert.equal(new Set(merged.aliases).size, merged.aliases.length, "别名应去重");
   assert.deepEqual(merged.merged_from, ["work_local_dup"]);
   assert.equal(merged.first_recorded_at, "2026-01-01T00:00:00.000Z");
-  assert.equal(merged.release_dates.jp, "2020-01-01", "冲突时以已匹配方为准");
-  assert.equal(merged.release_dates.cn, "2020-02-02", "非空字段应被采纳");
+  // R5：上映日改成条目数组后，合并是"取并集"而不是"同一个槽位二选一"——
+  // 两边各自标注的地区都保留下来，不会因为合并而丢失其中一个。
+  assert.deepEqual(merged.release_dates.entries, [
+    { id: "jp_2020-01-01", region: "jp", date: "2020-01-01", source: "legacy" },
+    { id: "cn_2020-02-02", region: "cn", date: "2020-02-02", source: "legacy" }
+  ]);
 });
 
 // ─── R1：assignViewingRelations ───────────────────────────────────────────────

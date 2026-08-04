@@ -21,6 +21,7 @@
  */
 
 import { assignViewingRelations, mergeWorks, normalizeTitle } from "./domain.js";
+import { normalizeReleaseDates } from "./library.js";
 
 // r1-work-dedup-2：R4 补丁里发现 src/app.js 的 confirmWorkMatch()（local work 实时匹配
 // 到 Bangumi 升格时）漏了一步物理删除旧 work 文档——只把旧 id 从内存 state.works 里
@@ -30,7 +31,10 @@ import { assignViewingRelations, mergeWorks, normalizeTitle } from "./domain.js"
 // 不会因为修了实时匹配的代码就自动消失，得让这次迁移的去重+物理删除逻辑再跑一遍
 // 才能把已经产生的重复清掉。buildMigratedDataset 本身是幂等的（对本来就没问题的
 // 数据重跑一遍不会产生任何变化），所以这里只是借用同一套逻辑做一次性收尾清理。
-const MIGRATION_VERSION = "r1-work-dedup-2";
+// r5-library：R5 又提了一次，因为 ensureWorkFields 现在还要把旧的
+// release_dates.{jp,cn,other} 归一化成"日期 + 地区"的 entries 数组，并补上
+// related_refs / tagline 两个新字段。同样是幂等的，干净数据重跑没有任何变化。
+const MIGRATION_VERSION = "r5-library";
 const MIGRATION_META_ID = "migration-status";
 
 function bangumiRefId(work) {
@@ -76,12 +80,15 @@ function pickPrimary(group) {
   })[0];
 }
 
-/** 为迁移前的旧数据补齐 R1 新增字段，避免 undefined 泄漏到下游 */
+/** 为迁移前的旧数据补齐 R1/R5 新增字段，避免 undefined 泄漏到下游 */
 function ensureWorkFields(work) {
   return {
     ...work,
     work_type: work.work_type || "unspecified",
-    release_dates: work.release_dates || { jp: null, cn: null, other: [] },
+    // R5：上映日归一化成"日期 + 地区"的条目数组，旧的 jp/cn/other 会被搬进 entries
+    release_dates: normalizeReleaseDates(work.release_dates),
+    related_refs: work.related_refs || [],
+    tagline: work.tagline ?? null,
     poster_subject_id: work.poster_subject_id ?? null,
     merged_from: work.merged_from || [],
     first_recorded_at: work.first_recorded_at || new Date(0).toISOString()

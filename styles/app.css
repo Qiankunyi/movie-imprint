@@ -17,6 +17,9 @@ body {
   color: var(--ink);
   font: var(--type-body);
   overflow-x: hidden;
+  /* 安卓 Chrome 的左右边缘滑动默认是"后退/前进"导航手势，会把侧边栏的边缘
+     右滑手势整个抢走。contain 让横向 overscroll 停在本页面，不冒泡给浏览器。 */
+  overscroll-behavior-x: contain;
 }
 
 button,
@@ -187,10 +190,12 @@ svg {
 
 /* R3 补丁 1：海报直接占据卡片整个左侧（参考票务 App 的海报占位比例），
    不再是四周留白里的一个小缩略图。button 本身变成横向 flex：海报贴边，文字区域单独留白。 */
+/* min-height 必须严格等于 海报宽度 × 1.5（标准电影海报 2:3）——见下方 .record-poster
+   的说明。两个数字是一组的，改一个就要改另一个（含下面两处媒体查询）。 */
 .record-card-button {
   display: flex;
   width: 100%;
-  min-height: 162px;
+  min-height: 168px;
   align-items: stretch;
   padding: 0;
   text-align: left;
@@ -201,27 +206,31 @@ svg {
   background: var(--surface-high);
 }
 
-/* 用户反馈三轮踩坑记录：
-   第一轮固定 112px 宽、靠 align-self:stretch 拉伸到卡片全高——卡片一高，海报被挤成
-   过窄的竖条。第二轮改成"高度=卡片全高，靠 aspect-ratio 反推宽度"，指望 flex 在算
-   flex-basis 时用拉伸后的高度倒推出宽度，实测在真机浏览器里没有按预期解出来，反而
-   比第一轮更窄。第三轮改成"宽度固定 → aspect-ratio 反推高度"，但漏改了一件事：
-   `.record-card-button` 上的 `align-items: stretch` 是默认继承给所有子元素的，
-   `.record-poster` 没有自己的 `align-self` 覆盖它，等于还是被父级拉伸到卡片实际
-   高度——只是这次拉伸的是"已经用 aspect-ratio 算好比例"的盒子，flex 拉伸会直接把
-   这个盒子的高度强行改写成卡片高度，宽度却还锁定在 108px，比例因此被破坏。
-   这在 PC 端不明显是因为桌面宽视口下文字较少换行、卡片高度本来就接近 162px；
-   手机窄视口下文字更容易换行导致卡片变高，拉伸幅度更大，问题才明显暴露出来。
-   现在显式加上 `align-self: flex-start`，让海报使用自己算好的 108×162 尺寸，
-   不再被父级的 stretch 覆盖——这样无论卡片实际多高、无论 PC 还是手机，海报的
-   宽高比都是恒定、正确的电影海报比例，不会再变形。代价不变：卡片如果比 162px
-   更高，海报底部会留一点背景色空隙，不会撑满到卡片最底部。 */
+/* 用户反馈四轮踩坑记录（第四轮是当前实现）：
+   前三轮一直在"固定宽度 + aspect-ratio 锁比例"这条路上打转，最后落在
+   `align-self: flex-start` —— 比例是对了，但卡片只要比海报高，海报底部就空出一截
+   背景色，看着像贴歪了的贴纸。用户第四轮的要求很明确："海报要占满卡片的上下左三边，
+   同时不允许拉伸变形"。
+
+   这两件事看似矛盾（盒子被拉高，比例就会变），但拉伸变形的其实只有"图片"这一层，
+   不是"盒子"这一层：`object-fit: cover` 在盒子比例变化时是**裁切**而不是拉伸，
+   画面本身永远不会被压扁。所以正确解法是反过来的——让盒子放心地 stretch 占满
+   卡片全高，图片交给 cover 去适配：
+
+   - `.record-poster` 用 `align-self: stretch`（不再是 flex-start），宽度固定，
+     高度跟着卡片走 → 上下左三边天然贴满，因为卡片自己 `overflow: hidden` +
+     圆角，海报的左上/左下角会被卡片圆角自动裁好，不需要单独写 border-radius。
+   - `.record-card-button` 的 `min-height` 设成海报宽度 × 1.5（标准海报 2:3），
+     保证"内容较少"这个最常见的情况下，盒子恰好就是 2:3，画面一个像素都不裁。
+   - 内容比这更高时，盒子变高、cover 从左右两侧对称裁掉一点点，比例观感仍然正确。
+
+   代价：内容极长的卡片上海报会被裁掉一些左右边缘。相比"底部空一截背景色"，
+   这个代价在视觉上明显更小，也是各家票务/影视 App 的通行做法。 */
 .record-poster {
   position: relative;
-  width: 108px;
+  width: 112px;
   flex: 0 0 auto;
-  align-self: flex-start;
-  aspect-ratio: 2 / 3;
+  align-self: stretch;
   overflow: hidden;
   background: var(--surface-high);
 }
@@ -420,13 +429,65 @@ svg {
   background: var(--outline);
 }
 
+/* 五种态度各自的配色。除了底色/文字色不同，圆点也做了区分，这样在深浅色模式下
+   即使色觉差异不敏感，也还有形状这一层信息：
+   超喜欢 = 实心点 + 外圈光环，喜欢 = 实心点，无感 = 空心点，
+   不好说 = 半填充（斜切渐变），不喜欢 = 压扁成一道横杠。 */
 .record-attitude-tag.selected {
-  color: var(--accent-strong);
-  background: color-mix(in srgb, var(--accent-container) 72%, var(--surface-high));
+  color: var(--attitude-ink, var(--accent-strong));
+  background: var(--attitude-bg, var(--surface-high));
 }
 
 .record-attitude-tag.selected::before {
-  background: var(--accent);
+  background: var(--attitude-ink, var(--accent));
+}
+
+.record-attitude-tag.attitude-love {
+  --attitude-ink: var(--attitude-love-ink);
+  --attitude-bg: var(--attitude-love-bg);
+
+  font-weight: 700;
+}
+
+.record-attitude-tag.attitude-love::before {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--attitude-love-ink) 35%, transparent);
+}
+
+.record-attitude-tag.attitude-like {
+  --attitude-ink: var(--attitude-like-ink);
+  --attitude-bg: var(--attitude-like-bg);
+}
+
+.record-attitude-tag.attitude-neutral {
+  --attitude-ink: var(--attitude-neutral-ink);
+  --attitude-bg: var(--attitude-neutral-bg);
+}
+
+.record-attitude-tag.attitude-neutral::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--attitude-neutral-ink);
+}
+
+.record-attitude-tag.attitude-mixed {
+  --attitude-ink: var(--attitude-mixed-ink);
+  --attitude-bg: var(--attitude-mixed-bg);
+}
+
+.record-attitude-tag.attitude-mixed::before {
+  background: linear-gradient(135deg, var(--attitude-mixed-ink) 50%, transparent 50%);
+  box-shadow: inset 0 0 0 1.5px var(--attitude-mixed-ink);
+}
+
+.record-attitude-tag.attitude-dislike {
+  --attitude-ink: var(--attitude-dislike-ink);
+  --attitude-bg: var(--attitude-dislike-bg);
+}
+
+/* 不喜欢：把圆点压成一道横杠（"减号"），和其余四种的圆形拉开形状差异 */
+.record-attitude-tag.attitude-dislike::before {
+  width: 7px;
+  height: 2px;
+  border-radius: 1px;
 }
 
 .record-status {
@@ -1951,8 +2012,13 @@ svg {
     font-size: 20px;
   }
 
+  /* 宽度与 min-height 必须成对改：min-height = 宽度 × 1.5（海报 2:3） */
   .record-poster {
-    width: 92px;
+    width: 96px;
+  }
+
+  .record-card-button {
+    min-height: 144px;
   }
 
   .record-card-body {
@@ -2556,8 +2622,15 @@ svg {
 
 /* ── 侧边栏抽屉 ──────────────────────────────────────────────────────────── */
 
+/* --scrim-progress 由手势代码在拖动过程中逐帧写入（0～1），让遮罩跟着手指
+   一起变深；没有它时（点按钮打开）回落到 1，走原来的淡入动画。 */
 .sidebar-overlay .overlay-backdrop {
+  opacity: var(--scrim-progress, 1);
   animation: scrim-in var(--motion-standard) ease;
+}
+
+.sidebar-overlay[style*="--scrim-progress"] .overlay-backdrop {
+  animation: none;
 }
 
 .sidebar-drawer {
@@ -3267,4 +3340,357 @@ svg {
   .work-poster-col {
     width: 88px;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   R5 · 一句话简介 / 多地区上映日 / 系列 / 片单
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.work-tagline {
+  display: grid;
+  width: 100%;
+  gap: 2px;
+  padding: var(--space-2) 0 0;
+  text-align: left;
+  background: transparent;
+}
+
+.work-tagline-text {
+  color: var(--ink);
+  font: var(--type-body);
+}
+
+.work-tagline-source,
+.work-tagline-placeholder {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.work-tagline.empty .work-tagline-placeholder {
+  color: var(--accent-strong);
+}
+
+/* 作品资料区：上映日 / 系列 / 片单三行，统一的标签 + 值排版 */
+.work-facts {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  margin-bottom: var(--space-2);
+  border-top: 1px solid var(--outline-soft);
+  border-bottom: 1px solid var(--outline-soft);
+}
+
+.work-release-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.release-chip {
+  display: inline-flex;
+  min-height: 28px;
+  padding: 2px 10px;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  border: 1px solid var(--outline-soft);
+  border-radius: 999px;
+  background: var(--surface-container);
+  font: var(--type-meta);
+}
+
+.release-chip-region {
+  color: var(--ink-soft);
+}
+
+/* 抓取回来但还没认领地区的条目要显眼——这正是"蜘蛛侠被错标成日本上映"
+   那类问题的可见入口，不能做成一个和其他 chip 一样安静的灰块。 */
+.release-chip.unclaimed {
+  border-color: var(--film);
+  background: var(--film-container);
+}
+
+.release-chip.unclaimed .release-chip-region,
+.release-chip.unclaimed .release-chip-hint {
+  color: var(--film);
+}
+
+.release-chip.add {
+  color: var(--accent-strong);
+  border-style: dashed;
+  background: transparent;
+}
+
+.release-rows {
+  display: grid;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.release-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.release-row select {
+  flex: 0 0 auto;
+}
+
+.release-row-date {
+  flex: 1 1 auto;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.release-add-form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.work-relation-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+}
+
+.work-relation-label {
+  flex: 0 0 auto;
+  width: 40px;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.work-relation-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink);
+  font: var(--type-body);
+  background: transparent;
+  text-align: left;
+}
+
+.work-relation-value.link {
+  color: var(--accent-strong);
+}
+
+.work-relation-value.placeholder {
+  color: var(--accent-strong);
+  font: var(--type-meta);
+}
+
+.work-relation-index {
+  margin-left: var(--space-2);
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.work-collection-chips {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.collection-chip {
+  display: inline-flex;
+  min-height: 26px;
+  padding: 2px 10px;
+  align-items: center;
+  color: var(--accent-strong);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-container);
+  font: var(--type-meta);
+}
+
+.collection-chip.add {
+  color: var(--ink-soft);
+  border-color: var(--outline-soft);
+  border-style: dashed;
+  background: transparent;
+}
+
+.icon-button.small {
+  width: 32px;
+  height: 32px;
+}
+
+.icon-button.small svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 系列编辑 / 片单编辑面板里的候选行 */
+.series-options {
+  display: grid;
+  gap: var(--space-2);
+  max-height: 40dvh;
+  margin-bottom: var(--space-4);
+  overflow-y: auto;
+}
+
+.series-option {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3);
+  text-align: left;
+  border: 1.5px solid var(--outline-soft);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+
+.series-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-container);
+}
+
+.series-option-title {
+  color: var(--ink);
+  font: var(--type-label);
+}
+
+.series-option.selected .series-option-title {
+  color: var(--accent-strong);
+}
+
+.series-option-count {
+  flex: 0 0 auto;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.text-action.danger {
+  color: var(--danger);
+}
+
+/* 系列页 */
+.series-view {
+  min-height: 100dvh;
+}
+
+.series-members,
+.series-relations {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.series-member {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-card);
+  background: var(--surface-container);
+}
+
+.series-member-index {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--ink-soft);
+  border: 1px solid var(--outline-soft);
+  border-radius: 50%;
+  font: var(--type-meta);
+}
+
+.series-member-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  font: var(--type-body);
+}
+
+.series-member-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.series-relation {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-tag);
+  background: var(--surface-low);
+}
+
+.series-relation-copy {
+  flex: 1 1 auto;
+  color: var(--ink);
+  font: var(--type-meta);
+}
+
+.series-relation-form {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  margin-top: var(--space-4);
+  border: 1px dashed var(--outline-soft);
+  border-radius: var(--radius-card);
+}
+
+/* 片单列表 */
+.collection-rows {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.collection-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-card);
+  background: var(--surface-container);
+}
+
+.collection-row-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.collection-row-main b {
+  color: var(--ink);
+  font: var(--type-label);
+}
+
+.collection-row-main small,
+.collection-row-count {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.tagline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+
+.settings-note.inline {
+  margin: 0;
 }

@@ -160,6 +160,17 @@ test("幽灵重复条目：升格后残留的旧 local work（无记录、无海
   assert.ok(result.works[0].merged_from.includes("work_local_old-title"));
 });
 
+test("R5：旧的 release_dates.{jp,cn} 被归一化成带地区的 entries，并补齐 tagline/related_refs", () => {
+  const works = [work({ id: "w1", title: "某片", release_dates: { jp: "2012-10-06", cn: "2013-02-01", other: [] } })];
+  const [migrated] = buildMigratedDataset({ records: [], works, viewingEvents: [] }).works;
+  assert.deepEqual(migrated.release_dates.entries.map((entry) => [entry.region, entry.date]), [
+    ["jp", "2012-10-06"],
+    ["cn", "2013-02-01"]
+  ]);
+  assert.deepEqual(migrated.related_refs, []);
+  assert.equal(migrated.tagline, null);
+});
+
 // ─── runMigrationIfNeeded：备份、幂等、回滚 ───────────────────────────────────
 
 test("迁移前先备份；备份失败则不写库，返回 ok:false", async () => {
@@ -202,7 +213,7 @@ test("迁移成功：备份被调用、写入去重后的数据、写入 migrati
   assert.equal(db.stores.works.length, 1, "迁移后应只剩 1 个 work");
   assert.equal(db.stores.records.length, 2, "记录条数不应丢失");
   const meta = db.stores.meta.find((item) => item.id === "migration-status");
-  assert.equal(meta.migration_version, "r1-work-dedup-2");
+  assert.equal(meta.migration_version, "r5-library");
   assert.ok(meta.migration_ran_at);
 });
 

@@ -67,7 +67,15 @@ test("Bangumi 搜索只请求动画与真人条目且最多三个候选", () => 
     originalTitle: "A",
     type: "anime",
     releaseDate: "1990-01-01",
+    summary: null,
     image: "https://example.com/1.jpg",
     url: "https://bangumi.tv/subject/1"
   });
+});
+
+test("normalizeBangumiSubjects 带回 summary，供一句话简介抽首句使用", () => {
+  const [candidate] = normalizeBangumiSubjects({ data: [
+    { id: 7, name: "X", name_cn: "某片", type: 2, date: "2020-05-05", summary: "少女们签下契约，换取一个愿望。代价是什么，没有人告诉过她们。" }
+  ] });
+  assert.equal(candidate.summary, "少女们签下契约，换取一个愿望。代价是什么，没有人告诉过她们。");
 });

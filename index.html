@@ -8,14 +8,20 @@
     <meta name="description" content="安静地记下电影在你身上留下的痕迹。" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/public/icon-192.png" type="image/png" />
-    <link rel="stylesheet" href="/docs/design/tokens-v2.css?v=15" />
-    <link rel="stylesheet" href="/styles/app.css?v=27" />
+    <link rel="stylesheet" href="/docs/design/tokens-v2.css?v=16" />
+    <link rel="stylesheet" href="/styles/app.css?v=28" />
     <title>电影印记</title>
   </head>
   <body>
     <div id="app"></div>
+    <!-- 侧边栏边缘手势的临时承载层：必须在 #app 之外。手势进行中如果直接 render()，
+         app.innerHTML 会被整体重建，touchstart 的目标元素被销毁后就从文档树里脱离，
+         后续 touchmove/touchend 不再冒泡到 document，手势会直接卡死（这正是
+         "边缘右滑拖不出侧边栏" 的根因）。改成先把抽屉塞进这个常驻层里跟手，
+         等 touchend 之后再真正 render()。 -->
+    <div id="gesture-layer"></div>
     <div id="live-region" class="sr-only" aria-live="polite"></div>
     <div id="toast-region" class="toast" aria-hidden="true"></div>
-    <script type="module" src="/src/app.js?v=28"></script>
+    <script type="module" src="/src/app.js?v=29"></script>
   </body>
 </html>

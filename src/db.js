@@ -11,8 +11,9 @@
 // ─── IndexedDB（本地） ────────────────────────────────────────────────────────
 
 const DB_NAME = "movie-imprint-local";
-const DB_VERSION = 3;
-const STORES = ["drafts", "records", "works", "meta", "viewingEvents"];
+// v4：R5 新增 series（系列实体）与 collections（用户片单）两个 store
+const DB_VERSION = 4;
+const STORES = ["drafts", "records", "works", "meta", "viewingEvents", "series", "collections"];
 
 let databasePromise;
 
