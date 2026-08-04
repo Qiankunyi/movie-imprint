@@ -5,7 +5,7 @@ import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
 import { runMigrationIfNeeded } from "./migrate.js?v=3";
 import { EVENT_TYPES } from "./event-types.js?v=1";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
-import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=3";
+import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=4";
 import { memoryListMarkup } from "./memory-list.js?v=1";
 import { formatBadge, eventBadges } from "./format-badge.js";
 import {
@@ -3724,13 +3724,41 @@ function closeSidebarAnimated() {
   }, 200);
 }
 
-/** 手势进行中，抽屉与遮罩的视觉进度（0 = 完全收起，1 = 完全展开）。 */
+/**
+ * 手势进行中，抽屉与遮罩的视觉进度（0 = 完全收起，1 = 完全展开）。
+ *
+ * 写入合并到一帧里：touchmove 的触发频率可能高于刷新率，每次事件都直接改样式会
+ * 造成同一帧内反复读写、画面抖动。拖动态用 .is-dragging 类标记（CSS 里据此关掉
+ * 入场动画与过渡），不要再依赖 `[style*=...]` 属性选择器——那个属性每帧都在变，
+ * 会不断触发选择器重新匹配、动画被取消又重启，就是用户看到的"不停闪屏"。
+ */
+let sidebarPaintFrame = null;
+let sidebarPaintProgress = 0;
+
 function paintSidebarProgress(drawer, progress) {
-  const clamped = Math.min(1, Math.max(0, progress));
-  drawer.style.transition = "none";
-  drawer.style.transform = `translateX(${(clamped - 1) * 100}%)`;
-  const overlayEl = drawer.closest(".overlay");
-  if (overlayEl) overlayEl.style.setProperty("--scrim-progress", String(clamped));
+  sidebarPaintProgress = Math.min(1, Math.max(0, progress));
+  if (sidebarPaintFrame !== null) return;
+  sidebarPaintFrame = requestAnimationFrame(() => {
+    sidebarPaintFrame = null;
+    const target = sidebarDrawerEl();
+    if (!target) return;
+    const overlayEl = target.closest(".overlay");
+    if (overlayEl) {
+      overlayEl.classList.add("is-dragging");
+      overlayEl.style.setProperty("--scrim-progress", String(sidebarPaintProgress));
+    }
+    target.style.transform = `translateX(${(sidebarPaintProgress - 1) * 100}%)`;
+  });
+}
+
+/** 结束拖动态：取消挂起的绘制帧并摘掉 .is-dragging，让 CSS 过渡重新接管。 */
+function endSidebarDragState(drawer) {
+  if (sidebarPaintFrame !== null) {
+    cancelAnimationFrame(sidebarPaintFrame);
+    sidebarPaintFrame = null;
+  }
+  const overlayEl = drawer?.closest(".overlay");
+  if (overlayEl) overlayEl.classList.remove("is-dragging");
 }
 
 document.addEventListener("touchstart", (event) => {
@@ -3787,10 +3815,12 @@ document.addEventListener("touchmove", (event) => {
     // touchstart 的目标元素因此不会被销毁，后续事件能继续冒泡到 document。
     if (!gestureLayer) { sidebarGesture = null; return; }
     gestureLayer.innerHTML = sidebarDrawer();
-    document.body.classList.add("overlay-open");
     const drawer = sidebarDrawerEl();
     if (!drawer) { sidebarGesture = null; clearGestureLayer(); return; }
-    drawer.style.animation = "none"; // 关掉入场动画，改由手指驱动
+    // 立刻打上拖动态：CSS 据此关掉入场动画与过渡。必须在插入后的同一个同步块里做，
+    // 否则会先播一帧 drawer-in，看起来就是闪一下。
+    drawer.closest(".overlay")?.classList.add("is-dragging");
+    drawer.style.transform = "translateX(-100%)";
     sidebarGesture.width = drawer.getBoundingClientRect().width || sidebarGesture.width;
   }
 
@@ -3813,10 +3843,8 @@ function finishSidebarGesture(cancelled = false) {
   if (!gesture.armed || !drawer) return;
 
   const deltaX = gesture.lastX - gesture.startX;
-  // 注意：这里只恢复 transition，绝不恢复 animation。手势期间抽屉被设成
-  // animation:none 由手指驱动，若在这里把 drawer-in 入场动画放回去，松手瞬间
-  // 会从屏幕外重播一遍，看起来像"弹回去又滑出来"。
-  drawer.style.transition = "";
+  // 先摘掉拖动态（并取消挂起的绘制帧），CSS 的 transition 才能接管回弹动画
+  endSidebarDragState(drawer);
   const overlayEl = drawer.closest(".overlay");
 
   if (gesture.mode === "opening") {
@@ -3826,7 +3854,7 @@ function finishSidebarGesture(cancelled = false) {
       clearGestureLayer();
       state.overlay = "sidebar";
       render();
-      // 新渲染出来的抽屉同样要压掉入场动画——它在视觉上已经接近全开，
+      // 新渲染出来的抽屉要压掉入场动画——它在视觉上已经接近全开，
       // 再从 -100% 播一遍就是明显的倒退跳帧。
       const fresh = sidebarDrawerEl();
       if (fresh) {
@@ -3836,10 +3864,7 @@ function finishSidebarGesture(cancelled = false) {
     } else {
       drawer.style.transform = "translateX(-100%)";
       if (overlayEl) overlayEl.style.setProperty("--scrim-progress", "0");
-      setTimeout(() => {
-        clearGestureLayer();
-        document.body.classList.toggle("overlay-open", Boolean(state.overlay));
-      }, 200);
+      setTimeout(clearGestureLayer, 200);
     }
     return;
   }

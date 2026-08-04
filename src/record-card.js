@@ -61,14 +61,25 @@ function posterStatusRibbon(record, work) {
   return "";
 }
 
+/**
+ * R5 补丁 2：海报按**原图比例**渲染。
+ *
+ * 用户要求：原图尺寸比例、上下左占满卡片、不允许任何裁剪或留白。这三条同时成立的
+ * 唯一办法是——卡片高度固定，海报高度 = 卡片高度，宽度由图片自身的宽高比反推
+ * （所以不同图源的卡片海报宽度会不一样，这是预期行为，不是 bug）。
+ *
+ * 因此这里不再让占位块和图片叠在一起：有图时只渲染 <img>（它要参与布局才能用
+ * 自身比例撑出宽度，不能 position: absolute）；没有图时才渲染标准比例的首字占位块。
+ */
 function posterMarkup(work, record, { buildPosterUrl } = {}) {
   const title = work?.title || "";
   const initial = escapeHtml((title.trim() || "?").charAt(0));
   const hasPoster = Boolean(work?.identity_status === "matched" && work?.poster_subject_id && typeof buildPosterUrl === "function");
   const src = hasPoster ? buildPosterUrl(work.poster_subject_id) : "";
   return `<div class="record-poster" data-testid="record-poster">
-    <span class="record-poster-fallback" aria-hidden="true">${initial}</span>
-    ${hasPoster ? `<img class="record-poster-img" src="${escapeHtml(src)}" alt="" loading="lazy" />` : ""}
+    ${hasPoster
+      ? `<img class="record-poster-img" src="${escapeHtml(src)}" alt="" loading="lazy" />`
+      : `<span class="record-poster-fallback" aria-hidden="true">${initial}</span>`}
     ${posterStatusRibbon(record, work)}
   </div>`;
 }
@@ -95,11 +106,12 @@ function draftCardMarkup(record, { buildPosterUrl } = {}) {
     <button class="record-card-button" type="button" data-action="resume-draft" data-testid="resume-draft">
       ${posterWork ? posterMarkup(posterWork, null, { buildPosterUrl }) : ""}
       <div class="record-card-body">
-        <div class="record-card-main">
-          <div class="record-meta"><time>未完成的记录</time><span class="record-draft-label">继续写</span></div>
-          <h2>${escapeHtml(title || "继续写")}</h2>
+        <h2 class="record-card-title">${escapeHtml(title || "继续写")}</h2>
+        <div class="record-card-venue-row">
+          <span class="record-card-venue">未完成的记录</span>
+          <span class="record-draft-label">继续写</span>
         </div>
-        <div class="record-card-footer draft-footer"><span class="record-status" data-testid="draft-status"><span class="status-dot"></span>已自动保存在本机</span><span></span></div>
+        <div class="record-card-attitude-row"><span class="record-status" data-testid="draft-status"><span class="status-dot"></span>已自动保存在本机</span></div>
       </div>
     </button>
   </article>`;
@@ -135,19 +147,22 @@ function viewingCardMarkup(record, work, event, { buildPosterUrl } = {}) {
     hasEventBadges ? "has-event" : ""
   ].filter(Boolean).join(" ");
 
+  // R5 补丁 2：卡片信息结构改成参照 EhViewer 的安卓卡片（用户指定的排布）——
+  //   标题（占上方两行）
+  //   影院名（非影院则是"线上观看"等） + 右侧接特殊徽章（制式/活动）
+  //   态度标签（尖角在右）
+  //   右下角：观影日期
   return `<article class="${cardClasses}" data-testid="record-card">
     <button class="record-card-button" type="button" data-action="open-record" data-testid="record-${record.id}" data-record-id="${record.id}">
       ${posterMarkup(work, record, { buildPosterUrl })}
       <div class="record-card-body">
-        <div class="record-card-main">
-          <h2>${escapeHtml(title)}</h2>
-          <div class="record-card-meta-line">${escapeHtml(dateLabel)}</div>
-          ${locationLabel ? `<div class="record-card-meta-line">${escapeHtml(locationLabel)}</div>` : ""}
-          ${badgeChips ? `<div class="record-badge-row">${badgeChips}</div>` : ""}
+        <h2 class="record-card-title">${escapeHtml(title)}</h2>
+        <div class="record-card-venue-row">
+          <span class="record-card-venue">${escapeHtml(locationLabel || LOCATION_LABELS.home)}</span>
+          ${badgeChips ? `<span class="record-badge-row">${badgeChips}</span>` : ""}
         </div>
-        <div class="record-card-footer">
-          ${attitudeTagMarkup(record)}
-        </div>
+        <div class="record-card-attitude-row">${attitudeTagMarkup(record)}</div>
+        <time class="record-card-date">${escapeHtml(dateLabel)}</time>
       </div>
     </button>
   </article>`;
@@ -170,13 +185,12 @@ function supplementCardMarkup(record, work, { buildPosterUrl } = {}) {
     <button class="record-card-button" type="button" data-action="open-record" data-testid="record-${record.id}" data-record-id="${record.id}">
       ${posterMarkup(work, record, { buildPosterUrl })}
       <div class="record-card-body">
-        <div class="record-card-main">
-          <h2>${escapeHtml(title)}</h2>
-          <div class="record-card-meta-line muted">补充记录${distance ? ` · 距首次观看 ${distance}` : ""}</div>
+        <h2 class="record-card-title">${escapeHtml(title)}</h2>
+        <div class="record-card-venue-row">
+          <span class="record-card-venue">补充记录${distance ? ` · 距首次观看 ${distance}` : ""}</span>
         </div>
-        <div class="record-card-footer">
-          ${attitudeTagMarkup(record)}
-        </div>
+        <div class="record-card-attitude-row">${attitudeTagMarkup(record)}</div>
+        <time class="record-card-date">${escapeHtml(formatDate(record.createdAt))}</time>
       </div>
     </button>
   </article>`;

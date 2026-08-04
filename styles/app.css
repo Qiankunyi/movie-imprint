@@ -150,12 +150,15 @@ svg {
 
 /* ── R3：首页鉴赏履历卡 ──────────────────────────────────────────────────── */
 
+/* R5 补丁 2：参照 EhViewer 的安卓卡片——直角，不用圆角。
+   用户原话："放弃圆角，我们是高贵的安卓，尽可能展现方形海报的图的信息"。
+   直角还有一个实际好处：海报是矩形，卡片圆角会把海报四角切掉一小块信息。 */
 .record-card {
   position: relative;
   margin: 0 0 var(--space-3);
   overflow: hidden;
   border: 1px solid var(--record-border);
-  border-radius: var(--radius-card);
+  border-radius: 0;
   background: var(--surface-container);
   box-shadow: var(--shadow-float);
 }
@@ -198,7 +201,7 @@ svg {
 .record-card-button {
   display: flex;
   width: 100%;
-  height: 168px;
+  height: 180px;
   align-items: stretch;
   padding: 0;
   text-align: left;
@@ -229,9 +232,11 @@ svg {
    并且永远不拉伸。万一某张图源不是标准 2:3（Bangumi 偶有例外），contain 会留一点点
    两侧留白，而不是像 cover 那样把画面裁掉——按用户明确的优先级（完整 > 铺满每一寸），
    留白是可接受的，裁切不是。 */
+/* 宽度不写死：海报高度 = 卡片高度，宽度由图片自身比例反推（见 .record-poster-img）。
+   不同图源的海报宽度因此会不一样——这是用户明确要的效果，不是 bug。 */
 .record-poster {
   position: relative;
-  width: 112px;
+  display: flex;
   flex: 0 0 auto;
   align-self: stretch;
   overflow: hidden;
@@ -240,21 +245,23 @@ svg {
 
 .record-poster-fallback {
   display: grid;
-  width: 100%;
+  width: 120px; /* 没有图时按标准海报比例 2:3 占位（180px 高） */
   height: 100%;
   place-items: center;
   color: var(--ink-soft);
   font: var(--type-display);
 }
 
+/* 关键：不设 object-fit、不绝对定位。
+   高度撑满卡片，宽度 auto —— 浏览器按图片**自身的宽高比**算出宽度。
+   于是三件事同时成立：原图比例、上下左完全占满、零裁剪零留白。
+   `aspect-ratio: auto 2 / 3` 的含义是"有原生比例就用原生的，还没加载出来时按 2:3
+   预留位置"，避免图片加载完成的瞬间卡片宽度跳变。 */
 .record-poster-img {
-  position: absolute;
-  inset: 0;
-  width: 100%;
+  display: block;
+  width: auto;
   height: 100%;
-  /* contain：整张海报完整可见且永不变形（见上方 .record-poster 的说明）。
-     不要改回 cover——那正是"海报左边被裁掉一部分"的原因。 */
-  object-fit: contain;
+  aspect-ratio: auto 2 / 3;
 }
 
 /* R3 补丁 2：「仅保存原文」/「待确认作品」不再是 footer 里的一整行文字，改成叠在海报
@@ -281,7 +288,8 @@ svg {
   background: var(--film);
 }
 
-/* 文字区域：与海报同高的一列，主内容顶部对齐、footer 贴底。
+/* 文字区域：与海报同高的一列。信息顺序（用户按 EhViewer 指定）：
+   标题（两行）→ 影院名 + 徽章 → 态度标签 →（撑开）→ 右下角日期。
    卡片高度已被钉死（见 .record-card-button），所以这里必须 overflow: hidden——
    内容再多也只能被裁掉，不许把卡片撑高，否则海报盒子就不再是 2:3。 */
 .record-card-body {
@@ -289,29 +297,32 @@ svg {
   min-width: 0;
   flex: 1;
   flex-direction: column;
-  justify-content: space-between;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4) var(--space-4);
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
   overflow: hidden;
 }
 
-.record-card-main {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-  align-content: start;
-}
-
-.record-card-main h2 {
-  margin: 0 0 2px;
+/* 标题固定占上方两行：不足两行也保留两行高度，卡片之间的信息位置才对得齐 */
+.record-card-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  min-height: calc(2 * 26px);
+  margin: 0;
   overflow: hidden;
   color: var(--accent-strong);
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font: var(--type-card-title);
 }
 
-.record-card-meta-line {
+.record-card-venue-row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.record-card-venue {
   overflow: hidden;
   color: var(--ink-soft);
   text-overflow: ellipsis;
@@ -319,9 +330,17 @@ svg {
   font: var(--type-meta);
 }
 
-.record-card-meta-line.muted {
+.record-card-attitude-row {
+  display: flex;
+  min-width: 0;
+}
+
+/* 日期钉在卡片右下角 */
+.record-card-date {
+  margin-top: auto;
   color: var(--ink-soft);
-  opacity: 0.82;
+  text-align: right;
+  font: var(--type-meta);
 }
 
 .record-badge-row {
@@ -415,17 +434,19 @@ svg {
   color: var(--accent-strong);
 }
 
+/* 票根形状。用户要求把尖角从左端移到右端：现在左边是平的（贴着影院名那一列
+   的左对齐线），右边收成一个尖角。 */
 .record-attitude-tag {
   position: relative;
   display: inline-flex;
   min-height: 28px;
-  padding: 4px 9px 4px 14px;
+  padding: 4px 15px 4px 10px;
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
   color: var(--ink-soft);
   background: var(--surface-high);
-  clip-path: polygon(8px 0, 100% 0, 100% 100%, 8px 100%, 0 50%);
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%);
   font: var(--type-meta);
 }
 
@@ -2020,17 +2041,17 @@ svg {
     font-size: 20px;
   }
 
-  /* 宽度与 height 必须成对改：height = 宽度 × 1.5（海报 2:3） */
-  .record-poster {
-    width: 96px;
+  /* 海报宽度由原图比例决定，这里只调卡片高度。内容最少需要约 164px，不能再往下压。 */
+  .record-card-button {
+    height: 168px;
   }
 
-  .record-card-button {
-    height: 144px;
+  .record-poster-fallback {
+    width: 112px;
   }
 
   .record-card-body {
-    padding: var(--space-3);
+    padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
   }
 
   .detail-content {
@@ -2631,14 +2652,24 @@ svg {
 /* ── 侧边栏抽屉 ──────────────────────────────────────────────────────────── */
 
 /* --scrim-progress 由手势代码在拖动过程中逐帧写入（0～1），让遮罩跟着手指
-   一起变深；没有它时（点按钮打开）回落到 1，走原来的淡入动画。 */
+   一起变深；没有它时（点按钮打开）回落到 1，走原来的淡入动画。
+   拖动态用 .is-dragging 这个稳定的类来标记，**不要**再用
+   `[style*="--scrim-progress"]` 这种属性子串选择器：那个属性每帧都在变，
+   会导致选择器反复重新匹配、入场动画被不断取消又重启——正是用户看到的"拖出
+   侧边栏时不停闪屏"。 */
 .sidebar-overlay .overlay-backdrop {
   opacity: var(--scrim-progress, 1);
   animation: scrim-in var(--motion-standard) ease;
 }
 
-.sidebar-overlay[style*="--scrim-progress"] .overlay-backdrop {
+.sidebar-overlay.is-dragging .overlay-backdrop {
   animation: none;
+}
+
+/* 拖动中：动画与过渡全部关掉，位移完全由手指驱动，避免两套动画互相打架 */
+.sidebar-overlay.is-dragging .sidebar-drawer {
+  animation: none;
+  transition: none;
 }
 
 .sidebar-drawer {

@@ -55,7 +55,9 @@ test("补充记录卡：含「补充记录」、含间隔年数、日期弱化",
   assert.match(html, /record-card supplement/);
   assert.match(html, /补充记录/);
   assert.match(html, /距首次观看 3 年/);
-  assert.match(html, /meta-line muted/);
+  // R5 补丁 2：卡片结构改成 标题 / 影院名行 / 态度 / 右下角日期，
+  // 补充记录的说明文字现在落在影院名那一行的位置上。
+  assert.match(html, /record-card-venue">补充记录 · 距首次观看 3 年</);
 });
 
 test("watch_index >= 2 → 显示「重看 · 第N次」", () => {
@@ -139,25 +141,44 @@ test("海报直接是 record-card-button 的第一个子元素，不再包在四
   assert.match(html, /<button class="record-card-button"[^>]*>\s*<div class="record-poster"/);
 });
 
-// R3 补丁 1：「仅保存原文」/「待确认作品」从 footer 的文字行改为叠加在海报角落的小标签，
-// 不再挤占 footer（footer 现在应该只剩下态度标签）
-test("仅保存原文 → 状态标签叠在海报上，不在 footer 里", () => {
+// R3 补丁 1：「仅保存原文」/「待确认作品」从文字行改为叠加在海报角落的小标签，
+// 不再挤占文字区（R5 补丁 2 之后，文字区的对应位置是态度标签那一行）
+test("仅保存原文 → 状态标签叠在海报上，不在文字区里", () => {
   const { record, work, event } = cinemaRecord({ record: { status: "raw_only_confirmed" } });
   const html = recordCard(record, { work, event, buildPosterUrl });
   assert.match(html, /<div class="record-poster"[^>]*>[\s\S]*?record-poster-status[\s\S]*?<\/div>/);
   assert.match(html, /仅保存原文/);
-  const footerMatch = html.match(/<div class="record-card-footer">([\s\S]*?)<\/div>/);
-  assert.ok(footerMatch, "应有 record-card-footer");
-  assert.doesNotMatch(footerMatch[1], /仅保存原文|work-match-status/);
+  const bodyMatch = html.match(/<div class="record-card-body">([\s\S]*?)<\/button>/);
+  assert.ok(bodyMatch, "应有 record-card-body");
+  assert.doesNotMatch(bodyMatch[1], /仅保存原文|work-match-status/);
 });
 
-test("待确认作品 → 状态标签同样叠在海报上，不在 footer 里", () => {
+test("待确认作品 → 状态标签同样叠在海报上，不在文字区里", () => {
   const { record, event } = cinemaRecord();
   const work = { title: "本地作品", identity_status: "local_only", poster_subject_id: null, match: { status: "needs_confirmation" } };
   const html = recordCard(record, { work, event, buildPosterUrl });
   assert.match(html, /待确认作品/);
-  const footerMatch = html.match(/<div class="record-card-footer">([\s\S]*?)<\/div>/);
-  assert.doesNotMatch(footerMatch[1], /待确认作品/);
+  const bodyMatch = html.match(/<div class="record-card-body">([\s\S]*?)<\/button>/);
+  assert.ok(bodyMatch, "应有 record-card-body");
+  assert.doesNotMatch(bodyMatch[1], /待确认作品/);
+});
+
+test("R5 补丁 2：卡片信息顺序为 标题 → 影院名+徽章 → 态度 → 右下角日期", () => {
+  const { record, work, event } = cinemaRecord();
+  const html = recordCard(record, { work, event, buildPosterUrl });
+  const order = ["record-card-title", "record-card-venue-row", "record-card-attitude-row", "record-card-date"]
+    .map((cls) => html.indexOf(cls));
+  assert.ok(order.every((index) => index !== -1), "四个区块都应存在");
+  assert.deepEqual([...order].sort((a, b) => a - b), order, "区块顺序必须是 标题→影院名→态度→日期");
+  // 徽章跟在影院名右边、同一行里
+  assert.match(html, /record-card-venue-row">[\s\S]*?record-card-venue[\s\S]*?record-badge-row/);
+});
+
+test("R5 补丁 2：有海报时只渲染 <img>（靠原图比例撑宽度），不再叠一层占位块", () => {
+  const { record, work, event } = cinemaRecord();
+  const html = recordCard(record, { work, event, buildPosterUrl });
+  assert.match(html, /record-poster-img/);
+  assert.doesNotMatch(html, /record-poster-fallback/);
 });
 
 test("正常记录（无异常状态）→ 海报上不渲染状态标签", () => {
