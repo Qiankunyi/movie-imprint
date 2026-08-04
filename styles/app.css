@@ -22,6 +22,13 @@ body {
   overscroll-behavior-x: contain;
 }
 
+/* 全局兜底：任何带 display 的类都会盖过 UA 样式表的 [hidden] { display: none }，
+   项目里多处用 `element.hidden = true` 来藏元素（FAB 菜单曾因此完全没藏住）。
+   在这里统一强制一次，避免同类问题再发生。 */
+[hidden] {
+  display: none !important;
+}
+
 button,
 input,
 select,
@@ -630,16 +637,20 @@ svg {
   gap: var(--space-3);
 }
 
-/* 展开时铺一层透明遮罩：点空白处收起菜单，而不是必须精准点回那个圆按钮 */
+/* 展开时铺一层遮罩：点空白处收起菜单，而不是必须精准点回那个圆按钮。
+   注意不能用 z-index: -1（会被祖先的层叠上下文推到 .fab-stack 背后而点不到），
+   改成正常层级并靠 DOM 顺序排在菜单项与主按钮之前。 */
 .fab-scrim {
   position: fixed;
-  z-index: -1;
   inset: 0;
+  width: 100%;
+  border: 0;
   background: rgb(6 12 14 / 28%);
   animation: scrim-in var(--motion-fast) ease;
 }
 
 .fab-items {
+  position: relative; /* 压在 .fab-scrim 之上 */
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -649,10 +660,17 @@ svg {
   list-style: none;
 }
 
+.fab-stack .fab {
+  position: relative; /* 同上：主按钮必须在遮罩之上才点得到 */
+}
+
 .fab-item {
   display: flex;
   gap: var(--space-3);
   align-items: center;
+  /* 主按钮 56px、菜单项按钮 44px，右对齐会让两者中心差 6px。
+     这里补一段右内边距，把菜单项按钮的圆心和主按钮的圆心对到同一条垂直线上。 */
+  padding-right: calc((var(--fab) - 44px) / 2);
   /* 逐项错开弹出，越靠近主按钮的越先出现 */
   animation: fab-item-in var(--motion-standard) cubic-bezier(0.2, 0, 0, 1) backwards;
   animation-delay: calc(var(--fab-index, 1) * 28ms);
@@ -2794,6 +2812,12 @@ svg {
 .sidebar-overlay.is-dragging .sidebar-drawer {
   animation: none;
   transition: none;
+}
+
+/* 由手势提交时渲染出来的抽屉：视觉上已经在全开位置，绝不能再播一遍入场动画 */
+.sidebar-overlay.no-entry-anim .sidebar-drawer,
+.sidebar-overlay.no-entry-anim .overlay-backdrop {
+  animation: none;
 }
 
 .sidebar-drawer {

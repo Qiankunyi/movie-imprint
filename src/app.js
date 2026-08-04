@@ -99,6 +99,10 @@ import {
 } from "./export.js?v=2";
 
 const app = document.querySelector("#app");
+// 浮层与 FAB 各自有独立的挂载点（见 index.html 的注释）：只有它们变化时不去动 #app，
+// 时间线里的 <img> 就不会被重建、海报也不会重新加载。
+const overlayRoot = document.querySelector("#overlay-root");
+const fabRoot = document.querySelector("#fab-root");
 const liveRegion = document.querySelector("#live-region");
 const toastRegion = document.querySelector("#toast-region");
 const activeDraftId = "active";
@@ -184,7 +188,8 @@ const state = {
   taglineBusy: false,         // R5：AI 概括一句话简介进行中
   taglineSummary: "",         // R5：当前作品抓回来的完整简介原文（AI 概括的输入）
   taglineSummaryState: "idle", // "idle" | "loading" | "ready" | "missing"
-  fabOpen: false              // R5 补丁 4：右下角 FAB 二级菜单是否展开
+  fabOpen: false,             // R5 补丁 4：右下角 FAB 二级菜单是否展开
+  sidebarSkipEntryAnimation: false // 由手势提交时渲染的抽屉不播入场动画（见 finishSidebarGesture）
 };
 
 let toastTimer = null;
@@ -563,9 +568,12 @@ function fabMenu() {
     <button class="fab-item-button" type="button" ${item.disabled ? "disabled" : `data-action="${item.action}"`} aria-label="${escapeHtml(item.label)}" ${item.testId ? `data-testid="${item.testId}"` : ""}>${icon(item.icon)}</button>
   </li>`).join("");
 
+  // 收起时直接不渲染菜单项。
+  // （之前用 `hidden` 属性来藏，但 `.fab-items { display: flex }` 的优先级高于
+  //  UA 样式表的 `[hidden] { display: none }`，属性根本没生效——菜单一直摊在屏幕上。）
   return `<div class="fab-stack ${open ? "open" : ""}" data-testid="fab-stack">
     ${open ? `<button class="fab-scrim" type="button" data-action="close-fab" aria-label="收起菜单"></button>` : ""}
-    <ul class="fab-items" ${open ? "" : "hidden"}>${list}</ul>
+    ${open ? `<ul class="fab-items">${list}</ul>` : ""}
     <button class="fab ${open ? "open" : ""}" type="button" data-action="toggle-fab" aria-expanded="${open}" aria-label="${open ? "收起操作菜单" : "展开操作菜单"}" data-testid="fab-toggle">＋</button>
   </div>`;
 }
@@ -577,7 +585,7 @@ function fabMenu() {
 function sidebarDrawer() {
   const recordCount = state.records.length;
   const workCount = state.works.length;
-  return `<div class="overlay sidebar-overlay" data-testid="sidebar">
+  return `<div class="overlay sidebar-overlay ${state.sidebarSkipEntryAnimation ? "no-entry-anim" : ""}" data-testid="sidebar">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭菜单"></button>
     <nav class="sidebar-drawer" aria-label="主菜单" data-testid="sidebar-drawer">
       <div class="sidebar-brand"><span class="brand-mark" aria-hidden="true"></span><h2>电影印记</h2></div>
@@ -631,7 +639,6 @@ function renderHome() {
       ${cards}
       ${hasAnyCard ? "" : emptyHomeStateMarkup()}
     </section>
-    ${fabMenu()}
   </main>`;
 }
 
@@ -713,7 +720,6 @@ function renderShelf() {
     <section class="shelf-grid" aria-label="作品书架" data-testid="shelf-grid">
       ${grid || `<p class="shelf-empty" data-testid="shelf-empty">这个筛选下还没有作品</p>`}
     </section>
-    ${fabMenu()}
   </main>`;
 }
 
@@ -952,7 +958,6 @@ function renderWork() {
       ${impressionsListMarkup(view.impressions)}
       <button type="button" class="sheet-done work-supplement-button" data-action="open-supplement" data-testid="open-supplement">＋ 补充记录</button>
     </article>
-    ${fabMenu()}
   </main>`;
 }
 
@@ -1012,7 +1017,6 @@ function renderSeries() {
         </form>` : `<p class="settings-note">系列里至少要有两部作品，才能标注它们之间的关系。</p>`}
       </section>
     </article>
-    ${fabMenu()}
   </main>`;
 }
 
@@ -1036,7 +1040,6 @@ function renderCollections() {
         <button class="sheet-done" type="submit">创建</button>
       </form>
     </article>
-    ${fabMenu()}
   </main>`;
 }
 
@@ -1050,7 +1053,6 @@ function renderCollection() {
       <h1 class="page-title">${escapeHtml(collection.title)}</h1>
       ${workGridMarkup(works, "这个片单还没有作品——到作品页点「＋ 加入片单」把它放进来")}
     </article>
-    ${fabMenu()}
   </main>`;
 }
 
@@ -1224,7 +1226,6 @@ function renderDetail() {
       ${viewingEventsSection(state.viewingEvents)}
       ${record.status === "raw_only_confirmed" ? "" : `<div class="memory-heading"><h2>留下来的片段</h2><div class="memory-heading-actions"><button class="text-action" type="button" data-action="request-ai-cards" data-testid="request-ai-cards" ${record.cardSuggestionStatus === "running" ? "disabled" : ""}>${record.cardSuggestionStatus === "running" ? "AI 整理中…" : "AI 建议卡片"}</button><button class="text-action add-card" type="button" data-action="add-card">＋ 添加卡片</button></div></div>${record.cardSuggestionStatus === "failed" && record.cardSuggestionError ? `<p class="card-suggestion-error" data-testid="card-suggestion-error">AI 建议没有完成：${escapeHtml(record.cardSuggestionError)}</p>` : ""}${memoryCard(record)}`}
     </article>
-    ${fabMenu()}
   </main>`;
 }
 
@@ -1793,6 +1794,11 @@ function collectionsEditorOverlay(work) {
   </div>`;
 }
 
+// 上一次写入各挂载点的 HTML，用于跳过无变化的重写（见 render() 末尾的说明）
+let lastBaseHtml = null;
+let lastFabHtml = null;
+let lastOverlayHtml = null;
+
 function render() {
   const base = state.view === "detail" ? renderDetail()
     : state.view === "shelf" ? renderShelf()
@@ -1839,7 +1845,24 @@ function render() {
       : state.overlay === "collections" && currentWorkForOverlay
         ? collectionsEditorOverlay(currentWorkForOverlay)
         : "";
-  app.innerHTML = `${base}${overlay}`;
+
+  // 三块分别挂载，各自只在自己变化时重写：
+  //  - #app 里是视图正文（时间线列表等）。只有它真的变了才重写，否则开合浮层/FAB
+  //    会把列表整棵重建，<img> 重新创建并重新加载 —— 就是用户看到的"海报又刷新了一遍"。
+  //  - #overlay-root 是浮层，#fab-root 是右下角按钮，它们变化不影响正文。
+  if (base !== lastBaseHtml) {
+    app.innerHTML = base;
+    lastBaseHtml = base;
+  }
+  const fab = fabMenu();
+  if (fab !== lastFabHtml) {
+    fabRoot.innerHTML = fab;
+    lastFabHtml = fab;
+  }
+  if (overlay !== lastOverlayHtml) {
+    overlayRoot.innerHTML = overlay;
+    lastOverlayHtml = overlay;
+  }
   document.body.classList.toggle("overlay-open", Boolean(state.overlay));
 }
 
@@ -2377,7 +2400,10 @@ async function openRecord(recordId) {
 }
 
 /** 详情页返回：按 detailReturnView 回时间线或作品页，恢复对应视图当时的滚动位置。 */
-function leaveDetail({ replace = false } = {}) {
+// R5 补丁 5：默认 replace。之前每次"返回"都 pushState，历史栈里塞满了往返记录，
+// 用户用系统的右往左返回手势时就会在 片单/作品页/时间线 之间来回跳——
+// 看起来"无规律"，其实是在倒放自己走过的每一步。返回动作只替换当前条目即可。
+function leaveDetail({ replace = true } = {}) {
   applyRoute(routeExitRecord(routeSnapshot()));
   state.overlay = null;
   state.viewingEvents = [];
@@ -2412,7 +2438,7 @@ function openShelf() {
 /** R4：作品书架 → 首页。 */
 function closeShelf() {
   applyRoute(routeExitShelf(routeSnapshot()));
-  history.pushState({}, "", location.pathname + location.search);
+  history.replaceState({}, "", location.pathname + location.search);
   render();
   requestAnimationFrame(() => scrollTo({ top: state.returnScrollY, behavior: "instant" }));
 }
@@ -2430,7 +2456,7 @@ function openWork(workId) {
 /** R4：作品页 → 作品书架（本窗口里作品页只能从书架进入，所以固定回书架）。 */
 function closeWork() {
   applyRoute(routeExitWork(routeSnapshot()));
-  history.pushState({ view: "shelf" }, "", "#shelf");
+  history.replaceState({ view: "shelf" }, "", "#shelf");
   render();
   requestAnimationFrame(() => scrollTo({ top: state.shelfScrollY, behavior: "instant" }));
 }
@@ -2453,7 +2479,7 @@ function openSeries(seriesId) {
 function closeSeries() {
   if (state.seriesReturnView === "work" && state.currentWorkId) {
     state.view = "work";
-    history.pushState({ view: "work", workId: state.currentWorkId }, "", `#work=${encodeURIComponent(state.currentWorkId)}`);
+    history.replaceState({ view: "work", workId: state.currentWorkId }, "", `#work=${encodeURIComponent(state.currentWorkId)}`);
     render();
     requestAnimationFrame(() => scrollTo({ top: state.workScrollY, behavior: "instant" }));
     return;
@@ -2461,11 +2487,14 @@ function closeSeries() {
   openShelf();
 }
 
-function openCollections() {
+function openCollections({ replace = false } = {}) {
+  const back = replace || state.view === "collection";
   state.view = "collections";
   state.overlay = null;
   state.currentCollectionId = null;
-  history.pushState({ view: "collections" }, "", "#collections");
+  const payload = { view: "collections" };
+  if (back) history.replaceState(payload, "", "#collections");
+  else history.pushState(payload, "", "#collections");
   render();
   scrollTo(0, 0);
 }
@@ -2772,7 +2801,7 @@ function openSupplementCompose(workId) {
   focusComposer();
 }
 
-app.addEventListener("click", async (event) => {
+document.addEventListener("click", async (event) => {
   const trigger = event.target.closest("[data-action]");
   if (!trigger) return;
   const { action } = trigger.dataset;
@@ -3341,7 +3370,7 @@ app.addEventListener("click", async (event) => {
   }
 });
 
-app.addEventListener("keydown", (event) => {
+document.addEventListener("keydown", (event) => {
   if (event.target.id !== "composer-input" || event.key !== "Enter" || event.shiftKey || event.isComposing) return;
   const input = event.target;
   const edit = continueListOnEnter(input.value, input.selectionStart, input.selectionEnd);
@@ -3350,7 +3379,7 @@ app.addEventListener("keydown", (event) => {
   applyComposerEdit(input, edit);
 });
 
-app.addEventListener("input", (event) => {
+document.addEventListener("input", (event) => {
   if (event.target.id === "composer-input") {
     saveDraft(event.target.value);
     updateSeriesHint(event.target.value);
@@ -3389,7 +3418,7 @@ app.addEventListener("input", (event) => {
 
 // R2 Step 1：大面积粘贴区不需要显式"识别"按钮——粘贴动作本身触发解析。
 // 用 paste 事件而非 input，避免用户手打文字时被误当票务文本解析。
-app.addEventListener("paste", (event) => {
+document.addEventListener("paste", (event) => {
   if (event.target.id !== "capture-paste-input") return;
   const fromClipboardData = event.clipboardData?.getData("text") || "";
   if (fromClipboardData) {
@@ -3400,12 +3429,12 @@ app.addEventListener("paste", (event) => {
   setTimeout(() => handleCapturePaste(event.target.value), 0);
 });
 
-app.addEventListener("error", (event) => {
+document.addEventListener("error", (event) => {
   if (!event.target.matches?.(".record-poster-img")) return;
   event.target.hidden = true;
 }, true);
 
-app.addEventListener("change", async (event) => {
+document.addEventListener("change", async (event) => {
   if (event.target.matches("[data-testid='recommendation-note']")) {
     await updateRecord((record) => { record.recommendationNote = event.target.value.trim(); });
     announce("推荐说明已保存");
@@ -3443,7 +3472,7 @@ app.addEventListener("change", async (event) => {
   }
 });
 
-app.addEventListener("submit", async (event) => {
+document.addEventListener("submit", async (event) => {
   if (event.target.id === "card-form") {
     event.preventDefault();
     const data = new FormData(event.target);
@@ -3871,7 +3900,11 @@ document.addEventListener("touchstart", (event) => {
       startY: touch.clientY,
       lastX: touch.clientX,
       width: drawer?.getBoundingClientRect().width || 320,
-      armed: true
+      armed: true,
+      // moved 才代表"真的拖了"。仅仅点一下抽屉里的菜单项也会走到这里并且 armed=true，
+      // 如果据此就去抑制随后的 click，侧边栏里的「作品书架 / 片单 / 偏好设置」
+      // 会全部点不动——这正是上一版把侧边栏点击整个搞失效的原因。
+      moved: false
     };
     return;
   }
@@ -3883,7 +3916,8 @@ document.addEventListener("touchstart", (event) => {
       startY: touch.clientY,
       lastX: touch.clientX,
       width: 320,
-      armed: false
+      armed: false,
+      moved: false
     };
   }
 }, { passive: true });
@@ -3897,6 +3931,8 @@ document.addEventListener("touchmove", (event) => {
   sidebarGesture.lastX = touch.clientX;
   const deltaX = touch.clientX - sidebarGesture.startX;
   const deltaY = touch.clientY - sidebarGesture.startY;
+  // 超过一点点位移才算"拖过"，只有拖过才需要抑制随后的合成 click
+  if (Math.abs(deltaX) > 6 || Math.abs(deltaY) > 6) sidebarGesture.moved = true;
 
   if (sidebarGesture.mode === "opening" && !sidebarGesture.armed) {
     // 纵向位移更大 → 用户是在竖着滚页面，直接放弃这次手势，别跟页面抢
@@ -3939,8 +3975,9 @@ function finishSidebarGesture(cancelled = false) {
   sidebarGesture = null;
   const drawer = sidebarDrawerEl();
   if (!gesture.armed || !drawer) return;
-  // 手势真的发生过 → 拦掉浏览器随后补发的那一次合成 click（见 suppressClickAfterGesture）
-  suppressClickAfterGesture();
+  // 只有真的拖动过才拦掉随后的合成 click。单纯点一下抽屉里的菜单项不能拦，
+  // 否则侧边栏里的所有入口都会失效。
+  if (gesture.moved) suppressClickAfterGesture();
 
   const deltaX = gesture.lastX - gesture.startX;
   // 先摘掉拖动态（并取消挂起的绘制帧），CSS 的 transition 才能接管回弹动画
@@ -3953,14 +3990,13 @@ function finishSidebarGesture(cancelled = false) {
       // 提交：现在才切状态并 render()。此时手指已经离开，重建 DOM 不会打断任何事件序列。
       clearGestureLayer();
       state.overlay = "sidebar";
+      // 由手势提交时，正式渲染的抽屉必须**完全不播**入场动画。
+      // 之前是先设 animation:none、下一帧又还原成 ""，那等于把 drawer-in 重新触发了一遍：
+      // 抽屉先瞬间弹到位再缩回去从头滑出来——就是用户描述的"拖到刚好全开时，
+      // 侧边栏飞快弹到顶又飞快缩回"。现在改成渲染时就带上 no-entry-anim 类，不再还原。
+      state.sidebarSkipEntryAnimation = true;
       render();
-      // 新渲染出来的抽屉要压掉入场动画——它在视觉上已经接近全开，
-      // 再从 -100% 播一遍就是明显的倒退跳帧。
-      const fresh = sidebarDrawerEl();
-      if (fresh) {
-        fresh.style.animation = "none";
-        requestAnimationFrame(() => { fresh.style.animation = ""; });
-      }
+      state.sidebarSkipEntryAnimation = false;
     } else {
       // 取消：让抽屉滑回屏幕外再摘掉。定时器存起来，下一次手势开始时会被撤销。
       drawer.style.transition = "";
