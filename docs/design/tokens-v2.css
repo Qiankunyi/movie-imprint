@@ -44,12 +44,18 @@
   --motion-fast: 160ms;
   --motion-standard: 220ms;
 
-  /* R3：鉴赏履历卡——影院卡金属质感描边／高光，制式徽章（实心）配色 */
+  /* R5 补丁 3：影院卡描边从金色改成 Steam 头像框那种冷蓝辉光。
+     用户原话："我还是喜欢 steam 头像框那种蓝光特效，正好不管是 imax 还是杜比影院
+     都采用了那种蓝光。显得高级。"——冷蓝也确实和 IMAX/Dolby 徽章的深蓝底更协调，
+     金色边框在浅色背景上显得发黄发脏。 */
   --record-border: rgb(24 33 36 / 10%);
-  --record-border-cinema: rgb(140 120 74 / 45%);
-  --record-border-cinema-highspec: rgb(168 140 76 / 75%);
-  --record-highlight-cinema: linear-gradient(90deg, transparent, rgb(168 140 76 / 45%), transparent);
-  --record-highlight-cinema-highspec: linear-gradient(90deg, transparent, rgb(196 164 88 / 85%), transparent);
+  --record-border-cinema: rgb(58 138 190 / 55%);
+  --record-border-cinema-highspec: rgb(40 150 220 / 85%);
+  --record-highlight-cinema: linear-gradient(90deg, transparent, rgb(70 160 215 / 55%), transparent);
+  --record-highlight-cinema-highspec: linear-gradient(90deg, transparent, rgb(86 196 255 / 95%), transparent);
+  /* 外发光：普通影院场一层淡蓝，高规格制式再叠一层更亮更扩散的光晕 */
+  --record-glow-cinema: 0 0 0 1px rgb(58 138 190 / 18%), 0 2px 14px rgb(46 130 190 / 22%);
+  --record-glow-cinema-highspec: 0 0 0 1px rgb(60 170 235 / 35%), 0 0 18px rgb(60 170 235 / 40%), 0 4px 20px rgb(30 110 170 / 30%);
 
   --badge-imax-bg: #0b2a55;
   --badge-imax-ink: #eaf4ff;
@@ -103,12 +109,14 @@
   --danger: #ffb4ab;
   --shadow-float: 0 10px 30px rgb(0 0 0 / 28%);
 
-  /* R3：深色下描边/高光需要更亮才能被看见 */
+  /* R3：深色下描边/高光需要更亮才能被看见（R5 补丁 3 起改为冷蓝辉光） */
   --record-border: rgb(255 255 255 / 10%);
-  --record-border-cinema: rgb(196 168 96 / 40%);
-  --record-border-cinema-highspec: rgb(214 184 108 / 70%);
-  --record-highlight-cinema: linear-gradient(90deg, transparent, rgb(214 184 108 / 40%), transparent);
-  --record-highlight-cinema-highspec: linear-gradient(90deg, transparent, rgb(230 202 130 / 80%), transparent);
+  --record-border-cinema: rgb(96 178 226 / 45%);
+  --record-border-cinema-highspec: rgb(120 205 255 / 80%);
+  --record-highlight-cinema: linear-gradient(90deg, transparent, rgb(120 200 240 / 45%), transparent);
+  --record-highlight-cinema-highspec: linear-gradient(90deg, transparent, rgb(150 225 255 / 90%), transparent);
+  --record-glow-cinema: 0 0 0 1px rgb(96 178 226 / 20%), 0 2px 16px rgb(60 150 210 / 28%);
+  --record-glow-cinema-highspec: 0 0 0 1px rgb(120 205 255 / 40%), 0 0 22px rgb(110 200 255 / 45%), 0 4px 22px rgb(40 120 190 / 40%);
 
   --event-warm-red: #e08b76;
   --event-warm-orange: #dba05c;

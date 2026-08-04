@@ -382,6 +382,62 @@ cover 于是从左右各裁掉一块——正是用户看到的"左边被裁掉�
 全量 **313 通过 / 0 失败**。版本：`app.css` v30、`app.js` v31、
 `record-card.js` v4，SW shell 缓存 v32。
 
+---
+
+# R5 补丁 3：卡片微调 + 侧边栏晃动
+
+## 1. 影院名做成标签
+
+影院名（非影院时是"线上观看"等）原来是一段裸文字，右边紧挨着一个方块徽章，
+两者高度、圆角都不一致。现在 `.record-card-venue` 与 `.format-badge` 用同一套
+`min-height: 22px` / `padding: 2px 8px` / `border-radius: 4px`，并排是齐整的一行。
+
+## 2. 日期只到"日"
+
+`eventDateLabel(event, { withTime: false })`——去掉星期与具体时刻。
+详细的票务时间在详情页里有，卡片上不需要重复。
+
+## 3. 态度标签下移，与日期平齐
+
+新增 `.record-card-bottom`：`margin-top: auto` 贴卡片底部，
+`justify-content: space-between` 让态度标签靠左、日期靠右，两者垂直居中对齐。
+
+## 4. 金色边框 → Steam 风格冷蓝辉光
+
+用户原话："我还是喜欢 steam 头像框那种蓝光特效，正好不管是 imax 还是杜比影院
+都采用了那种蓝光。显得高级。"金色在浅色背景上确实显得发黄发脏，也和 IMAX/Dolby
+徽章的深蓝底不协调。
+
+`--record-border-cinema*` / `--record-highlight-cinema*` 全部换成冷蓝，
+并新增两个外发光 token：
+
+- `--record-glow-cinema`：普通影院场，一层淡蓝内描边 + 柔和外发光。
+- `--record-glow-cinema-highspec`：高规格制式（IMAX/Dolby/4DX/MX4D/ScreenX）
+  再叠一层更亮、更扩散的光晕。
+
+浅色/深色各一套取值。
+
+## 5. 侧边栏拖到一定幅度会左右反复晃动
+
+两个叠加原因，都已修：
+
+1. **上一次手势的收尾定时器没被撤销。** "取消打开"会排一个 200ms 的定时器去清空
+   手势层。如果用户在这 200ms 内又开始拖，这个旧定时器会在新拖动进行到一半时触发，
+   把正在跟手的抽屉连同手势层一起清空；下一帧又被重建——连续拖动时就是左右晃。
+   现在定时器句柄存进 `sidebarTimer`，新手势开始时 `cancelSidebarTimer()` 先撤销它。
+2. **过渡抑制依赖样式表层叠顺序。** 之前只靠 `.is-dragging` 那条 CSS 规则关掉
+   `transition`。只要有一帧没抑制住，220ms 的 transform 过渡就会和逐帧跟手互相追赶，
+   表现正是来回晃。现在在每帧的 rAF 里**内联**写 `transition: none; animation: none`
+   ——内联样式优先级高于任何样式表规则，不依赖层叠顺序；松手时再清掉内联值，
+   让 CSS 过渡接管回弹。
+
+## 补丁 3 的测试与版本
+
+新增 1 条日期格式回归用例（只到日、不含星期与时刻），更新卡片结构顺序用例
+（态度与日期必须在同一个底部行里）。全量 **314 通过 / 0 失败**。
+版本：`tokens-v2.css` v17、`app.css` v31、`app.js` v32、`record-card.js` v5，
+SW shell 缓存 v33。
+
 ## 未验证的部分（本窗口无浏览器环境，延续 R3 起的已知限制）
 
 以下都在代码/纯函数层面确认正确，但没有在真机上点过，建议实机核对：

@@ -163,15 +163,26 @@ test("待确认作品 → 状态标签同样叠在海报上，不在文字区里
   assert.doesNotMatch(bodyMatch[1], /待确认作品/);
 });
 
-test("R5 补丁 2：卡片信息顺序为 标题 → 影院名+徽章 → 态度 → 右下角日期", () => {
+test("R5 补丁 2/3：卡片信息顺序为 标题 → 影院名+徽章 → 底部（态度 + 日期同一行）", () => {
   const { record, work, event } = cinemaRecord();
   const html = recordCard(record, { work, event, buildPosterUrl });
-  const order = ["record-card-title", "record-card-venue-row", "record-card-attitude-row", "record-card-date"]
+  const order = ["record-card-title", "record-card-venue-row", "record-card-bottom", "record-attitude-tag", "record-card-date"]
     .map((cls) => html.indexOf(cls));
-  assert.ok(order.every((index) => index !== -1), "四个区块都应存在");
-  assert.deepEqual([...order].sort((a, b) => a - b), order, "区块顺序必须是 标题→影院名→态度→日期");
+  assert.ok(order.every((index) => index !== -1), "各区块都应存在");
+  assert.deepEqual([...order].sort((a, b) => a - b), order, "顺序必须是 标题→影院名→底部行(态度→日期)");
   // 徽章跟在影院名右边、同一行里
   assert.match(html, /record-card-venue-row">[\s\S]*?record-card-venue[\s\S]*?record-badge-row/);
+  // 态度与日期必须在同一个底部行里（用户要求态度下移与时间平齐）
+  assert.match(html, /record-card-bottom">[\s\S]*?record-attitude-tag[\s\S]*?record-card-date/);
+});
+
+test("R5 补丁 3：卡片日期只到日，不含星期与具体时刻", () => {
+  const { record, work } = cinemaRecord();
+  const event = { location_type: "cinema", screening_at: "2026-07-18T09:50:00+09:00", viewing_context: { format: null, event_types: [] } };
+  const html = recordCard(record, { work, event, buildPosterUrl });
+  assert.match(html, /record-card-date">2026\/07\/18</);
+  assert.doesNotMatch(html, /09:50/);
+  assert.doesNotMatch(html, /\(土\)/);
 });
 
 test("R5 补丁 2：有海报时只渲染 <img>（靠原图比例撑宽度），不再叠一层占位块", () => {

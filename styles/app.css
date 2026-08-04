@@ -163,9 +163,10 @@ svg {
   box-shadow: var(--shadow-float);
 }
 
-/* 影院卡：金属质感描边 + 顶部横向渐变高光 */
+/* 影院卡：冷蓝辉光描边 + 顶部横向渐变高光（Steam 头像框那种质感） */
 .record-card.cinema {
   border-color: var(--record-border-cinema);
+  box-shadow: var(--record-glow-cinema);
 }
 
 .record-card.cinema::before {
@@ -177,9 +178,10 @@ svg {
   background: var(--record-highlight-cinema);
 }
 
-/* 高规格制式（IMAX / Dolby / 4DX / MX4D / ScreenX）→ 描边与高光透明度更高 */
+/* 高规格制式（IMAX / Dolby / 4DX / MX4D / ScreenX）→ 描边更亮，外发光更强更扩散 */
 .record-card.cinema.high-spec {
   border-color: var(--record-border-cinema-highspec);
+  box-shadow: var(--record-glow-cinema-highspec);
 }
 
 .record-card.cinema.high-spec::before {
@@ -322,22 +324,36 @@ svg {
   align-items: center;
 }
 
+/* 影院名（或"线上观看"等）也做成标签，高度/内边距/圆角与右侧的制式徽章完全一致，
+   两者并排时才是齐整的一行，而不是"一段裸文字 + 一个方块"。 */
 .record-card-venue {
+  display: inline-flex;
+  min-height: 22px;
+  max-width: 100%;
+  padding: 2px 8px;
+  align-items: center;
   overflow: hidden;
   color: var(--ink-soft);
   text-overflow: ellipsis;
   white-space: nowrap;
+  border: 1px solid var(--outline-soft);
+  border-radius: 4px;
+  background: var(--surface-high);
   font: var(--type-meta);
 }
 
-.record-card-attitude-row {
+/* 底部一行：态度标签在左，日期在右，两者垂直居中对齐；整行贴卡片底部 */
+.record-card-bottom {
   display: flex;
   min-width: 0;
+  margin-top: auto;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
 }
 
-/* 日期钉在卡片右下角 */
 .record-card-date {
-  margin-top: auto;
+  flex: 0 0 auto;
   color: var(--ink-soft);
   text-align: right;
   font: var(--type-meta);

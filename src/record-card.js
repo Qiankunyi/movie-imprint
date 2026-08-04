@@ -111,7 +111,7 @@ function draftCardMarkup(record, { buildPosterUrl } = {}) {
           <span class="record-card-venue">未完成的记录</span>
           <span class="record-draft-label">继续写</span>
         </div>
-        <div class="record-card-attitude-row"><span class="record-status" data-testid="draft-status"><span class="status-dot"></span>已自动保存在本机</span></div>
+        <div class="record-card-bottom"><span class="record-status" data-testid="draft-status"><span class="status-dot"></span>已自动保存在本机</span></div>
       </div>
     </button>
   </article>`;
@@ -128,7 +128,8 @@ function viewingCardMarkup(record, work, event, { buildPosterUrl } = {}) {
   const highSpec = isCinema && isHighSpecFormat(rawFormat);
   const hasEventBadges = evBadges.length > 0;
 
-  const dateLabel = event ? eventDateLabel(event, { withTime: isCinema }) : formatDate(record.createdAt);
+  // 卡片上的日期只精确到"日"：不要星期，也不要具体时刻——点进详情页有完整的票务时间。
+  const dateLabel = event ? eventDateLabel(event, { withTime: false }) : formatDate(record.createdAt);
   const locationLabel = isCinema
     ? (event?.viewing_context?.cinema_name || "")
     : (LOCATION_LABELS[event?.location_type] || LOCATION_LABELS.home);
@@ -161,8 +162,10 @@ function viewingCardMarkup(record, work, event, { buildPosterUrl } = {}) {
           <span class="record-card-venue">${escapeHtml(locationLabel || LOCATION_LABELS.home)}</span>
           ${badgeChips ? `<span class="record-badge-row">${badgeChips}</span>` : ""}
         </div>
-        <div class="record-card-attitude-row">${attitudeTagMarkup(record)}</div>
-        <time class="record-card-date">${escapeHtml(dateLabel)}</time>
+        <div class="record-card-bottom">
+          ${attitudeTagMarkup(record)}
+          <time class="record-card-date">${escapeHtml(dateLabel)}</time>
+        </div>
       </div>
     </button>
   </article>`;
@@ -189,8 +192,10 @@ function supplementCardMarkup(record, work, { buildPosterUrl } = {}) {
         <div class="record-card-venue-row">
           <span class="record-card-venue">补充记录${distance ? ` · 距首次观看 ${distance}` : ""}</span>
         </div>
-        <div class="record-card-attitude-row">${attitudeTagMarkup(record)}</div>
-        <time class="record-card-date">${escapeHtml(formatDate(record.createdAt))}</time>
+        <div class="record-card-bottom">
+          ${attitudeTagMarkup(record)}
+          <time class="record-card-date">${escapeHtml(formatDate(record.createdAt))}</time>
+        </div>
       </div>
     </button>
   </article>`;

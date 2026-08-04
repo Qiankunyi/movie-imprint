@@ -5,7 +5,7 @@ import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
 import { runMigrationIfNeeded } from "./migrate.js?v=3";
 import { EVENT_TYPES } from "./event-types.js?v=1";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
-import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=4";
+import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=5";
 import { memoryListMarkup } from "./memory-list.js?v=1";
 import { formatBadge, eventBadges } from "./format-badge.js";
 import {
@@ -3698,6 +3698,18 @@ function sidebarDrawerEl() {
   return document.querySelector("[data-testid='sidebar-drawer']");
 }
 
+// 收尾动画的定时器。必须能被下一次手势取消——否则上一次"取消打开"排的 200ms 定时器
+// 会在用户已经开始新一次拖动之后触发，把手势层连同正在跟手的抽屉一起清空，
+// 抽屉于是凭空消失/复位，连续快速拖动时看起来就是左右反复晃动。
+let sidebarTimer = null;
+
+function cancelSidebarTimer() {
+  if (sidebarTimer !== null) {
+    clearTimeout(sidebarTimer);
+    sidebarTimer = null;
+  }
+}
+
 /** 清空手势临时层。手势取消或提交给真正的 render() 之前都要先调用，避免出现两个抽屉。 */
 function clearGestureLayer() {
   if (gestureLayer) gestureLayer.innerHTML = "";
@@ -3716,8 +3728,11 @@ function closeSidebarAnimated() {
   drawer.style.transition = "";
   drawer.style.transform = "translateX(-100%)";
   const overlayEl = drawer.closest(".overlay");
+  overlayEl?.classList.remove("is-dragging");
   if (overlayEl) overlayEl.style.setProperty("--scrim-progress", "0");
-  setTimeout(() => {
+  cancelSidebarTimer();
+  sidebarTimer = setTimeout(() => {
+    sidebarTimer = null;
     clearGestureLayer();
     state.overlay = null;
     render();
@@ -3747,11 +3762,16 @@ function paintSidebarProgress(drawer, progress) {
       overlayEl.classList.add("is-dragging");
       overlayEl.style.setProperty("--scrim-progress", String(sidebarPaintProgress));
     }
+    // 内联写死 transition/animation：内联样式优先级高于任何样式表规则，
+    // 不依赖 .is-dragging 那条规则的层叠顺序是否如预期。只要有一帧漏掉了抑制，
+    // 220ms 的 transform 过渡就会和逐帧跟手互相追赶，看起来正是"左右反复晃动"。
+    target.style.transition = "none";
+    target.style.animation = "none";
     target.style.transform = `translateX(${(sidebarPaintProgress - 1) * 100}%)`;
   });
 }
 
-/** 结束拖动态：取消挂起的绘制帧并摘掉 .is-dragging，让 CSS 过渡重新接管。 */
+/** 结束拖动态：取消挂起的绘制帧、清掉内联抑制，让 CSS 过渡重新接管回弹动画。 */
 function endSidebarDragState(drawer) {
   if (sidebarPaintFrame !== null) {
     cancelAnimationFrame(sidebarPaintFrame);
@@ -3759,6 +3779,10 @@ function endSidebarDragState(drawer) {
   }
   const overlayEl = drawer?.closest(".overlay");
   if (overlayEl) overlayEl.classList.remove("is-dragging");
+  if (drawer) {
+    drawer.style.transition = "";
+    drawer.style.animation = "none"; // 回弹期间仍然不要放 drawer-in 入场动画回来
+  }
 }
 
 document.addEventListener("touchstart", (event) => {
@@ -3814,6 +3838,9 @@ document.addEventListener("touchmove", (event) => {
     // 关键：这里绝不能 render()。把抽屉塞进 #app 之外的常驻手势层，
     // touchstart 的目标元素因此不会被销毁，后续事件能继续冒泡到 document。
     if (!gestureLayer) { sidebarGesture = null; return; }
+    // 新一次手势开始了：撤掉上一次收尾动画排的定时器，否则它会在这次拖动进行到
+    // 一半时触发并清空手势层（抽屉凭空消失 → 再被下一帧重建，来回晃）
+    cancelSidebarTimer();
     gestureLayer.innerHTML = sidebarDrawer();
     const drawer = sidebarDrawerEl();
     if (!drawer) { sidebarGesture = null; clearGestureLayer(); return; }
@@ -3862,9 +3889,12 @@ function finishSidebarGesture(cancelled = false) {
         requestAnimationFrame(() => { fresh.style.animation = ""; });
       }
     } else {
+      // 取消：让抽屉滑回屏幕外再摘掉。定时器存起来，下一次手势开始时会被撤销。
+      drawer.style.transition = "";
       drawer.style.transform = "translateX(-100%)";
       if (overlayEl) overlayEl.style.setProperty("--scrim-progress", "0");
-      setTimeout(clearGestureLayer, 200);
+      cancelSidebarTimer();
+      sidebarTimer = setTimeout(() => { sidebarTimer = null; clearGestureLayer(); }, 200);
     }
     return;
   }
