@@ -681,6 +681,27 @@ svg {
   to { transform: translateY(0) scale(1); opacity: 1; }
 }
 
+/* 收起动画：反向播一遍，越靠近主按钮的越后消失（和展开顺序相反）。
+   之前没有这段，点一下菜单直接从 DOM 消失，很突兀。 */
+.fab-stack.closing .fab-item {
+  animation: fab-item-out var(--motion-fast) ease forwards;
+  animation-delay: calc((4 - var(--fab-index, 1)) * 20ms);
+}
+
+@keyframes fab-item-out {
+  from { transform: translateY(0) scale(1); opacity: 1; }
+  to { transform: translateY(10px) scale(0.85); opacity: 0; }
+}
+
+.fab-stack.closing .fab-scrim {
+  animation: scrim-out var(--motion-fast) ease forwards;
+}
+
+@keyframes scrim-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
 .fab-item-label {
   padding: 4px 10px;
   color: var(--ink);
@@ -3524,6 +3545,14 @@ svg {
 
 .history-editor .cinema-only-fields {
   display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+/* 票价合计 + 张数并排 —— 两者是一组信息，分开两行反而看不出关系 */
+.price-fields {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
   gap: var(--space-3);
   margin-top: var(--space-3);
 }

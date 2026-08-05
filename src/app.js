@@ -81,9 +81,10 @@ import {
   parseDraft,
   promoteWorkToMatched,
   reconcileLocalWorkTitle,
+  sortRecordsByViewingDate,
   recommendationLabel,
   resolveWork
-} from "./domain.js?v=14";
+} from "./domain.js?v=15";
 import {
   MIME_TYPES,
   copyExportText,
@@ -189,6 +190,7 @@ const state = {
   taglineSummary: "",         // R5：当前作品抓回来的完整简介原文（AI 概括的输入）
   taglineSummaryState: "idle", // "idle" | "loading" | "ready" | "missing"
   fabOpen: false,             // R5 补丁 4：右下角 FAB 二级菜单是否展开
+  fabClosing: false,          // R5 补丁 6：正在播收起动画（播完才从 DOM 移除）
   sidebarSkipEntryAnimation: false // 由手势提交时渲染的抽屉不播入场动画（见 finishSidebarGesture）
 };
 
@@ -420,7 +422,6 @@ async function loadState() {
   state.series ||= [];
   state.collections ||= [];
   await indexHomeCardData();
-  state.records.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   // R2：草稿必须连同 captureContext 一起恢复——Step 3 中断后再打开 App，
   // 应该能直接从"继续写"回到 Step 3，而不是重走 Step 1/2。
   state.captureContext = state.draft?.captureContext || null;
@@ -456,6 +457,9 @@ async function indexHomeCardData() {
     const event = record.viewing_event_id ? eventsById.get(record.viewing_event_id) : null;
     if (event) state.recordEventById.set(record.id, event);
   }
+  // 索引建好之后立刻按"观影日期"重排时间线——排序依据必须和卡片右下角显示的
+  // 那个日期一致，否则补录旧片会莫名其妙插到最前面（见 sortRecordsByViewingDate）。
+  state.records = sortRecordsByViewingDate(state.records, state.recordEventById);
 }
 
 /** R4：work.id（含 merged_from 里的旧 id）对应的全部 record，供作品页聚合。 */
@@ -559,6 +563,25 @@ function fabActionsFor() {
   return [themeItem, searchItem, { action: "open-capture", icon: "edit", label: "开始记录", testId: "add-record" }];
 }
 
+/**
+ * R5 补丁 6：收起也要有动画。
+ * 之前只做了展开动画，收起是直接把菜单项从 DOM 里删掉——瞬间消失，很突兀。
+ * 现在先打上 .closing 让 CSS 播一遍反向动画，动画结束后才真正移除。
+ */
+let fabCloseTimer = null;
+
+function closeFabAnimated() {
+  if (!state.fabOpen || state.fabClosing) return;
+  state.fabClosing = true;
+  render();
+  clearTimeout(fabCloseTimer);
+  fabCloseTimer = setTimeout(() => {
+    state.fabClosing = false;
+    state.fabOpen = false;
+    render();
+  }, 160);
+}
+
 function fabMenu() {
   const items = fabActionsFor();
   const open = state.fabOpen;
@@ -571,10 +594,11 @@ function fabMenu() {
   // 收起时直接不渲染菜单项。
   // （之前用 `hidden` 属性来藏，但 `.fab-items { display: flex }` 的优先级高于
   //  UA 样式表的 `[hidden] { display: none }`，属性根本没生效——菜单一直摊在屏幕上。）
-  return `<div class="fab-stack ${open ? "open" : ""}" data-testid="fab-stack">
+  const closing = state.fabClosing;
+  return `<div class="fab-stack ${open ? "open" : ""} ${closing ? "closing" : ""}" data-testid="fab-stack">
     ${open ? `<button class="fab-scrim" type="button" data-action="close-fab" aria-label="收起菜单"></button>` : ""}
     ${open ? `<ul class="fab-items">${list}</ul>` : ""}
-    <button class="fab ${open ? "open" : ""}" type="button" data-action="toggle-fab" aria-expanded="${open}" aria-label="${open ? "收起操作菜单" : "展开操作菜单"}" data-testid="fab-toggle">＋</button>
+    <button class="fab ${open && !closing ? "open" : ""}" type="button" data-action="toggle-fab" aria-expanded="${open}" aria-label="${open ? "收起操作菜单" : "展开操作菜单"}" data-testid="fab-toggle">＋</button>
   </div>`;
 }
 
@@ -863,6 +887,19 @@ function collectionsRow(work) {
   </div>`;
 }
 
+/**
+ * R5 补丁 6：票价展示。双人/多张购票时票据里有多笔金额，解析时会加总；
+ * 如果只显示这个总额，看起来就像"这部电影一张票就要这么多"，会误导票价认知。
+ * 所以张数大于 1 时必须显式写出来。张数优先取解析到的金额笔数，其次取座位数。
+ */
+function ticketPriceLabel(event) {
+  const amount = event?.ticket_price?.amount;
+  if (!Number.isFinite(amount) || amount <= 0) return "";
+  const count = Number(event.ticket_price?.count) || Number(event.viewing_context?.seat_count) || 1;
+  const money = `￥${Number(amount).toLocaleString("ja-JP")}`;
+  return count > 1 ? `${money} · ${count} 张` : money;
+}
+
 function workHistoryRow(item, index) {
   const ctx = item.viewing_context || {};
   const isCinema = item.location_type === "cinema";
@@ -874,7 +911,7 @@ function workHistoryRow(item, index) {
   const metaBits = [
     item.duration_minutes ? `${item.duration_minutes}分` : "",
     ctx.seats?.length ? `座位 ${ctx.seats.join("、")}` : "",
-    item.ticket_price?.amount ? `￥${Number(item.ticket_price.amount).toLocaleString("ja-JP")}` : ""
+    ticketPriceLabel(item)
   ].filter(Boolean);
   const badgeRow = fmtBadge || evBadges.length
     ? `<div class="record-badge-row">${[fmtBadge ? badgeChipMarkup(fmtBadge) : "", ...evBadges.map(badgeChipMarkup)].join("")}</div>`
@@ -1138,13 +1175,17 @@ function workMatchPanel(record) {
   if (!work) return "";
   const match = work.match || { status: "idle", candidates: [] };
   if (match.status === "confirmed") {
-    const reference = work.external_refs?.find((item) => item.source === "bangumi");
-    return `<section class="work-match-panel confirmed" data-testid="work-match-panel">
-      <div><span>作品已确认</span><b>Bangumi #${escapeHtml(reference?.id || "")}</b></div>
-      ${work.original_title ? `<p>${escapeHtml(work.original_title)}${work.release_year ? ` · ${work.release_year}` : ""}</p>` : ""}
-      ${match.message ? `<p class="match-message">${escapeHtml(match.message)}</p>` : ""}
-      <button type="button" class="work-match-secondary" data-action="rematch-work">修改匹配</button>
-    </section>`;
+    // R5 补丁 6：「作品已确认」「Bangumi #25833」都是给后台看的，用户不需要；
+    // 「修改匹配」这个独立按钮也删掉。整块改成和下面「个人态度与推荐」一样的
+    // 行式入口——右侧一个 "〉"，点整行进入修改匹配。
+    const subtitle = [work.original_title, work.release_year].filter(Boolean).join(" · ");
+    return `<button type="button" class="judgement-summary" data-action="rematch-work" data-testid="work-match-panel">
+      <span class="judgement-summary-icon" aria-hidden="true">${icon("match")}</span>
+      <span class="judgement-summary-copy">
+        <small>作品条目 · 点击修改</small>
+        <b>${escapeHtml(subtitle || work.title || "已匹配")}</b>
+      </span>${icon("chevron")}
+    </button>`;
   }
   if (match.status === "needs_confirmation") {
     return `<section class="work-match-panel" data-testid="work-match-panel">
@@ -1492,7 +1533,7 @@ function ticketConfirmOverlay() {
     const endStr = event.screening_ends_at ? timeFmt.format(new Date(event.screening_ends_at)) : "";
     const timeRange = startStr ? (endStr ? `${startStr}–${endStr}` : startStr) : "";
     const seatsStr = ec.seats?.length ? ec.seats.join("、") : "";
-    const priceStr = event.ticket_price?.amount ? `￥${Number(event.ticket_price.amount).toLocaleString("ja-JP")}` : "";
+    const priceStr = ticketPriceLabel(event);
     const tentative = tentativeViewingRelation(ctx.existingHistoryCount || 0, index);
     const currentRelation = event.viewing_relation || tentative;
 
@@ -1647,6 +1688,12 @@ function historyEventEditorOverlay(event) {
             ${EVENT_TYPES.map(([key, label]) => `<label class="event-tag-chip ${(ctx.event_types || []).includes(key) ? "selected" : ""}"><input type="checkbox" name="eventTypes" value="${key}" ${(ctx.event_types || []).includes(key) ? "checked" : ""} />${escapeHtml(label)}</label>`).join("")}
           </fieldset>
           <label><span>特典备注（选了"入場者特典"才会保留）</span><input type="text" name="bonusNote" value="${escapeHtml(ctx.bonus_note || "")}" placeholder="如：第3週 色紙" /></label>
+        </div>
+        <!-- R5 补丁 6：票价与张数可手动修正。票据格式五花八门，解析难免有抓不到
+             （蜘蛛侠那张就没抓到）或把双人票加总成一个数的情况，得留人工订正的口子。 -->
+        <div class="price-fields">
+          <label><span>票价合计</span><input type="number" name="ticketAmount" min="0" step="1" inputmode="numeric" value="${event.ticket_price?.amount ?? ""}" placeholder="未填写" data-testid="history-ticket-amount" /></label>
+          <label><span>张数</span><input type="number" name="ticketCount" min="1" step="1" inputmode="numeric" value="${event.ticket_price?.count || event.viewing_context?.seat_count || 1}" data-testid="history-ticket-count" /></label>
         </div>
         <div class="relation-toggle" role="group" aria-label="初看或重看">
           <label class="relation-choice ${event.viewing_relation === "first" ? "selected" : ""}"><input type="radio" name="relation" value="first" ${event.viewing_relation === "first" ? "checked" : ""} />初看</label>
@@ -2546,11 +2593,20 @@ async function saveHistoryEventForm(form) {
   const bonusNoteInput = String(data.get("bonusNote") || "").trim() || null;
   const chosenRelation = ["first", "rewatch"].includes(data.get("relation")) ? data.get("relation") : null;
 
+  // R5 补丁 6：票价与张数。留空表示"没有票价信息"，写 null 而不是 0。
+  const amountRaw = String(data.get("ticketAmount") || "").trim();
+  const amountNum = amountRaw === "" ? null : Number(amountRaw);
+  const countNum = Math.max(1, Number(data.get("ticketCount")) || 1);
+  const ticketPrice = Number.isFinite(amountNum) && amountNum > 0
+    ? { ...(target.ticket_price || {}), amount: amountNum, currency: target.ticket_price?.currency || "JPY", count: countNum }
+    : null;
+
   const updatedUnlocked = {
     ...target,
     location_type: locationType,
     viewed_on: viewedOn,
     screening_at: screeningAt,
+    ticket_price: ticketPrice,
     viewing_context: {
       ...target.viewing_context,
       cinema_name: locationType === "cinema" ? (String(data.get("cinemaName") || "").trim() || null) : null,
@@ -2807,15 +2863,14 @@ document.addEventListener("click", async (event) => {
   const { action } = trigger.dataset;
   // R5 补丁 4：点了 FAB 菜单里的任何一项之后，菜单都要收起来——
   // 除了开合按钮本身，以及不改变当前页面的主题切换（切完还能继续点别的）。
-  if (state.fabOpen && action !== "toggle-fab" && action !== "theme") state.fabOpen = false;
+  if (state.fabOpen && action !== "toggle-fab" && action !== "close-fab" && action !== "theme") { state.fabOpen = false; state.fabClosing = false; }
   if (action === "toggle-fab") {
-    state.fabOpen = !state.fabOpen;
-    render();
+    if (state.fabOpen) closeFabAnimated();
+    else { state.fabOpen = true; render(); }
     return;
   }
   if (action === "close-fab") {
-    state.fabOpen = false;
-    render();
+    closeFabAnimated();
     return;
   }
   if (action === "search-placeholder") return;
@@ -3965,7 +4020,11 @@ document.addEventListener("touchmove", (event) => {
   if (sidebarGesture.mode === "opening") {
     paintSidebarProgress(drawer, deltaX / sidebarGesture.width);
   } else {
-    paintSidebarProgress(drawer, 1 - Math.max(0, deltaX) / sidebarGesture.width);
+    // R5 补丁 6：关闭手势**两个方向都支持**。
+    // 用户反馈：既然拉出来是从左往右滑，直觉上推回去就该从右往左滑，
+    // 结果之前只认"从左往右"，往左滑半天毫无反应。现在取横向位移的绝对值——
+    // 往左滑（推回去，最直觉）和往右滑（原来的做法）都能关。
+    paintSidebarProgress(drawer, 1 - Math.abs(deltaX) / sidebarGesture.width);
   }
 }, { passive: false });
 
@@ -4008,7 +4067,8 @@ function finishSidebarGesture(cancelled = false) {
     return;
   }
 
-  if (!cancelled && Math.max(0, deltaX) > SIDEBAR_CLOSE_COMMIT_PX) {
+  // 两个方向都算数（见 touchmove 里的说明）
+  if (!cancelled && Math.abs(deltaX) > SIDEBAR_CLOSE_COMMIT_PX) {
     closeSidebarAnimated();
   } else {
     drawer.style.transform = "";

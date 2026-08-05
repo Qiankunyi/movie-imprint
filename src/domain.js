@@ -258,6 +258,30 @@ export function mergeWorks(primary, duplicates = []) {
   };
 }
 
+/**
+ * R5 补丁 6：首页时间线按**观影日期**倒序（近 → 远），不是按记录创建时间。
+ *
+ * 补录很常见：今天补记三年前看的一场，按 createdAt 排它会插到最前面，
+ * 和卡片右下角显示的观影日期对不上。这里统一以卡片上显示的那个日期为准，
+ * 拿不到场次日期（补充记录、草稿）时才回落到 createdAt。
+ *
+ * @param {object[]} records
+ * @param {Map<string, object>} eventByRecordId  record.id → ViewingEvent
+ * @returns {object[]} 新数组，不修改入参
+ */
+export function sortRecordsByViewingDate(records, eventByRecordId) {
+  const keyOf = (record) => {
+    const event = eventByRecordId?.get?.(record.id);
+    return event?.screening_at || event?.viewed_on || record?.createdAt || "";
+  };
+  return [...(Array.isArray(records) ? records : [])].sort((a, b) => {
+    const ka = keyOf(a);
+    const kb = keyOf(b);
+    if (ka === kb) return String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+    return kb.localeCompare(ka);
+  });
+}
+
 export function reconcileLocalWorkTitle(work, record) {
   const workTitleHint = record.inputHints?.workTitle?.trim();
   if (!workTitleHint || work.identity_status === "matched" || work.title === workTitleHint) return work;

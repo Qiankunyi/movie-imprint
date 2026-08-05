@@ -16,6 +16,7 @@ import {
   parseWorkTag,
   promoteWorkToMatched,
   reconcileLocalWorkTitle,
+  sortRecordsByViewingDate,
   recommendationLabel,
   resolveWork,
   workIdFor
@@ -398,4 +399,40 @@ test("assignViewingRelations 的实现不读取 location_type（缺失该字段�
   assert.ok(!("location_type" in events[0]));
   const result = assignViewingRelations(events);
   assert.deepEqual(result.map((e) => e.viewing_relation), ["first", "rewatch"]);
+});
+
+// ─── R5 补丁 6：时间线按观影日期排序 ─────────────────────────────────────────
+
+test("sortRecordsByViewingDate：按观影日期倒序，而不是记录创建时间", () => {
+  // 关键场景：今天补记一部三年前看的片。按 createdAt 排它会跑到最前面，
+  // 但卡片右下角显示的是三年前的观影日期，看起来就像"排序坏了"。
+  const records = [
+    { id: "new_record_of_old_movie", createdAt: "2026-08-05T00:00:00.000Z" },
+    { id: "recent_watch", createdAt: "2026-07-01T00:00:00.000Z" }
+  ];
+  const events = new Map([
+    ["new_record_of_old_movie", { screening_at: "2023-05-01T10:00:00+09:00" }],
+    ["recent_watch", { screening_at: "2026-07-18T09:50:00+09:00" }]
+  ]);
+  assert.deepEqual(
+    sortRecordsByViewingDate(records, events).map((r) => r.id),
+    ["recent_watch", "new_record_of_old_movie"]
+  );
+});
+
+test("sortRecordsByViewingDate：没有场次的记录回落到 createdAt，且不修改入参", () => {
+  const records = [
+    { id: "a", createdAt: "2026-01-01T00:00:00.000Z" },
+    { id: "b", createdAt: "2026-06-01T00:00:00.000Z" }
+  ];
+  const original = [...records];
+  assert.deepEqual(sortRecordsByViewingDate(records, new Map()).map((r) => r.id), ["b", "a"]);
+  assert.deepEqual(records, original, "不得就地修改传入数组");
+  assert.deepEqual(sortRecordsByViewingDate([], null), []);
+});
+
+test("sortRecordsByViewingDate：只有日期没有时刻时用 viewed_on", () => {
+  const records = [{ id: "a", createdAt: "2020-01-01" }, { id: "b", createdAt: "2020-01-01" }];
+  const events = new Map([["a", { viewed_on: "2026-03-01" }], ["b", { viewed_on: "2026-09-01" }]]);
+  assert.deepEqual(sortRecordsByViewingDate(records, events).map((r) => r.id), ["b", "a"]);
 });

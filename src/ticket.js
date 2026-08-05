@@ -185,9 +185,15 @@ export function extractFormatAndTitle(raw) {
 
 /**
  * 从一段文本中解析票价。支持「￥2,000」「2000円」「¥2000」等常见写法。
- * 多个数值时取合计不可得时的各项之和；只有一个数值时即为合计。
+ * 多个数值时取各项之和；只有一个数值时即为合计。
+ *
+ * R5 补丁 6：额外返回 `count`（原文里出现了几笔金额）。
+ * 双人观影的票据里会出现两笔，之前只把它们加总成一个数字存下来，
+ * 展示时看着就像"这部电影一张票 4,500 円"，会误导对票价的认知。
+ * 有了 count，UI 就能明确写成「￥4,500 · 2 张」。
+ *
  * @param {string} segment
- * @returns {{ amount: number, currency: "JPY" } | null}
+ * @returns {{ amount: number, currency: "JPY", count: number } | null}
  */
 export function parseTicketPrice(segment) {
   if (!segment) return null;
@@ -198,7 +204,7 @@ export function parseTicketPrice(segment) {
     .filter((n) => Number.isFinite(n) && n > 0);
   if (!amounts.length) return null;
   const amount = amounts.length === 1 ? amounts[0] : amounts.reduce((sum, n) => sum + n, 0);
-  return { amount, currency: "JPY" };
+  return { amount, currency: "JPY", count: amounts.length };
 }
 
 function computeDurationMinutes(startIso, endIso) {

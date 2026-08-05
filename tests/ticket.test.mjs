@@ -336,7 +336,7 @@ describe("draftViewingEvent", () => {
     // SMT_EMAIL_1 本身不含票价字段，这里换用含票价的 KINEZO 场次单独验证
     const kinezoResult = parseTicketText(KINEZO_EMAIL);
     const kinezoEvent = draftViewingEvent(kinezoResult.screenings[0], "work_test123");
-    assert.deepEqual(kinezoEvent.ticket_price, { amount: 2300, currency: "JPY" });
+    assert.deepEqual(kinezoEvent.ticket_price, { amount: 2300, currency: "JPY", count: 1 });
   });
 
   it("viewing_context.event_types 默认为空数组（不是 null）", () => {
@@ -411,7 +411,7 @@ describe("parseTicketText — KINEZO 单封邮件（含内部分隔线）", () =
   });
 
   it("票价被正确解析（R1 红线变更：不再脱敏）", () => {
-    assert.deepEqual(result.screenings[0].ticketPrice, { amount: 2300, currency: "JPY" });
+    assert.deepEqual(result.screenings[0].ticketPrice, { amount: 2300, currency: "JPY", count: 1 });
   });
 
   it("支付方式仍被移除，不出现在解析结果附近文本中", () => {
@@ -426,9 +426,14 @@ describe("parseTicketText — KINEZO 单封邮件（含内部分隔线）", () =
 
 describe("parseTicketPrice", () => {
   it("支持 ￥2,000 / 2000円 / ¥2000 等常见写法", () => {
-    assert.deepEqual(parseTicketPrice("料金：￥2,000"), { amount: 2000, currency: "JPY" });
-    assert.deepEqual(parseTicketPrice("2000円"), { amount: 2000, currency: "JPY" });
-    assert.deepEqual(parseTicketPrice("¥2000"), { amount: 2000, currency: "JPY" });
+    assert.deepEqual(parseTicketPrice("料金：￥2,000"), { amount: 2000, currency: "JPY", count: 1 });
+    assert.deepEqual(parseTicketPrice("2000円"), { amount: 2000, currency: "JPY", count: 1 });
+    assert.deepEqual(parseTicketPrice("¥2000"), { amount: 2000, currency: "JPY", count: 1 });
+  });
+
+  it("多笔金额（双人购票）→ 金额合计 + 张数，UI 据此写明「· N 张」", () => {
+    const result = parseTicketPrice("大人 ￥2,250\n大人 ￥2,250");
+    assert.deepEqual(result, { amount: 4500, currency: "JPY", count: 2 });
   });
 
   it("无价格信息时返回 null", () => {
