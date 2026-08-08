@@ -106,7 +106,7 @@ import {
   createWorkFromCandidate,
   recommendationLabel,
   resolveWork
-} from "./domain.js?v=17";
+} from "./domain.js?v=18";
 import {
   MIME_TYPES,
   copyExportText,
@@ -263,6 +263,8 @@ const state = {
   // 匿名开放等于送出一个免费探活/配额消耗入口，而且 access_password_enabled 与
   // d1_bound 本身就是部署拓扑信息，不该给未认证访问者。
   tmdbDiagnostic: { status: "idle", payload: null, error: null },
+  workRefreshBusy: false,     // R6 补丁 12：刷新作品资料进行中
+  deleteWorkConfirm: "",      // R6 补丁 12：删除作品的确认词输入
   resetConfirmText: "",       // R6：清空数据的确认词输入
   resetBusy: false,
   resetMessage: null,
@@ -572,6 +574,8 @@ function fabActionsFor() {
       workWatched
         ? { action: "open-supplement", icon: "edit", label: "补充记录", testId: "open-supplement-fab" }
         : { action: "open-work-capture", icon: "edit", label: "记录这次观看", testId: "work-start-record-fab" },
+      { action: "refresh-work-metadata", icon: "match", label: "刷新作品资料", testId: "refresh-work-metadata" },
+      { action: "open-delete-work", icon: "trash", label: "删除这部作品", testId: "open-delete-work" },
       { action: "close-work", icon: "back", label: "返回作品书架", testId: "work-back" }
     ];
   }
@@ -1570,6 +1574,44 @@ function tmdbDiagnosticSection() {
   ${result}`;
 }
 
+/** R6 补丁 12：删除作品的确认面板。有感想时直接挡住，不给"一键全删"的能力。 */
+function deleteWorkOverlay(work) {
+  const impact = workDeletionImpact(work);
+  if (!impact) return "";
+  const blocked = impact.records.length > 0;
+  const ready = state.deleteWorkConfirm.trim() === RESET_CONFIRM_PHRASE;
+
+  const willLose = [
+    impact.events.length ? `${impact.events.length} 场观影记录` : null,
+    impact.collections.length ? `从 ${impact.collections.length} 个片单中移除` : null,
+    impact.reasons.length ? `${impact.reasons.length} 条加入理由` : null,
+    impact.series ? `退出系列《${impact.series.title}》` : null
+  ].filter(Boolean);
+
+  return `<div class="overlay" data-testid="delete-work">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="delete-work-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="delete-work-title">删除这部作品</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+
+      ${blocked
+        ? `<p class="settings-note diag-error" data-testid="delete-work-blocked">
+             这部作品下还有 <b>${impact.records.length} 条感想</b>，不能直接删除。<br>
+             作品资料删了可以从 TMDB / Bangumi 重新拿，但感想是你自己写的、找不回来——
+             请先到各条感想里逐条删除，确认真的不要了，再回来删作品。
+           </p>
+           <p class="settings-note">如果你只是想让它用上新的海报规则，用 FAB 里的<b>「刷新作品资料」</b>就行，不需要删除重建。</p>`
+        : `<p class="settings-note">这部作品目前没有任何感想，可以安全删除。</p>
+           ${willLose.length ? `<p class="settings-note">将一并处理：<b>${escapeHtml(willLose.join(" · "))}</b>。<b>无法撤销。</b></p>` : ""}
+           <label class="reset-confirm-field">
+             <span>确认请输入「${RESET_CONFIRM_PHRASE}」</span>
+             <input type="text" id="delete-work-confirm-input" autocomplete="off" value="${escapeHtml(state.deleteWorkConfirm)}" data-testid="delete-work-confirm-input" />
+           </label>
+           <button type="button" class="sheet-done reset-confirm-button" data-action="confirm-delete-work" ${ready ? "" : "disabled"} data-testid="confirm-delete-work">永久删除这部作品</button>`}
+    </section>
+  </div>`;
+}
+
 function settingsOverlay() {
   return `<div class="overlay" data-testid="settings">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭偏好设置"></button>
@@ -2316,6 +2358,8 @@ function render() {
         ? workSearchOverlay()
       : state.overlay === "reset-data"
         ? resetDataOverlay()
+      : state.overlay === "delete-work" && currentWorkForOverlay
+        ? deleteWorkOverlay(currentWorkForOverlay)
         : "";
 
   // 三块分别挂载，各自只在自己变化时重写：
@@ -3284,6 +3328,167 @@ async function persistSeries(series) {
     : [...state.series, series];
 }
 
+// ─── R6 补丁 12：刷新作品资料 / 删除作品 ────────────────────────────────────
+
+/**
+ * 刷新作品资料。
+ *
+ * 这才是「已有作品想用上新的海报规则」该走的入口——**删掉重建是错的**：
+ * 那会丢掉 first_recorded_at（作品进入你记忆系统的时间）、片单条目与加入理由，
+ * 而且重新导入会生成新的 Work ID，片单里那条 entry 指向的旧 id 当场失效。
+ * R6 把 Work ID 做成永久不变，正是为了让"更新资料"不必动身份。
+ *
+ * 保住的：id、first_recorded_at、merged_from、tagline、手动认领的作品类型
+ *（「活动」「其他」只可能来自手动认领，见 applyCandidateToWork）、
+ * 全部 Record / ViewingEvent / 片单条目。
+ * 更新的：标题与别名、上映日、时长、类型标签、简介、external ids、**海报**。
+ */
+async function refreshWorkMetadata() {
+  const work = findWorkById(state.works, state.currentWorkId);
+  if (!work || state.workRefreshBusy) return;
+
+  const tmdbId = externalRefId(work, "tmdb");
+  const bangumiId = externalRefId(work, "bangumi");
+  if (!tmdbId && !bangumiId) {
+    showToast("这部作品还没有关联外部条目，先在感想详情页匹配一次");
+    return;
+  }
+
+  state.workRefreshBusy = true;
+  renderPreservingScroll();
+
+  try {
+    let candidate = null;
+
+    // TMDB 优先：它的详情能一次带回 images，按发行地区重挑海报靠的就是这个
+    if (tmdbId) {
+      const response = await apiFetch(`/api/tmdb/movie?id=${encodeURIComponent(tmdbId)}`, { headers: { accept: "application/json" } });
+      const payload = await response.json().catch(() => null);
+      const detail = payload?.detail;
+      if (response.ok && detail) {
+        candidate = {
+          source: "tmdb",
+          sourceId: String(detail.tmdbId),
+          title: detail.title,
+          originalTitle: detail.originalTitle,
+          releaseDate: detail.releaseDate,
+          year: detail.year,
+          workType: detail.workType,
+          posterRef: detail.posterPath ? { source: "tmdb", path: detail.posterPath } : null,
+          summary: detail.summary,
+          runtimeMinutes: detail.runtimeMinutes,
+          genres: detail.genres,
+          externalIds: {
+            ...(detail.externalIds?.imdb ? { imdb: detail.externalIds.imdb } : {}),
+            ...(detail.externalIds?.wikidata ? { wikidata: detail.externalIds.wikidata } : {})
+          }
+        };
+      }
+    }
+
+    if (!candidate && bangumiId) {
+      const response = await apiFetch(`/api/bangumi/subject?id=${encodeURIComponent(bangumiId)}`, { headers: { accept: "application/json" } });
+      const payload = await response.json().catch(() => null);
+      if (response.ok && payload?.subjectId) {
+        candidate = {
+          source: "bangumi",
+          sourceId: String(payload.subjectId),
+          title: payload.title,
+          originalTitle: payload.originalTitle,
+          releaseDate: payload.date,
+          posterRef: { source: "bangumi", subject_id: Number(payload.subjectId) || null },
+          summary: payload.summary
+        };
+      }
+    }
+
+    if (!candidate) {
+      state.workRefreshBusy = false;
+      renderPreservingScroll();
+      showToast("暂时拿不到最新资料，稍后再试");
+      return;
+    }
+
+    const updated = applyCandidateToWork(work, candidate, { overwritePoster: true });
+    await db.put("works", updated);
+    state.works = state.works.map((item) => (item.id === updated.id ? updated : item));
+    state.worksById.set(updated.id, updated);
+    state.workRefreshBusy = false;
+    renderPreservingScroll();
+    showToast("作品资料已刷新");
+  } catch (error) {
+    state.workRefreshBusy = false;
+    renderPreservingScroll();
+    showToast(`刷新失败：${error.message}`);
+  }
+}
+
+/**
+ * 删除作品前的影响面统计。删除是不可撤销的，UI 必须先把代价说清楚。
+ */
+function workDeletionImpact(work) {
+  if (!work) return null;
+  const ids = new Set([work.id, ...(work.merged_from || [])]);
+  const records = state.records.filter((record) => ids.has(record.work_id || record.workId));
+  const events = (state.allViewingEvents || []).filter((event) => ids.has(event.work_id));
+  const collections = state.collections.filter((collection) =>
+    collectionEntries(collection).some((entry) => ids.has(entry.work_id))
+  );
+  const reasons = collections.flatMap((collection) =>
+    collectionEntries(collection).filter((entry) => ids.has(entry.work_id) && entry.reason).map((entry) => entry.reason)
+  );
+  return { records, events, collections, reasons, series: findSeriesForWork(state.series, work.id) };
+}
+
+/**
+ * 执行删除。
+ *
+ * 连带规则（用户拍板）：
+ * - **有感想就不许删**，提示先去删记录。作品资料删了能从 TMDB / Bangumi 重新拿，
+ *   感想是你自己写的、不可再生——让"删作品"这个动作具备顺手清掉感想的能力，
+ *   风险不对等。
+ * - ViewingEvent 跟着删：它只有挂在 Work 上才有意义，留下就是孤儿。
+ * - 片单条目跟着移除（加入理由会一起没），确认框里会先列出来。
+ * - 系列成员身份一并移除。
+ * - **物理删除，不留墓碑标记**：R1 与 R6 各因为"留下没清理干净的旧行"出过一次
+ *   幽灵条目，再引入软删除是同一个坑。JSON 导出已经承担备份角色。
+ */
+async function performWorkDeletion() {
+  const work = findWorkById(state.works, state.currentWorkId);
+  const impact = workDeletionImpact(work);
+  if (!work || !impact) return;
+  if (impact.records.length) return;   // UI 已经挡住，这里是最后一道保险
+
+  const ids = [work.id, ...(work.merged_from || [])];
+
+  for (const collection of impact.collections) {
+    let next = collection;
+    for (const id of ids) next = removeWorkFromCollection(next, id);
+    await persistCollection(next);
+  }
+
+  if (impact.series) {
+    let next = impact.series;
+    for (const id of ids) next = removeWorkFromSeries(next, id);
+    await persistSeries(next);
+  }
+
+  for (const event of impact.events) {
+    await db.delete("viewingEvents", event.id).catch(() => {});
+  }
+
+  await db.delete("works", work.id).catch(() => {});
+  for (const id of work.merged_from || []) await db.delete("works", id).catch(() => {});
+
+  state.works = state.works.filter((item) => item.id !== work.id);
+  state.worksById.delete(work.id);
+  state.overlay = null;
+  state.deleteWorkConfirm = "";
+  await indexHomeCardData();
+  closeWork();
+  showToast(`已删除《${work.title}》`);
+}
+
 // ─── R6 补丁 5：TMDB 诊断 ───────────────────────────────────────────────────
 
 async function runTmdbDiagnostic() {
@@ -3965,6 +4170,15 @@ document.addEventListener("click", async (event) => {
   } else if (action === "edit-collection") {
     state.overlay = "collection-editor";
     render();
+  } else if (action === "refresh-work-metadata") {
+    await refreshWorkMetadata();
+  } else if (action === "open-delete-work") {
+    state.deleteWorkConfirm = "";
+    state.overlay = "delete-work";
+    render();
+  } else if (action === "confirm-delete-work") {
+    if (state.deleteWorkConfirm.trim() !== RESET_CONFIRM_PHRASE) return;
+    await performWorkDeletion();
   } else if (action === "run-tmdb-diagnostic") {
     await runTmdbDiagnostic();
   } else if (action === "copy-tmdb-diagnostic") {
@@ -4480,6 +4694,12 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("input", (event) => {
+  if (event.target.id === "delete-work-confirm-input") {
+    state.deleteWorkConfirm = event.target.value;
+    const button = document.querySelector("[data-testid='confirm-delete-work']");
+    if (button) button.disabled = state.deleteWorkConfirm.trim() !== RESET_CONFIRM_PHRASE;
+    return;
+  }
   if (event.target.id === "reset-confirm-input") {
     state.resetConfirmText = event.target.value;
     // 只切按钮的 disabled，不走 render()——重渲染会重建输入框、丢焦点

@@ -660,3 +660,39 @@ test("补丁10：已有海报不被候选覆盖（用户可能已经挑过）", 
   });
   assert.deepEqual(applied.poster, { source: "tmdb", path: "/chosen-by-user.jpg" });
 });
+
+// ─── R6 补丁 12：刷新资料 / 删除作品的数据规则 ─────────────────────────────
+
+test("补丁12：overwritePoster 只在刷新时打开，平时匹配新源不顶掉已有海报", () => {
+  const withPoster = { ...createLocalWork({ id: "r", workId: "w", title: "某片", inputHints: {} }), poster: { source: "bangumi", subject_id: 1 } };
+  const candidate = { source: "tmdb", sourceId: "9", title: "某片", posterRef: { source: "tmdb", path: "/new-by-region.jpg" } };
+
+  const normal = applyCandidateToWork(withPoster, candidate);
+  assert.deepEqual(normal.poster, { source: "bangumi", subject_id: 1 }, "平时不覆盖");
+
+  const refreshed = applyCandidateToWork(withPoster, candidate, { overwritePoster: true });
+  assert.deepEqual(refreshed.poster, { source: "tmdb", path: "/new-by-region.jpg" }, "刷新时才换");
+});
+
+test("补丁12：用户手动认领的「活动」「其他」永远不被外部候选覆盖", () => {
+  for (const manual of ["event", "other"]) {
+    const claimed = { ...createLocalWork({ id: "r", workId: "w", title: "某片", inputHints: {} }), work_type: manual };
+    const applied = applyCandidateToWork(claimed, { source: "tmdb", sourceId: "1", title: "某片", workType: "live_action_film" });
+    assert.equal(applied.work_type, manual, `${manual} 只可能来自手动认领，刷新不该抹掉`);
+  }
+  // 自动推断出来的值仍然允许被更新
+  const auto = { ...createLocalWork({ id: "r", workId: "w", title: "某片", inputHints: {} }), work_type: "unspecified" };
+  assert.equal(
+    applyCandidateToWork(auto, { source: "tmdb", sourceId: "1", title: "某片", workType: "animation_film" }).work_type,
+    "animation_film"
+  );
+});
+
+test("补丁12：刷新不改变作品身份与首次记录时间", () => {
+  const work = { ...createLocalWork({ id: "r", workId: "w_fixed", title: "鸟人", inputHints: {} }), first_recorded_at: "2026-08-08T00:00:00.000Z" };
+  const refreshed = applyCandidateToWork(work, {
+    source: "tmdb", sourceId: "194662", title: "鸟人", posterRef: { source: "tmdb", path: "/x.jpg" }
+  }, { overwritePoster: true });
+  assert.equal(refreshed.id, "w_fixed");
+  assert.equal(refreshed.first_recorded_at, "2026-08-08T00:00:00.000Z", "刷新资料不动首次进入记忆系统的时间");
+});

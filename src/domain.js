@@ -318,8 +318,11 @@ export function promoteWorkToMatched(work, subjectId, bangumiData = {}) {
  *
  * @param {object} work
  * @param {object} candidate 统一候选（见 work-search.js 顶部的形状说明）
+ * @param {{ overwritePoster?: boolean }} [options]
+ *   overwritePoster —— 「刷新作品资料」时为 true。平时匹配一个新源不该顶掉已有海报
+ *   （用户可能已经挑过、或先前的源画质更好），但刷新的目的就是拿新规则重挑一张。
  */
-export function applyCandidateToWork(work, candidate = {}) {
+export function applyCandidateToWork(work, candidate = {}, { overwritePoster = false } = {}) {
   const aliases = [...new Set([
     ...(work.aliases || []),
     work.title,
@@ -358,18 +361,23 @@ export function applyCandidateToWork(work, candidate = {}) {
     // id 不变
     title: candidate.title || work.title,
     original_title: candidate.originalTitle ?? work.original_title ?? null,
-    // 候选判断不出类型时保留 Work 原有的，绝不倒退成 unspecified
-    work_type: (candidate.workType && candidate.workType !== "unspecified")
-      ? candidate.workType
-      : (work.work_type || "unspecified"),
+    // 类型的两条保护：
+    // 1. 候选判断不出类型时保留 Work 原有的，绝不倒退成 unspecified
+    // 2. "活动" 与 "其他" 只可能来自用户手动认领（没有任何自动推断会产出这两个值），
+    //    所以外部候选永远不许覆盖它们——否则刷新一次资料就把用户的判断抹掉了
+    work_type: (work.work_type === "event" || work.work_type === "other")
+      ? work.work_type
+      : (candidate.workType && candidate.workType !== "unspecified")
+        ? candidate.workType
+        : (work.work_type || "unspecified"),
     aliases,
     release_year: releaseYear,
     release_dates: releaseDates,
     summary: candidate.summary || work.summary || null,
     tagline: work.tagline
       || (candidate.summary ? buildTagline(taglineFromSummary(candidate.summary), candidate.source || "external") : null),
-    // 已有海报不被覆盖——用户可能已经挑过，或先前的源画质更好
-    poster: work.poster || candidate.posterRef || null,
+    // 平时不覆盖已有海报；「刷新作品资料」时才允许用新规则重挑的那张顶上
+    poster: overwritePoster ? (candidate.posterRef || work.poster || null) : (work.poster || candidate.posterRef || null),
     runtime_minutes: work.runtime_minutes ?? candidate.runtimeMinutes ?? null,
     genres: work.genres?.length ? work.genres : (candidate.genres || []),
     external_refs: externalRefs,

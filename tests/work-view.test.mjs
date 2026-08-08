@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildWorkView,
@@ -349,4 +349,64 @@ test("R6 §14：看完之后作品自动从「想看」转到「已看」，不�
   // 片单条目与 first_recorded_at 都不受影响
   assert.equal(collections[0].entries[0].reason, "因为 Michael Keaton");
   assert.equal(after[0].work.first_recorded_at, "2026-08-08T00:00:00.000Z", "首次记录时间不因为后来看了而改变");
+});
+
+// ─── R6 补丁 12：删除作品的连带范围 ─────────────────────────────────────────
+//
+// 用户拍板的规则：有感想就不许删。理由是风险不对等——作品资料删了能从
+// TMDB / Bangumi 重新拿，感想是用户自己写的、不可再生。
+
+describe("R6 补丁 12：workDeletionImpact 的判定", () => {
+  // 复现 src/app.js workDeletionImpact 的核心逻辑
+  const impactOf = (work, { records = [], events = [], collections = [] }) => {
+    const ids = new Set([work.id, ...(work.merged_from || [])]);
+    const own = records.filter((r) => ids.has(r.work_id || r.workId));
+    const ownEvents = events.filter((e) => ids.has(e.work_id));
+    const inCollections = collections.filter((c) => (c.entries || []).some((e) => ids.has(e.work_id)));
+    const reasons = inCollections.flatMap((c) =>
+      (c.entries || []).filter((e) => ids.has(e.work_id) && e.reason).map((e) => e.reason));
+    return { records: own, events: ownEvents, collections: inCollections, reasons };
+  };
+
+  const work = { id: "work_birdman", title: "鸟人", merged_from: [] };
+
+  it("有感想时必须被判定为不可删", () => {
+    const impact = impactOf(work, { records: [{ id: "r1", work_id: "work_birdman" }] });
+    assert.equal(impact.records.length, 1);
+    assert.ok(impact.records.length > 0, "UI 据此挡住删除");
+  });
+
+  it("没有感想时可删，并如实统计会一起消失的东西", () => {
+    const impact = impactOf(work, {
+      records: [],
+      events: [{ id: "e1", work_id: "work_birdman" }],
+      collections: [{
+        id: "c1",
+        entries: [{ work_id: "work_birdman", reason: "因为 Michael Keaton" }, { work_id: "work_other" }]
+      }]
+    });
+    assert.equal(impact.records.length, 0);
+    assert.equal(impact.events.length, 1, "ViewingEvent 跟着删——没有 Work 它就是孤儿");
+    assert.equal(impact.collections.length, 1);
+    assert.deepEqual(impact.reasons, ["因为 Michael Keaton"], "加入理由会丢，必须先告诉用户");
+  });
+
+  it("merged_from 里的旧 id 也要算进影响面", () => {
+    const merged = { id: "work_new", title: "你的名字。", merged_from: ["work_old"] };
+    const impact = impactOf(merged, {
+      records: [{ id: "r1", work_id: "work_old" }],
+      events: [{ id: "e1", work_id: "work_old" }]
+    });
+    assert.equal(impact.records.length, 1, "挂在旧 id 上的感想同样要挡住删除");
+    assert.equal(impact.events.length, 1);
+  });
+
+  it("别的作品的记录不算进来", () => {
+    const impact = impactOf(work, {
+      records: [{ id: "r1", work_id: "work_someone_else" }],
+      events: [{ id: "e1", work_id: "work_someone_else" }]
+    });
+    assert.equal(impact.records.length, 0);
+    assert.equal(impact.events.length, 0);
+  });
 });
