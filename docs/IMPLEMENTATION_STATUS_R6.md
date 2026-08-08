@@ -615,3 +615,102 @@ resolve|add|update|move|is`）做未定义扫描——`ensure*` 和 `api*` 都�
 在补上 app.js 的运行时测试之前，**每次改动 app.js 后请在本地跑一次
 `npm run test:e2e`**（需要先 `npx playwright install chromium`）。
 静态检查只能兜住"名字对不上"这一类，兜不住逻辑错误。
+
+---
+
+# R6 补丁 3：数据源状态必须可见（搜「鸟人」只出 Bangumi 的排查）
+
+## 症状
+
+在片单「添加作品」里搜「鸟人」，结果全是 Bangumi 里标题带"鸟人"的动画／漫画条目，
+没有 2014 年 Alejandro G. Iñárritu 导演、Michael Keaton 主演的《Birdman》。
+界面上完全看不出 TMDB 到底有没有参与这次搜索。
+
+## 两个代码级问题（都可静态确认）
+
+### 问题 1：状态算出来了，但永远不上屏
+
+`workSearchOverlay()` 里，提示语是这样放的：
+
+```html
+${search.message ? `<p ...>${message}</p>` : ""}      ← 在容器外面
+<div class="work-search-results">${body}</div>
+```
+
+而 `renderWorkSearchResults()` 为了不让输入框失焦，只做增量重绘：
+
+```js
+container.innerHTML = next.innerHTML;   // 只替换 .work-search-results 内部
+```
+
+于是 `message` 是结果容器的**兄弟节点**，永远不会被这次重绘刷新。
+**即使 TMDB 真的返回 502，用户也看不到任何提示。**
+
+### 问题 2：「没配密钥」被当成成功
+
+`functions/api/tmdb/search.js` 在没有密钥时返回：
+
+```js
+return jsonResponse(200, { query, candidates: [], source: "tmdb", configured: false });
+```
+
+HTTP 200。设计意图是"没配 TMDB 不该让整个搜索报错"——这个判断本身没错，
+但前端当时只看 `Promise.allSettled` 的 fulfilled / rejected，于是这种情况
+**既不算失败、也没有任何提示**，和"TMDB 正常工作但搜到 0 条"完全无法区分。
+
+这两个问题叠在一起，结果就是：无论 TMDB 是没配密钥、请求失败、还是确实没有召回，
+界面表现一模一样——只有 Bangumi 的结果，没有任何解释。
+
+## 修复
+
+**每个数据源都有独立状态，并且无论成功失败都显示。**
+
+`fetchSearchSource()` 现在把三种情况显式区分开：
+
+| 后端响应 | 前端状态 |
+|---|---|
+| 200 + candidates | `ok`，附条数 |
+| 200 + `configured:false` | `unconfigured` |
+| 非 2xx，或网络层抛错 | `failed`，附原因 |
+
+`summarizeSearchSources()`（`src/work-search.js`，纯函数，5 条测试）把它渲染成一行 chip：
+
+```
+Bangumi 8 条    TMDB 未配置密钥，本次没有参与搜索
+Bangumi 8 条    TMDB 暂时不可用（HTTP 401）
+Bangumi 8 条    TMDB 0 条
+```
+
+状态行**渲染在 `.work-search-results` 容器内部**，这样增量重绘一定会刷新它。
+
+## 关于 TMDB 的语言参数（不为某一部片写死映射）
+
+TMDB `/search/movie` 的 `language=zh-CN` 只决定**返回字段用哪种语言**，
+**不决定用哪种语言去匹配**。TMDB 对中文译名的收录本来就有限，所以中文查询在
+TMDB 上召回为空是常态，不是故障。
+
+处理方式是**说清楚**而不是硬编码：外部源都正常、却一条没搜到，且查询词是 CJK 时，
+补一句可操作的提示——"TMDB 对中文／日文译名的收录有限，用原名或英文名通常能搜到"。
+`looksCJK()` 是通用判断，不针对任何具体影片。
+
+> 未来若要真正提升 CJK 召回，可行的非硬编码做法是：CJK 查询在 TMDB 返回空时，
+> 拿 Bangumi 候选的 `originalTitle`（日文原名）再查一次 TMDB。本轮不做——
+> 多一次请求、多一层耦合，先让状态可见，看实际使用频率再决定。
+
+## Cloudflare Pages 上配置 TMDB 密钥
+
+`.dev.vars.example` 只是**本地开发**的样板，不会同步到生产。生产环境要在
+Cloudflare 控制台单独配置：
+
+```
+Pages 项目 → Settings → Environment variables → Production
+  TMDB_ACCESS_TOKEN = <TMDB v4 read access token>     （推荐）
+  或 TMDB_API_KEY   = <TMDB v3 api key>
+  TMDB_LANGUAGE     = zh-CN                            （可选）
+```
+
+⚠️ **改完环境变量必须重新部署一次才会生效**——Cloudflare Pages 的环境变量只对
+新的 deployment 生效，不会热更新到已经跑着的那一版。这是很容易忽略的一步。
+
+配好并重新部署后，搜索面板的状态行会从
+「TMDB 未配置密钥」变成「TMDB N 条」，不需要再去猜。

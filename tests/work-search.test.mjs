@@ -8,6 +8,9 @@ import {
   markCrossSourceDuplicates,
   searchLocalWorks,
   sortExternalCandidates,
+  summarizeSearchSources,
+  hasDegradedSource,
+  looksCJK,
   tmdbCandidateToUnified
 } from "../src/work-search.js";
 
@@ -187,4 +190,49 @@ test("buildSearchResults：本地优先 + 折叠 + 同源去重 + 疑似标记",
 test("buildSearchResults：空输入不抛错", () => {
   const out = buildSearchResults({});
   assert.deepEqual(out, { local: [], external: [] });
+});
+
+// ─── R6 补丁 3：数据源状态必须可见 ───────────────────────────────────────────
+
+test("补丁3：未配置密钥与「搜到 0 条」必须能区分开", () => {
+  const [bgm, tmdbStatus] = summarizeSearchSources({
+    bangumi: { state: "ok", count: 8 },
+    tmdb: { state: "unconfigured" }
+  });
+  assert.equal(bgm.text, "Bangumi 8 条");
+  assert.equal(bgm.tone, "normal");
+  assert.match(tmdbStatus.text, /未配置密钥/);
+  assert.equal(tmdbStatus.tone, "warn");
+  // 这正是实测时看到的场景：结果里只有 Bangumi，而界面完全没说 TMDB 没参与
+  assert.notEqual(tmdbStatus.text, "TMDB 0 条");
+});
+
+test("补丁3：请求失败与「搜到 0 条」也必须能区分开", () => {
+  const [, tmdbStatus] = summarizeSearchSources({
+    bangumi: { state: "ok", count: 3 },
+    tmdb: { state: "failed", error: "TMDB 401" }
+  });
+  assert.match(tmdbStatus.text, /暂时不可用/);
+  assert.match(tmdbStatus.text, /TMDB 401/);
+  assert.equal(tmdbStatus.tone, "error");
+});
+
+test("补丁3：两个源都正常时也照常显示条数，不是只在出错时才提示", () => {
+  const summary = summarizeSearchSources({ bangumi: { state: "ok", count: 2 }, tmdb: { state: "ok", count: 5 } });
+  assert.deepEqual(summary.map((s) => s.text), ["Bangumi 2 条", "TMDB 5 条"]);
+  assert.equal(hasDegradedSource({ bangumi: { state: "ok" }, tmdb: { state: "ok" } }), false);
+});
+
+test("补丁3：任一源未配置或失败都算降级", () => {
+  assert.equal(hasDegradedSource({ tmdb: { state: "unconfigured" } }), true);
+  assert.equal(hasDegradedSource({ tmdb: { state: "failed" } }), true);
+  assert.equal(hasDegradedSource({}), false);
+});
+
+test("补丁3：CJK 查询识别——用于解释「TMDB 对中文片名收录有限」而不是硬编码某部片", () => {
+  assert.equal(looksCJK("鸟人"), true);
+  assert.equal(looksCJK("バードマン"), true);
+  assert.equal(looksCJK("君の名は。"), true);
+  assert.equal(looksCJK("Birdman"), false);
+  assert.equal(looksCJK(""), false);
 });

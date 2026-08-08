@@ -232,3 +232,59 @@ export function buildSearchResults({ local = [], bangumi = [], tmdb = [], query 
   const external = sortExternalCandidates(markCrossSourceDuplicates(foldIntoLocal(deduped, local)), query);
   return { local, external };
 }
+
+// ─── R6 补丁 3：每个数据源各自的状态 ─────────────────────────────────────────
+
+export const SOURCE_LABELS = { bangumi: "Bangumi", tmdb: "TMDB" };
+
+/**
+ * 把每个外部数据源这次的结果整理成可展示的状态。
+ *
+ * 起因：实测搜索「鸟人」只出 Bangumi 的结果，看不出 TMDB 到底是**没配密钥**、
+ * **请求失败**、还是**确实一条都没搜到**——三种情况在界面上长得一模一样。
+ *
+ * 根因有两层，都必须堵：
+ *
+ * 1. 后端把"没配密钥"设计成 HTTP 200 + `configured:false`（当时的想法是"没配
+ *    TMDB 不该让整个搜索报错"）。这个判断本身没错，但它让前端的
+ *    `Promise.allSettled` 看到的是 fulfilled，于是既不算失败、也没有任何提示。
+ * 2. 前端原本只有一个笼统的 `message`，且只在**有源失败时**才设值。
+ *
+ * 现在改成：每个源都有明确状态，并且**无论成功失败都展示**。搜索结果缺失时，
+ * 用户一眼能分清"数据源故障"和"确实搜不到"。
+ *
+ * @param {Record<string, { state: "ok"|"unconfigured"|"failed", count?: number, error?: string }>} sources
+ * @returns {{ source: string, label: string, state: string, text: string, tone: "normal"|"warn"|"error" }[]}
+ */
+export function summarizeSearchSources(sources = {}) {
+  return Object.entries(sources).map(([source, info]) => {
+    const label = SOURCE_LABELS[source] || source;
+    const state = info?.state || "ok";
+    if (state === "unconfigured") {
+      return { source, label, state, tone: "warn", text: `${label} 未配置密钥，本次没有参与搜索` };
+    }
+    if (state === "failed") {
+      return { source, label, state, tone: "error", text: `${label} 暂时不可用${info?.error ? `（${info.error}）` : ""}` };
+    }
+    const count = info?.count ?? 0;
+    return { source, label, state: "ok", tone: "normal", text: `${label} ${count} 条` };
+  });
+}
+
+/**
+ * 整体是否值得给一句额外提示：有源没能正常参与搜索时为 true。
+ * UI 据此决定这行状态是普通灰字还是带警示色。
+ */
+export function hasDegradedSource(sources = {}) {
+  return Object.values(sources).some((info) => info?.state === "unconfigured" || info?.state === "failed");
+}
+
+/**
+ * 查询词是否是 CJK。TMDB 的 `language` 参数只决定**返回字段用哪种语言**，
+ * 不决定**用哪种语言去匹配**——它对中文片名的收录本来就有限，所以中文查询
+ * 在 TMDB 上搜不到是常态，不是故障。空结果时据此给一句可操作的提示，
+ * 而不是让用户以为坏了。
+ */
+export function looksCJK(query) {
+  return /[぀-ヿ㐀-䶿一-鿿豈-﫿]/.test(String(query || ""));
+}

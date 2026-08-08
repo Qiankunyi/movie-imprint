@@ -4202,3 +4202,43 @@ svg {
 .reset-confirm-button:disabled {
   opacity: 0.4;
 }
+
+/* ─── R6 补丁 3：搜索结果里的数据源状态行 ────────────────────────────────────
+   实测搜「鸟人」时只出 Bangumi 结果，而界面完全没说 TMDB 有没有参与——
+   "没配密钥""请求失败""确实搜不到"三种情况长得一模一样。这行状态无论成功
+   失败都显示，让结果缺失时能一眼分清是数据源故障还是真的没有。 */
+.work-search-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1, 4px);
+  margin: 0 0 var(--space-2, 8px);
+}
+
+.source-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font: var(--type-meta);
+  font-size: 11px;
+  color: var(--ink-soft);
+  background: var(--surface-container);
+  border: 1px solid var(--outline-soft);
+}
+
+.source-chip.tone-warn {
+  color: var(--danger, #d3453c);
+  border-color: var(--danger, #d3453c);
+  border-style: dashed;
+}
+
+.source-chip.tone-error {
+  color: #fff;
+  background: var(--danger, #d3453c);
+  border-color: var(--danger, #d3453c);
+}
+
+.work-search-state code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-container);
+  font-family: ui-monospace, monospace;
+}

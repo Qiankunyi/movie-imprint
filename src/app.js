@@ -19,8 +19,11 @@ import {
 } from "./routing.js?v=1";
 import {
   buildSearchResults,
-  searchLocalWorks
-} from "./work-search.js?v=1";
+  hasDegradedSource,
+  looksCJK,
+  searchLocalWorks,
+  summarizeSearchSources
+} from "./work-search.js?v=2";
 import {
   buildWorkView,
   findWorkById,
@@ -227,7 +230,10 @@ const state = {
   // R6：统一作品搜索面板。query 是输入框当前值，local/external 是两组结果，
   // selected 是用户选中的候选（选中后面板下方出现「为什么想看」输入框）。
   // Phase 4 只有本地搜索；Phase 5/6 接入 Bangumi + TMDB 后 external 才会有内容。
-  workSearch: { query: "", local: [], external: [], status: "idle", message: null, selected: null },
+  // sources 记录每个外部数据源这次的状态（ok / unconfigured / failed），
+  // 无论成功失败都要展示——否则"没配密钥""请求失败""确实搜不到"三种情况
+  // 在界面上长得一模一样（实测搜「鸟人」只出 Bangumi 就是踩了这个坑）。
+  workSearch: { query: "", local: [], external: [], status: "idle", sources: null, selected: null },
   resetConfirmText: "",       // R6：清空数据的确认词输入
   resetBusy: false,
   resetMessage: null,
@@ -2011,6 +2017,36 @@ function collectionsEditorOverlay(work) {
  * 再是外部数据源的候选。选中外部候选后一次完成 Work 创建 + 片单条目创建，
  * 不要求用户先「导入作品」再回到片单添加。
  */
+/**
+ * 数据源状态行。**无论成功失败都显示**——这正是「结果缺失时分不清是数据源故障
+ * 还是确实搜不到」的解药。必须渲染在 .work-search-results 容器内部，
+ * 因为增量重绘只替换那个容器（放外面就永远不会被刷新）。
+ */
+function sourceStatusMarkup(search) {
+  if (!search.sources) return "";
+  const items = summarizeSearchSources(search.sources);
+  const degraded = hasDegradedSource(search.sources);
+  return `<p class="work-search-sources ${degraded ? "degraded" : ""}" data-testid="work-search-sources">
+    ${items.map((item) => `<span class="source-chip tone-${item.tone}" data-testid="source-status-${item.source}">${escapeHtml(item.text)}</span>`).join("")}
+  </p>`;
+}
+
+/**
+ * 外部源都正常、却一条都没搜到时的补充说明。
+ *
+ * TMDB 的 `language` 参数只决定**返回字段用哪种语言**，不决定**用哪种语言去匹配**。
+ * 它对中文译名的收录本来就有限，所以中文查询在 TMDB 上召回为空是常态、不是故障。
+ * 这里给一句可操作的提示，而不是替某部具体电影写死映射。
+ */
+function emptyResultHint(search) {
+  if (!search.sources) return "";
+  const tmdbOk = search.sources.tmdb?.state === "ok" && (search.sources.tmdb?.count || 0) === 0;
+  if (tmdbOk && looksCJK(search.query)) {
+    return `<p class="work-search-state">TMDB 对中文／日文译名的收录有限，用原名或英文名（例如 <code>Birdman</code>）通常能搜到。</p>`;
+  }
+  return "";
+}
+
 function workSearchOverlay() {
   const search = state.workSearch;
   const collection = state.collections.find((item) => item.id === state.currentCollectionId);
@@ -2053,9 +2089,9 @@ function workSearchOverlay() {
   } else if (search.status === "loading" && !localGroup && !externalGroup) {
     body = `<p class="work-search-state">正在搜索…</p>`;
   } else if (!localGroup && !externalGroup) {
-    body = `<p class="work-search-state" data-testid="work-search-empty">没有找到「${escapeHtml(search.query)}」。可以换个说法，或用原名再试一次。</p>`;
+    body = `<p class="work-search-state" data-testid="work-search-empty">没有找到「${escapeHtml(search.query)}」。</p>${emptyResultHint(search)}`;
   } else {
-    body = `${localGroup}${externalGroup}${search.status === "loading" ? `<p class="work-search-state">还在找更多…</p>` : ""}`;
+    body = `${localGroup}${externalGroup}${emptyResultHint(search)}${search.status === "loading" ? `<p class="work-search-state">还在找更多…</p>` : ""}`;
   }
 
   return `<div class="overlay" data-testid="work-search">
@@ -2066,8 +2102,7 @@ function workSearchOverlay() {
       <label class="work-search-field"><span class="visually-hidden">搜索作品</span>
         <input type="search" id="work-search-input" placeholder="搜索片名，例如 Birdman / 鸟人" value="${escapeHtml(search.query)}" autocomplete="off" data-testid="work-search-input" />
       </label>
-      ${search.message ? `<p class="work-search-state" data-testid="work-search-message">${escapeHtml(search.message)}</p>` : ""}
-      <div class="work-search-results" data-testid="work-search-results">${body}</div>
+      <div class="work-search-results" data-testid="work-search-results">${sourceStatusMarkup(search)}${body}</div>
       ${search.selected ? `<form id="work-search-add-form">
         <label><span>为什么想看（可选）</span><textarea name="reason" rows="3" maxlength="500" placeholder="例如：重看《蜘蛛侠：英雄归来》后觉得 Michael Keaton 的秃鹫非常不错。" data-testid="work-search-reason"></textarea></label>
         <button class="sheet-done" type="submit" data-testid="work-search-confirm">加入《${escapeHtml(collection?.title || "")}》</button>
@@ -3027,7 +3062,7 @@ let workSearchTimer = null;
 let workSearchToken = 0;
 
 function openWorkSearch() {
-  state.workSearch = { query: "", local: [], external: [], status: "idle", message: null, selected: null };
+  state.workSearch = { query: "", local: [], external: [], status: "idle", sources: null, selected: null };
   state.overlay = "work-search";
   render();
   requestAnimationFrame(() => document.querySelector("#work-search-input")?.focus());
@@ -3053,7 +3088,8 @@ function handleWorkSearchInput(value) {
   state.workSearch.selected = null;
   state.workSearch.local = currentLocalCandidates(query);
   state.workSearch.external = [];
-  state.workSearch.message = null;
+  // 上一次的数据源状态跟着作废——否则改了查询词之后，状态行还挂着旧一轮的条数
+  state.workSearch.sources = null;
 
   clearTimeout(workSearchTimer);
   // token 让过期的请求结果直接作废：用户继续打字后，先发出的那次请求即使晚回来
@@ -3086,37 +3122,42 @@ async function runExternalWorkSearch(query, token) {
   ]);
   if (token !== workSearchToken || state.overlay !== "work-search") return;
 
-  const bangumi = bangumiResult.status === "fulfilled" ? (bangumiResult.value.candidates || []) : [];
-  const tmdb = tmdbResult.status === "fulfilled" ? (tmdbResult.value.candidates || []) : [];
+  // allSettled 的 rejected 只剩下"网络层直接抛错"（断网、超时）这一类；
+  // HTTP 层的失败与未配置已经在 fetchSearchSource 里转成了 state。
+  const unwrap = (settled) => settled.status === "fulfilled"
+    ? settled.value
+    : { state: "failed", candidates: [], error: settled.reason?.message || "网络错误" };
 
-  const failed = [
-    bangumiResult.status === "rejected" ? "Bangumi" : null,
-    tmdbResult.status === "rejected" ? "TMDB" : null
-  ].filter(Boolean);
+  const bangumiInfo = unwrap(bangumiResult);
+  const tmdbInfo = unwrap(tmdbResult);
 
   const { local, external } = buildSearchResults({
     local: currentLocalCandidates(query),
-    bangumi,
-    tmdb,
+    bangumi: bangumiInfo.candidates,
+    tmdb: tmdbInfo.candidates,
     query
   });
 
   state.workSearch.local = local;
   state.workSearch.external = external;
   state.workSearch.status = "done";
-  state.workSearch.message = failed.length === 2
-    ? "两个数据库都暂时连不上，可以稍后再试。"
-    : failed.length === 1
-      ? `${failed[0]} 暂时不可用，下面是其他来源的结果。`
-      : null;
+  state.workSearch.sources = {
+    bangumi: { state: bangumiInfo.state, count: bangumiInfo.candidates.length, error: bangumiInfo.error },
+    tmdb: { state: tmdbInfo.state, count: tmdbInfo.candidates.length, error: tmdbInfo.error }
+  };
   renderWorkSearchResults();
 }
 
 async function fetchSearchSource(url) {
   const response = await apiFetch(url, { headers: { accept: "application/json" } });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.message || "搜索暂不可用");
-  return payload;
+  if (!response.ok) {
+    return { state: "failed", candidates: [], error: payload.message || `HTTP ${response.status}` };
+  }
+  if (payload.configured === false) {
+    return { state: "unconfigured", candidates: [] };
+  }
+  return { state: "ok", candidates: payload.candidates || [] };
 }
 
 /**
@@ -3250,7 +3291,7 @@ async function addSelectedCandidateToCollection(reason) {
   await persistCollection(addWorkToCollection(collection, work.id, { reason }));
 
   state.overlay = null;
-  state.workSearch = { query: "", local: [], external: [], status: "idle", message: null, selected: null };
+  state.workSearch = { query: "", local: [], external: [], status: "idle", sources: null, selected: null };
   render();
   announce(`已把《${work.title}》加入${collection.title}`);
 }
