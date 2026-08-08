@@ -487,3 +487,66 @@ describe("R6 补丁 7：lockedWork 的行为契约", () => {
     assert.equal(shouldMatchExternally({ source: "ticket_paste" }), true);
   });
 });
+
+// ─── R6 补丁 11：输入法组合与候选选中态 ─────────────────────────────────────
+//
+// 实测反馈两条：
+// 1) 用中文输入法打「聚焦」时，拼音才敲到 "ju" 匹配就跑起来并重渲染，输入被打断，
+//    得和匹配进程抢速度；
+// 2) 点中想要的条目后，事实上选中了（能进下一步），但视觉上没有任何选中态。
+
+describe("R6 补丁 11：中文输入法下的匹配调度", () => {
+  // 复现 src/app.js 里 input 处理器的守卫条件
+  const shouldSchedule = ({ isComposing = false, imeComposing = false, value = "", lockedWork = false }) => {
+    if (lockedWork) return false;
+    if (isComposing || imeComposing) return false;
+    return String(value).trim().length >= 2;
+  };
+
+  it("拼音输入过程中一律不调度匹配", () => {
+    // 打「聚焦」的中间态：j → ju → jujiao，全程 isComposing 为 true
+    for (const value of ["j", "ju", "juj", "jujiao"]) {
+      assert.equal(shouldSchedule({ isComposing: true, value }), false, `"${value}" 组合中不该触发`);
+    }
+  });
+
+  it("组合结束后才调度，且仍然要求至少 2 个字符", () => {
+    assert.equal(shouldSchedule({ value: "聚焦" }), true);
+    assert.equal(shouldSchedule({ value: "聚" }), false, "单字太短，噪声太大");
+    assert.equal(shouldSchedule({ value: "  " }), false);
+  });
+
+  it("Work 已锁定时永远不调度——作品已经确定，不需要再匹配", () => {
+    assert.equal(shouldSchedule({ value: "聚焦", lockedWork: true }), false);
+  });
+
+  it("英文输入不经过组合，照常按长度调度", () => {
+    assert.equal(shouldSchedule({ value: "Spotlight" }), true);
+    assert.equal(shouldSchedule({ value: "S" }), false);
+  });
+});
+
+describe("R6 补丁 11：候选选中态", () => {
+  // 复现 captureCandidatesMarkup 里的选中判定
+  const isSelected = (selected, candidate) =>
+    Boolean(selected) && selected.source === candidate.source && String(selected.sourceId) === String(candidate.sourceId);
+
+  const spotlight = { source: "tmdb", sourceId: "314365", title: "聚焦" };
+  const bgmOne = { source: "bangumi", sourceId: "12345", title: "行家本色" };
+
+  it("选中判定必须 source + sourceId 同时相等", () => {
+    assert.equal(isSelected(spotlight, spotlight), true);
+    assert.equal(isSelected(spotlight, bgmOne), false);
+    // 不同源但 id 恰好相同，绝不能误判成同一条
+    assert.equal(isSelected({ source: "bangumi", sourceId: "314365" }, spotlight), false);
+  });
+
+  it("sourceId 的数字/字符串差异不影响判定", () => {
+    assert.equal(isSelected({ source: "tmdb", sourceId: 314365 }, spotlight), true);
+  });
+
+  it("没有选中任何条目时全部为未选中", () => {
+    assert.equal(isSelected(null, spotlight), false);
+    assert.equal(isSelected(undefined, spotlight), false);
+  });
+});

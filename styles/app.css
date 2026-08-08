@@ -4395,3 +4395,43 @@ svg {
   border-color: rgba(1, 135, 95, 0.35);
   background: rgba(1, 135, 95, 0.08);
 }
+
+/* ─── R6 补丁 11：候选被选中时必须看得出来 ───────────────────────────────────
+   实测反馈：点了想要的条目，事实上确实选中了（可以进下一步），但视觉上只是
+   "刷新一下"，没有任何条目呈现选中态。根因很朴素——`.work-candidate.selected`
+   这条规则**根本不存在**，模板里加的 class 落了空。 */
+.work-candidate.selected {
+  border-color: var(--accent);
+  background: var(--accent-container);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.work-candidate.selected b {
+  color: var(--accent-strong);
+}
+
+/* 选中标记放在右上角，不占标题的横向空间（标题后面已经有来源徽章了） */
+.work-candidate.selected::after {
+  content: "✓";
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  color: var(--accent-strong);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.work-candidate {
+  position: relative;
+}
+
+/* 候选区的槽位：局部重绘只换这里，输入框不受影响 */
+.capture-candidates-slot:empty {
+  display: none;
+}
+
+.capture-match-note {
+  margin: var(--space-1, 4px) 0;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}

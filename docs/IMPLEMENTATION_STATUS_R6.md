@@ -1068,3 +1068,57 @@ external id upsert 进去、用候选元数据补全 Work 上还空着的字段�
 候选列表，后者是独立搜索面板，交互形态不同）。**数据层已经完全统一**——
 `buildSearchResults` / `resolveOrCreateWorkFromCandidate` / `applyCandidateToWork`
 三者共用，所以行为一致；只有展示层还各写各的。这个不影响正确性，暂不合并。
+
+---
+
+# R6 补丁 11：中文输入法被匹配打断 + 候选选中态不可见
+
+## 问题 1：得和匹配进程抢速度
+
+用中文输入法打「聚焦」，拼音才敲到 `ju` 匹配就跑起来并重渲染，输入直接被打断——
+用户几乎要用复制粘贴的速度才能把词打完。
+
+两个原因叠在一起：
+
+1. **完全没有处理输入法组合状态。** 打拼音时每按一个字母都会触发 `input` 事件
+   （`j` → `ju` → `juj` …），但这些是**未完成的拼音**，拿去搜索既无意义又浪费外部
+   API 配额。浏览器在组合期间会把 `event.isComposing` 置为 `true`，代码里从来没读过它。
+2. **防抖回调里调用了 `render()`。** 输入处理器本身很小心（注释里写着"受控但不整页
+   重渲染"），但它调度的两个异步回调 `runCaptureWorkMatch()` 与
+   `refreshCaptureHistoryFlag()` 都是 `render()` ——整个浮层重建，输入框连同输入法的
+   组合状态一起被销毁。
+
+### 修法
+
+- `compositionstart` / `compositionend` 维护一个模块级 `imeComposing`，
+  输入处理器在组合中直接 return，`compositionend` 时补一次调度。
+  统一搜索面板（`work-search-input`）同样处理。
+- `runCaptureWorkMatch()` 改成**只重绘候选区**：候选包在一个稳定的
+  `capture-candidates-slot` 里，局部替换 innerHTML，**完全不碰输入框**。
+- `refreshCaptureHistoryFlag()` 确实需要整体重渲染（初看/重看切换在候选区之外），
+  改成保焦版：保存并恢复焦点与光标位置，且**组合中一律不重建 DOM**。
+- 防抖 400ms → 500ms。中文一个词往往要敲 3–6 个字母，加上要等 `compositionend`，
+  500ms 更贴近"打完一个词停一下"的节奏。
+
+> 槽位用 `data-action-name` 而不是 `data-action`——点击分发靠
+> `closest("[data-action]")` 找触发元素，包一层带 `data-action` 的 div 会被误当成按钮。
+
+## 问题 2：选中了却看不出来
+
+点中想要的条目，事实上确实选中了（能进下一步），但视觉上只是"刷新一下"，
+没有任何条目呈现选中态。
+
+**根因很朴素：`.work-candidate.selected` 这条 CSS 规则根本不存在。**
+模板里的 class 加上了，落了空。
+
+补了选中态样式（描边 + 底色 + 右上角 ✓）。
+
+## 新增第 7 项静态检查
+
+这类错误语法检查和单元测试都抓不到——模板照常渲染，class 照常加上，只是没有任何
+视觉效果。所以给检查脚本加了一条：**模板里用到的状态 class 组合，必须在
+`styles/app.css` 里有对应规则**。
+
+覆盖 `work-candidate.selected` / `work-search-item.selected` / `source-chip.active` /
+`collection-entry.watched|unwatched` / `shelf-chip.selected` / `shelf-sort.selected`。
+匹配时允许中间夹别的 class（`.source-chip.filter.active` 这种），两个方向都认。

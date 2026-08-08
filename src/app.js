@@ -142,6 +142,22 @@ const RESET_CONFIRM_PHRASE = "清空";
 // 这里再放一份是为了 app.js 不必为一个字符串表额外 import。
 const SOURCE_DISPLAY = { bangumi: "Bangumi", tmdb: "TMDB", local: "已在库中" };
 
+// R6 补丁 11：输入法组合状态。
+// 中文/日文输入时，每按一个字母都会触发 input 事件（"j" → "ju" → …），
+// 但这些是**未完成的拼音**，拿去搜索既无意义又会触发重渲染打断输入。
+// 浏览器在组合期间会把 event.isComposing 置为 true，compositionend 时才算敲定。
+let imeComposing = false;
+document.addEventListener("compositionstart", () => { imeComposing = true; });
+document.addEventListener("compositionend", (event) => {
+  imeComposing = false;
+  // 组合结束时补一次派发——组合期间被跳过的输入要在这里落地
+  if (event.target?.id === "scene-work-title-input" || event.target?.id === "capture-manual-title-input") {
+    scheduleCaptureTitleMatch(event.target.value);
+  } else if (event.target?.id === "work-search-input") {
+    handleWorkSearchInput(event.target.value);
+  }
+});
+
 function getAccessPassword() {
   return localStorage.getItem(ACCESS_PASSWORD_KEY) || "";
 }
@@ -1739,7 +1755,7 @@ function ticketConfirmOverlay() {
       : "";
 
   const candidatesBlock = ctx.showMatchCandidates
-    ? `${captureCandidatesMarkup(ctx, "select-capture-candidate", "capture-match-candidates")}
+    ? `${captureCandidatesSlot(ctx, "select-capture-candidate", "capture-match-candidates")}
        <label class="manual-title-fallback"><span>都不是，手动输入片名</span><input type="text" id="capture-manual-title-input" data-testid="capture-manual-title-input" value="${escapeHtml(ctx.workTitle || "")}" /></label>`
     : "";
 
@@ -1848,7 +1864,7 @@ function sceneChoiceOverlay() {
             <small>从作品页进入，这次记录会直接挂到这部作品，不需要重新识别。</small>
           </div>`
         : `<label class="scene-work-title"><span>作品</span><input type="text" id="scene-work-title-input" data-testid="scene-work-title-input" value="${escapeHtml(ctx.workTitle || "")}" placeholder="作品名" /></label>
-      ${captureCandidatesMarkup(ctx, "select-scene-candidate", "scene-match-candidates")}`}
+      ${captureCandidatesSlot(ctx, "select-scene-candidate", "scene-match-candidates")}`}
       ${ctx.hasHistory ? `<div class="relation-toggle" role="group" aria-label="初看或重看">
         <button type="button" class="relation-choice ${(ctx.relationOverride || tentativeViewingRelation(ctx.existingHistoryCount || 0, 0)) === "first" ? "selected" : ""}" data-action="set-scene-relation" data-value="first">初看</button>
         <button type="button" class="relation-choice ${(ctx.relationOverride || tentativeViewingRelation(ctx.existingHistoryCount || 0, 0)) === "rewatch" ? "selected" : ""}" data-action="set-scene-relation" data-value="rewatch">重看 · 第 ${(ctx.existingHistoryCount || 0) + 1} 次</button>
@@ -2815,7 +2831,7 @@ async function runCaptureWorkMatch(query) {
   if (!ctx || ctx.lockedWork || !query?.trim()) return;
 
   ctx.workMatch = { status: "searching", candidates: [], query, sources: null };
-  render();
+  renderCaptureCandidates();
 
   const [bangumiResult, tmdbResult] = await Promise.allSettled([
     fetchSearchSource(`/api/bangumi/search?q=${encodeURIComponent(query)}`),
@@ -2848,7 +2864,7 @@ async function runCaptureWorkMatch(query) {
       tmdb: { state: tmdbInfo.state, count: tmdbInfo.candidates.length, error: tmdbInfo.error }
     }
   };
-  render();
+  renderCaptureCandidates();
 }
 
 /**
@@ -2864,6 +2880,71 @@ function selectCaptureCandidate(ctx, candidate) {
   ctx.subjectId = candidate.externalIds?.bangumi ? Number(candidate.externalIds.bangumi) : null;
   // 选中本地已有作品 → 直接锁定，后面 finishCompose 会挂到这个 work_id 上
   ctx.workId = candidate.source === "local" ? candidate.workId : null;
+}
+
+/**
+ * 候选区的稳定槽位。局部重绘只替换这个槽位的内容，**不碰输入框**。
+ *
+ * 注意用 data-action-name 而不是 data-action——点击分发靠
+ * `closest("[data-action]")` 找触发元素，包一层带 data-action 的 div 会被误当成按钮。
+ */
+function captureCandidatesSlot(ctx, action, testId) {
+  return `<div class="capture-candidates-slot" data-testid="capture-candidates-slot"
+    data-action-name="${escapeHtml(action)}" data-slot-testid="${escapeHtml(testId)}">${captureCandidatesMarkup(ctx, action, testId)}</div>`;
+}
+
+/**
+ * 只重绘候选区，不走 render()。
+ *
+ * 为什么必须这样：`render()` 会重建整个浮层，输入框连同**输入法的组合状态**一起被销毁。
+ * 用中文输入法打「聚焦」时，拼音还没敲完（比如刚打到 "ju"）匹配就返回并重渲染，
+ * 输入直接被打断——用户得和匹配进程抢速度。
+ */
+function renderCaptureCandidates() {
+  const slot = document.querySelector("[data-testid='capture-candidates-slot']");
+  if (!slot) { render(); return; }
+  slot.innerHTML = captureCandidatesMarkup(
+    state.captureContext || {},
+    slot.dataset.actionName,
+    slot.dataset.slotTestid
+  );
+}
+
+/**
+ * 需要整体重渲染、但当前正停在捕获流程的文本输入上时，保住焦点与光标位置。
+ * 组合中（isComposing）一律推迟——组合状态没法在 DOM 重建后恢复。
+ */
+function renderCapturePreservingFocus() {
+  const active = document.activeElement;
+  const isCaptureInput = active && (active.id === "scene-work-title-input" || active.id === "capture-manual-title-input");
+  if (!isCaptureInput) { render(); return; }
+  if (imeComposing) return;   // 组合中绝不重建 DOM
+  const { id, value, selectionStart, selectionEnd } = active;
+  render();
+  const restored = document.getElementById(id);
+  if (!restored) return;
+  restored.value = value;
+  restored.focus();
+  try { restored.setSelectionRange(selectionStart, selectionEnd); } catch (_) { /* 某些输入类型不支持 */ }
+}
+
+/**
+ * 调度一次防抖的作品匹配。
+ *
+ * 防抖从 400ms 提到 500ms：中文输入法下一个词往往要敲 3–6 个字母，
+ * 加上 compositionend 才触发，500ms 更贴近"打完一个词停一下"的真实节奏，
+ * 也少打几次外部 API。
+ */
+function scheduleCaptureTitleMatch(value) {
+  if (!state.captureContext || state.captureContext.lockedWork) return;
+  state.captureContext.workTitle = value;
+  clearTimeout(sceneTitleMatchTimer);
+  const query = String(value || "").trim();
+  if (query.length < 2) return;
+  sceneTitleMatchTimer = setTimeout(() => {
+    void runCaptureWorkMatch(query);
+    void refreshCaptureHistoryFlag();
+  }, 500);
 }
 
 /** 候选列表的公共渲染（捕获流程的两个面板共用）。 */
@@ -2906,16 +2987,16 @@ async function refreshCaptureHistoryFlag() {
   let work = ctx.lockedWork && ctx.workId ? findWorkById(state.works, ctx.workId) : null;
   if (!work) {
     const title = ctx.workTitle;
-    if (!title?.trim()) { ctx.hasHistory = false; ctx.existingHistoryCount = 0; render(); return; }
+    if (!title?.trim()) { ctx.hasHistory = false; ctx.existingHistoryCount = 0; renderCapturePreservingFocus(); return; }
     const resolved = resolveWork(state.works, { title, subjectId: ctx.subjectId, aliases: [] });
-    if (resolved.isNew) { ctx.hasHistory = false; ctx.existingHistoryCount = 0; render(); return; }
+    if (resolved.isNew) { ctx.hasHistory = false; ctx.existingHistoryCount = 0; renderCapturePreservingFocus(); return; }
     work = resolved.work;
   }
   const events = await fetchWorkEvents(work.id); // 含 merged_from——否则合并过的作品会被误判成"第一次看"
   if (state.captureContext !== ctx) return;
   ctx.hasHistory = events.length > 0;
   ctx.existingHistoryCount = events.length;
-  render();
+  renderCapturePreservingFocus();
 }
 
 async function updateRecord(mutator) {
@@ -4407,6 +4488,8 @@ document.addEventListener("input", (event) => {
     return;
   }
   if (event.target.id === "work-search-input") {
+    // 组合中（正在打拼音）不触发搜索——compositionend 时会补一次
+    if (event.isComposing || imeComposing) return;
     handleWorkSearchInput(event.target.value);
     return;
   }
@@ -4422,15 +4505,13 @@ document.addEventListener("input", (event) => {
     if (!state.captureContext) return;
     state.captureContext.workTitle = event.target.value;
     const confirmButton = document.querySelector("[data-testid='confirm-scene-choice']");
-    if (confirmButton) confirmButton.disabled = !(state.captureContext.locationType && event.target.value.trim());
-    clearTimeout(sceneTitleMatchTimer);
-    const query = event.target.value.trim();
-    if (query.length >= 2) {
-      sceneTitleMatchTimer = setTimeout(() => {
-        void runCaptureWorkMatch(query);
-        void refreshCaptureHistoryFlag();
-      }, 400);
+    if (confirmButton) {
+      confirmButton.disabled = !(state.captureContext.locationType
+        && (state.captureContext.lockedWork || event.target.value.trim()));
     }
+    // 组合中（正在打拼音）不调度匹配——compositionend 时会补一次
+    if (event.isComposing || imeComposing) return;
+    scheduleCaptureTitleMatch(event.target.value);
   } else if (event.target.id === "scene-cinema-name-input") {
     if (state.captureContext) state.captureContext.cinemaName = event.target.value;
   } else if (event.target.matches("[data-field='bonus-note']")) {

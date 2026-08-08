@@ -54,7 +54,8 @@ const KNOWN_NOISE = new Set([
   "preventDefault",         // .preventDefault() 跨行时前瞻没挡住
   "resolveDailyWallpaper",  // 只出现在注释里（R3 已删除的函数）
   "translateX",             // 模板串里的 CSS transform
-  "Work"                    // 中文注释里「Work（可能来自…）」这类写法
+  "Work",                   // 中文注释里「Work（可能来自…）」这类写法
+  "closest"                 // 注释里反引号引用的 closest("[data-action]")
 ]);
 const undefinedCalls = called.filter((n) => !defined.has(n) && !GLOBALS.has(n) && !KNOWN_NOISE.has(n));
 if (undefinedCalls.length) fail(`可能未定义就被调用：${undefinedCalls.join(", ")}`);
@@ -119,6 +120,32 @@ for (const m of sw.matchAll(/"(\/(?:src|styles|docs|public)\/[^"?]+)(\?v=\d+)?"/
   }
 }
 console.log("✓ 静态资源与版本号一致");
+
+// ── 7. 状态 class 必须真的有 CSS 规则 ───────────────────────────────────────
+// 补丁 11 的根因：模板里给候选加了 `selected` class，但 .work-candidate.selected
+// 这条规则**从来没写过**，于是"选中了却看不出来"。这类错误语法检查和单元测试
+// 都抓不到——模板照常渲染，class 照常加上，只是没有任何视觉效果。
+const css = readFileSync("styles/app.css", "utf8");
+const STATE_CLASS_PAIRS = [
+  ["work-candidate", "selected"],
+  ["work-search-item", "selected"],
+  ["source-chip", "active"],
+  ["collection-entry", "watched"],
+  ["collection-entry", "unwatched"],
+  ["shelf-chip", "selected"],
+  ["shelf-sort", "selected"]
+];
+for (const [base, state] of STATE_CLASS_PAIRS) {
+  // 模板里确实在用这个组合才检查
+  const usedInTemplate = new RegExp(`${base}[^"\`]*\\$\\{[^}]*"${state}"`).test(src)
+    || new RegExp(`class="[^"]*${base}[^"]*${state}`).test(src);
+  if (!usedInTemplate) continue;
+  // 中间可能还夹着别的 class（例如 .source-chip.filter.active），两个方向都认
+  const hasRule = new RegExp(`\\.${base}[\\w.-]*\\.${state}\\b`).test(css)
+    || new RegExp(`\\.${state}[\\w.-]*\\.${base}\\b`).test(css);
+  if (!hasRule) fail(`模板用了 .${base}.${state}，但 styles/app.css 里没有对应规则（会"加了 class 却没效果"）`);
+}
+console.log("✓ 状态 class 都有对应的 CSS 规则");
 
 console.log(problems ? `\n共 ${problems} 处问题` : "\n全部通过");
 process.exit(problems ? 1 : 0);
