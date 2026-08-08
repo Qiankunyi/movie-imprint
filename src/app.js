@@ -345,6 +345,49 @@ function notify(message) {
   showToast(message);
 }
 
+/**
+ * 补齐"记录还没有关联到任何 Work"的旧数据缺口。
+ *
+ * R1：只有真的缺关联才会走到新建这一步，且新建统一通过 resolveWork 去重，
+ * 不再无条件按 1:1 建一张新档案卡——否则一旦这条路径被触发，会重新制造
+ * "一部电影多张档案卡"的老问题。
+ *
+ * R6 修复记录：删除演示种子数据时，我按「publicSeedRecords 开头 → loadState 开头」
+ * 整段切除，而这个函数正好夹在两者之间，被连带删掉了，loadState 里的调用因此变成
+ * ReferenceError（表现为"无法打开本地记录：ensureWorkLinks is not defined"）。
+ * 现从 git 历史恢复。教训写在下面的静态检查里：原来那版检查只对少数几个函数名
+ * 前缀做未定义扫描，`ensure*` 不在名单里，所以没拦住。
+ */
+async function ensureWorkLinks(records) {
+  const works = await db.getAll("works");
+  for (const record of records) {
+    const linkedId = record.work_id || record.workId;
+    const existingWork = linkedId ? works.find((item) => item.id === linkedId) : null;
+    if (linkedId && existingWork) {
+      const reconciled = reconcileLocalWorkTitle(existingWork, record);
+      if (reconciled !== existingWork) {
+        await db.put("works", reconciled);
+        Object.assign(existingWork, reconciled);
+      }
+      if (record.work_id !== existingWork.id || record.workId !== existingWork.id) {
+        record.work_id = existingWork.id;
+        record.workId = existingWork.id;
+        await db.put("records", record);
+      }
+      continue;
+    }
+    const { work, isNew } = resolveWork(works, {
+      title: record.inputHints?.workTitle || record.title,
+      subjectId: null,
+      aliases: []
+    });
+    if (isNew) works.push(work);
+    record.work_id = work.id;
+    record.workId = work.id;
+    await db.putRecordWithWork(record, work);
+  }
+}
+
 async function loadState() {
   [state.records, state.draft, state.recordingPreference, state.aiPreference, state.aiProviders] = await Promise.all([
     db.getAll("records"),
@@ -1630,7 +1673,7 @@ function ticketConfirmOverlay() {
   const posterBlock = match.status === "searching"
     ? `<div class="ticket-confirm-poster skeleton" aria-hidden="true" data-testid="capture-match-skeleton"></div>`
     : ctx.subjectId
-      ? `<img class="ticket-confirm-poster" src="${apiBangumiImageUrl(ctx.subjectId)}" alt="" data-testid="capture-match-poster" onerror="this.hidden=true" />`
+      ? `<img class="ticket-confirm-poster" src="${escapeHtml(posterUrlFor({ poster: { source: "bangumi", subject_id: Number(ctx.subjectId) || null } }))}" alt="" data-testid="capture-match-poster" onerror="this.hidden=true" />`
       : "";
 
   const candidatesBlock = ctx.showMatchCandidates ? `<div class="work-candidates" data-testid="capture-match-candidates">

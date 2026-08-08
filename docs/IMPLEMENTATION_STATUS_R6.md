@@ -561,3 +561,57 @@ if (new URLSearchParams(location.search).has("reset")) {
 > 注：`POST /api/sync/clear` 在本地 dev 返回 404 是预期的——`server.mjs` 从来没有
 > 实现 `/api/sync/*`（D1 只存在于 Cloudflare）。本地开发始终是 IndexedDB 单机模式，
 > 云端分支不会被走到。
+
+---
+
+# R6 补丁 2：删种子数据时误删了 `ensureWorkLinks`
+
+## 症状
+
+App 打不开，报「无法打开本地记录 / ensureWorkLinks is not defined」。
+
+## 原因
+
+补丁前删除演示种子数据时，是按「`publicSeedRecords` 开头 → `loadState` 开头」
+整段切除的。但那段区间里其实有**三个**函数：
+
+```
+function publicSeedRecords()   ← 要删
+async function ensureSeedData()  ← 要删
+async function ensureWorkLinks() ← 不该删，被连带切掉了
+```
+
+`loadState()` 里的 `await ensureWorkLinks(state.records)` 因此变成 ReferenceError。
+已从 git 历史（`1ac495b:src/app.js`）恢复原实现。
+
+同时确认那段区间里确实只有这三个函数，没有别的东西被一起删掉。
+
+## 同一轮扫出的第二个问题
+
+`ticketConfirmOverlay()` 里还留着一处 `apiBangumiImageUrl(ctx.subjectId)` 调用——
+这个函数在 R6 改多源海报时被 `posterUrlFor()` 取代并删除了。它在票务粘贴后的
+确认面板里，静态检查之前没覆盖到，会在捕获流程中途崩掉。已改为
+`posterUrlFor({ poster: { source: "bangumi", subject_id } })`。
+
+## 为什么之前的检查没拦住
+
+第一版静态检查只对少数几个函数名前缀（`render|open|close|handle|search|select|
+resolve|add|update|move|is`）做未定义扫描——`ensure*` 和 `api*` 都不在名单里。
+
+现在改成**全量扫描**：把所有 `function` / `const|let|var =` / `class` / import
+进来的名字收成"已定义"集合，加一份浏览器与语言内置名单，剩下所有 `name(` 形式的
+调用一律报出来。正则会误伤的几类（函数形参、注释里提到的旧函数名、模板串里的
+`translateX(...)`、注释里的 `O(1)`）逐个人工确认后列进 `KNOWN_NOISE`，
+**而不是放宽正则**——放宽会连真正的漏网之鱼一起放过。
+
+同一套扫描也对 `src/` 下其余 13 个模块跑了一遍，没有发现别的未定义调用。
+
+## 教训
+
+这类错误的共同点是：**测试全绿、语法检查通过，但 App 一打开就崩**。
+376 个单元测试全部针对纯函数模块，`src/app.js`（4600+ 行）没有任何测试覆盖，
+而开发沙箱下不到 Chromium，`npm run test:e2e` 跑不了。
+
+在补上 app.js 的运行时测试之前，**每次改动 app.js 后请在本地跑一次
+`npm run test:e2e`**（需要先 `npx playwright install chromium`）。
+静态检查只能兜住"名字对不上"这一类，兜不住逻辑错误。
