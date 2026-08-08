@@ -4242,3 +4242,72 @@ svg {
   background: var(--surface-container);
   font-family: ui-monospace, monospace;
 }
+
+/* ─── R6 补丁 5：TMDB 诊断结果 ───────────────────────────────────────────────
+   /api/tmdb/status 被 ACCESS_PASSWORD 中间件保护，浏览器地址栏直接访问会 401。
+   这里由 App 已认证的请求去调，结论直接写成人话，不需要手工构造请求头。 */
+.diag-result {
+  margin-top: var(--space-2, 8px);
+  padding: var(--space-3, 12px);
+  border: 1px solid var(--outline-soft);
+  border-left-width: 3px;
+  border-radius: var(--radius-md, 12px);
+  background: var(--surface-container);
+}
+
+.diag-result.tone-ok { border-left-color: var(--accent, #2e7d32); }
+.diag-result.tone-warn { border-left-color: #c77700; }
+.diag-result.tone-error { border-left-color: var(--danger, #d3453c); }
+
+.diag-title {
+  margin: 0 0 var(--space-1, 4px);
+  color: var(--ink);
+  font: var(--type-body);
+  font-weight: 600;
+}
+
+.diag-detail,
+.diag-runtime {
+  margin: 0 0 var(--space-1, 4px);
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.diag-runtime {
+  opacity: 0.75;
+}
+
+.diag-result details {
+  margin: var(--space-2, 8px) 0;
+}
+
+.diag-result summary {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+  cursor: pointer;
+}
+
+.diag-result pre {
+  overflow-x: auto;
+  margin: var(--space-1, 4px) 0 0;
+  padding: var(--space-2, 8px);
+  border-radius: 8px;
+  background: var(--surface, rgba(0, 0, 0, 0.04));
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.diag-copy {
+  min-height: 36px;
+  padding: 0 var(--space-3, 12px);
+  border: 1px solid var(--outline-soft);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink);
+  font: var(--type-meta);
+}
+
+.diag-error {
+  color: var(--danger, #d3453c);
+}

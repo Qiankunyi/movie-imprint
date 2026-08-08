@@ -1,4 +1,5 @@
 import { db, clearAllData, migrateLocalToCloud } from "./db.js?v=14";
+import { interpretTmdbStatus } from "./tmdb.js?v=1";
 import { parseTicketText, draftViewingEvent } from "./ticket.js";
 import { buildWorkSearchQuery } from "./bangumi.js?v=13";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
@@ -234,6 +235,12 @@ const state = {
   // 无论成功失败都要展示——否则"没配密钥""请求失败""确实搜不到"三种情况
   // 在界面上长得一模一样（实测搜「鸟人」只出 Bangumi 就是踩了这个坑）。
   workSearch: { query: "", local: [], external: [], status: "idle", sources: null, selected: null },
+  // R6 补丁 5：TMDB 诊断。/api/tmdb/status 被 ACCESS_PASSWORD 中间件保护着，
+  // 浏览器地址栏直接访问会 401；这里用 App 已认证的 apiFetch 去调，结果显示在设置里。
+  // 刻意不给这个端点开匿名白名单——?probe=1 会让 Worker 替调用方发一次外部请求，
+  // 匿名开放等于送出一个免费探活/配额消耗入口，而且 access_password_enabled 与
+  // d1_bound 本身就是部署拓扑信息，不该给未认证访问者。
+  tmdbDiagnostic: { status: "idle", payload: null, error: null },
   resetConfirmText: "",       // R6：清空数据的确认词输入
   resetBusy: false,
   resetMessage: null,
@@ -1507,6 +1514,40 @@ function resetDataOverlay() {
   </div>`;
 }
 
+/**
+ * TMDB 配置诊断区块。一个按钮跑完整链路检查，结论用人话写在下面，
+ * 原始 JSON 也一并展示（可复制），不需要手工构造任何请求头。
+ */
+function tmdbDiagnosticSection() {
+  const diag = state.tmdbDiagnostic;
+  const running = diag.status === "running";
+
+  let result = "";
+  if (diag.status === "error") {
+    result = `<p class="settings-note diag-error" data-testid="tmdb-diag-error">诊断请求失败：${escapeHtml(diag.error || "未知错误")}
+      ${/401|unauthorized/i.test(diag.error || "") ? "<br>访问密码可能已失效，请到上面的「云端同步」重新输入。" : ""}</p>`;
+  } else if (diag.status === "done") {
+    const verdict = interpretTmdbStatus(diag.payload);
+    const runtime = diag.payload?.runtime || {};
+    result = `<div class="diag-result tone-${verdict.tone}" data-testid="tmdb-diag-result">
+      <p class="diag-title">${escapeHtml(verdict.title)}</p>
+      <p class="diag-detail">${verdict.detail}</p>
+      <p class="diag-runtime">Functions 运行中：${runtime.functions_deployed ? "是" : "否"} ·
+        访问密码：${runtime.access_password_enabled ? "已启用" : "未启用"} ·
+        D1 绑定：${runtime.d1_bound ? "已绑定" : "未绑定"}</p>
+      <details><summary>原始诊断数据</summary><pre data-testid="tmdb-diag-raw">${escapeHtml(JSON.stringify(diag.payload, null, 2))}</pre></details>
+      <button type="button" class="diag-copy" data-action="copy-tmdb-diagnostic">复制诊断结果</button>
+    </div>`;
+  }
+
+  return `<div class="settings-actions">
+    <button type="button" data-action="run-tmdb-diagnostic" ${running ? "disabled" : ""} data-testid="run-tmdb-diagnostic">
+      <span><b>${running ? "正在诊断…" : "运行 TMDB 诊断"}</b><small>检查环境变量是否生效、凭据是否被 TMDB 接受。不会显示任何密钥。</small></span>${icon("chevron")}
+    </button>
+  </div>
+  ${result}`;
+}
+
 function settingsOverlay() {
   return `<div class="overlay" data-testid="settings">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭偏好设置"></button>
@@ -1529,6 +1570,8 @@ function settingsOverlay() {
         <button type="button" data-action="export-all-download" ${state.records.length || state.collections.length ? "" : "disabled"}><span><b>下载全部记录（JSON 备份）</b><small>结构化数据，适合长期存档</small></span>${icon("export")}</button>
       </div>
       <p class="settings-note">偏好只保存在本机，不会修改已有作品记录。</p>
+      <h3 class="settings-section-title">诊断</h3>
+      ${tmdbDiagnosticSection()}
       <h3 class="settings-section-title danger">危险区域</h3>
       <div class="settings-actions">
         <button type="button" class="settings-danger" data-action="open-reset-data" data-testid="open-reset-data"><span><b>清空所有数据</b><small>删除全部感想、作品、观影场次、系列与片单。无法撤销。</small></span>${icon("trash")}</button>
@@ -2999,6 +3042,41 @@ async function persistSeries(series) {
     : [...state.series, series];
 }
 
+// ─── R6 补丁 5：TMDB 诊断 ───────────────────────────────────────────────────
+
+async function runTmdbDiagnostic() {
+  if (state.tmdbDiagnostic.status === "running") return;
+  state.tmdbDiagnostic = { status: "running", payload: null, error: null };
+  render();
+
+  try {
+    // apiFetch 会自动带上访问密码（localStorage 里的 mi_access_password），
+    // 所以用户不需要自己拼 Authorization 头。
+    const response = await apiFetch("/api/tmdb/status?probe=1", { headers: { accept: "application/json" } });
+    if (response.status === 404) {
+      state.tmdbDiagnostic = { status: "done", payload: null, error: null };
+      render();
+      return;
+    }
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(payload?.message || `HTTP ${response.status}`);
+    state.tmdbDiagnostic = { status: "done", payload, error: null };
+  } catch (error) {
+    state.tmdbDiagnostic = { status: "error", payload: null, error: error.message };
+  }
+  render();
+}
+
+async function copyTmdbDiagnostic() {
+  const text = JSON.stringify(state.tmdbDiagnostic.payload, null, 2);
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("诊断结果已复制");
+  } catch (_) {
+    showToast("复制失败，可以手动选中上面的原始数据");
+  }
+}
+
 // ─── R6 补丁：清空所有数据 ───────────────────────────────────────────────────
 
 /**
@@ -3607,6 +3685,10 @@ document.addEventListener("click", async (event) => {
   } else if (action === "edit-collection") {
     state.overlay = "collection-editor";
     render();
+  } else if (action === "run-tmdb-diagnostic") {
+    await runTmdbDiagnostic();
+  } else if (action === "copy-tmdb-diagnostic") {
+    await copyTmdbDiagnostic();
   } else if (action === "open-reset-data") {
     state.resetConfirmText = "";
     state.resetMessage = null;

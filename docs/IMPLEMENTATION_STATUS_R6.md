@@ -779,3 +779,55 @@ GET /api/tmdb/status?probe=1  额外真实请求一次 TMDB，确认凭据是否
 
 `runtime` 里另外报三项，能省掉几轮来回：`functions_deployed`（能返回 JSON 就说明
 Functions 在跑）、`access_password_enabled`、`d1_bound`。
+
+---
+
+# R6 补丁 5：诊断入口改到 App 内（不给端点开匿名白名单）
+
+## 问题
+
+`/api/tmdb/status` 被现有的 `ACCESS_PASSWORD` 中间件拦下，浏览器地址栏直接访问返回
+`{"error":"unauthorized"}`，没法验证。
+
+## 为什么不给它开匿名白名单
+
+考虑过在 `functions/_middleware.js` 里放行这一条路径，结论是**不该开**：
+
+1. `?probe=1` 会让 Worker **替调用方发起一次外部请求**。匿名开放等于送出一个免费的
+   探活 / 配额消耗入口，任何人都能反复触发对 TMDB 的请求。
+2. 返回体里的 `access_password_enabled` 与 `d1_bound` 本身就是**部署拓扑信息**，
+   不该给未认证访问者。哪怕都是布尔值，"这个站点启用了密码保护、绑了 D1"
+   也是攻击面侦察的有用输入。
+3. 中间件目前的规则很干净——`/api/*` 一律要认证。开第一个例外之后，
+   后面每加一个诊断端点都要重新做一次判断，规则会慢慢烂掉。
+
+## 做法
+
+**偏好设置 → 诊断 → 运行 TMDB 诊断**。
+
+按钮走 App 自己的 `apiFetch()`，它会自动带上 localStorage 里的访问密码，
+所以不需要手工构造任何请求头。结果直接翻译成人话显示在设置面板里：
+
+```
+TMDB 链路正常（读到的是 TMDB_ACCESS_TOKEN）
+真实请求成功，返回 3 条结果。搜索里仍然找不到某部片，那就是召回问题而不是配置问题……
+
+Functions 运行中：是 · 访问密码：已启用 · D1 绑定：已绑定
+▸ 原始诊断数据            [复制诊断结果]
+```
+
+判定逻辑抽成 `interpretTmdbStatus()`（`src/tmdb.js`，纯函数，6 条测试），
+把五种情况分开，避免笼统地报"失败"：
+
+| 情况 | 结论 |
+|---|---|
+| 端点 404 / 拿不到 JSON | 线上还没有这版代码，先重新部署 |
+| `configured: false` | 环境变量没进 `context.env`——多半是配置后没有重新部署，或配在了 Preview |
+| `probe.status === 401` | 变量读到了，但凭据类型填反（v4 token ↔ `TMDB_ACCESS_TOKEN`，v3 key ↔ `TMDB_API_KEY`） |
+| `probe.status === null` | 网络层异常 |
+| `probe.ok === true` | 链路正常，剩下的是召回问题 |
+
+访问密码本身失效时（诊断请求 401），面板会提示去「云端同步」重新输入，
+而不是把 401 混进 TMDB 的结论里。
+
+有一条测试专门断言诊断解读文本里不出现任何形似凭据的内容。

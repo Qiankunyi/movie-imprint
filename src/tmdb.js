@@ -158,3 +158,85 @@ export function normalizeTmdbDetail(payload) {
     url: `https://www.themoviedb.org/movie/${tmdbId}`
   };
 }
+
+// ─── R6 补丁 5：诊断结果的人话解读 ──────────────────────────────────────────
+
+/**
+ * 把 /api/tmdb/status 的原始响应翻译成一句结论 + 一句该怎么办。
+ *
+ * 纯函数放在这里而不是 app.js，是为了能直接单测——这几个分支正是"到底是环境变量
+ * 没配、token 无效、还是召回问题"的判定依据，判错一次就要多来回一轮。
+ *
+ * @param {object|null} status /api/tmdb/status 的响应体
+ * @returns {{ state: string, title: string, detail: string, tone: "ok"|"warn"|"error" }}
+ */
+export function interpretTmdbStatus(status) {
+  if (!status || typeof status !== "object") {
+    return {
+      state: "unknown",
+      title: "拿不到诊断结果",
+      detail: "端点没有返回可解析的内容。如果它返回 404，说明线上部署里还没有这一版代码，先重新部署。",
+      tone: "error"
+    };
+  }
+
+  if (!status.configured) {
+    return {
+      state: "unconfigured",
+      title: "环境变量没有进 context.env",
+      detail: "Function 本身在正常运行，但读不到 TMDB_ACCESS_TOKEN / TMDB_API_KEY。"
+        + "最常见的原因是配置之后没有重新部署——Cloudflare Pages 的环境变量只对**新的 deployment** 生效，"
+        + "不会热更新到已经跑着的那一版。其次是配在了 Preview 而不是 Production。",
+      tone: "error"
+    };
+  }
+
+  const probe = status.probe || {};
+  const via = status.variable ? `（读到的是 ${status.variable}）` : "";
+
+  if (!probe.checked) {
+    return {
+      state: "configured",
+      title: `已读到环境变量${via}`,
+      detail: "这次没有实际请求 TMDB，所以还不能确认凭据是否有效。",
+      tone: "warn"
+    };
+  }
+
+  if (probe.ok) {
+    return {
+      state: "ok",
+      title: `TMDB 链路正常${via}`,
+      detail: `真实请求成功，返回 ${probe.resultCount ?? "若干"} 条结果。`
+        + "搜索里仍然找不到某部片，那就是召回问题而不是配置问题——"
+        + "TMDB 对中文／日文译名的收录有限，用原名或英文名再试一次。",
+      tone: "ok"
+    };
+  }
+
+  if (probe.status === 401) {
+    return {
+      state: "rejected",
+      title: "变量读到了，但 TMDB 拒绝了这个凭据",
+      detail: "两种 key 不能互相填错：v4 read access token 要填进 TMDB_ACCESS_TOKEN，"
+        + "v3 api key 要填进 TMDB_API_KEY。填反了就是 401。",
+      tone: "error"
+    };
+  }
+
+  if (probe.status === null || probe.status === undefined) {
+    return {
+      state: "unreachable",
+      title: "请求 TMDB 时出错",
+      detail: probe.hint || "网络层异常，可能是超时。稍后重试一次看是否稳定复现。",
+      tone: "error"
+    };
+  }
+
+  return {
+    state: "upstream_error",
+    title: `TMDB 返回 ${probe.status}`,
+    detail: probe.hint || "不是鉴权问题，可能是上游临时故障或触发了频率限制。",
+    tone: "error"
+  };
+}

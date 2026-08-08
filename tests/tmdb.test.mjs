@@ -5,6 +5,7 @@ import {
   buildTmdbImageUrl,
   buildTmdbSearchRequest,
   inferWorkType,
+  interpretTmdbStatus,
   isAllowedTmdbImageUrl,
   isValidTmdbPosterPath,
   normalizeTmdbDetail,
@@ -181,4 +182,62 @@ test("normalizeTmdbDetail：id 或标题缺失返回 null", () => {
   assert.equal(normalizeTmdbDetail({ title: "没有 id" }), null);
   assert.equal(normalizeTmdbDetail({ id: 1 }), null);
   assert.equal(normalizeTmdbDetail(null), null);
+});
+
+// ─── R6 补丁 5：诊断结果解读 ────────────────────────────────────────────────
+
+test("补丁5：configured:false → 判成环境变量没生效，并指出最常见原因", () => {
+  const r = interpretTmdbStatus({ configured: false, variable: null, probe: { checked: false } });
+  assert.equal(r.state, "unconfigured");
+  assert.equal(r.tone, "error");
+  assert.match(r.detail, /重新部署/, "必须点出「配置后没有重新部署」这个最常见原因");
+});
+
+test("补丁5：configured + probe 成功 → 判成链路正常，问题在召回", () => {
+  const r = interpretTmdbStatus({
+    configured: true, variable: "TMDB_ACCESS_TOKEN",
+    probe: { checked: true, ok: true, status: 200, resultCount: 3 }
+  });
+  assert.equal(r.state, "ok");
+  assert.equal(r.tone, "ok");
+  assert.match(r.title, /TMDB_ACCESS_TOKEN/, "要说明读到的是哪个变量");
+  assert.match(r.detail, /召回/);
+});
+
+test("补丁5：401 → 判成凭据类型填反，而不是笼统的「失败」", () => {
+  const r = interpretTmdbStatus({
+    configured: true, variable: "TMDB_API_KEY",
+    probe: { checked: true, ok: false, status: 401 }
+  });
+  assert.equal(r.state, "rejected");
+  assert.match(r.detail, /v4 read access token/);
+  assert.match(r.detail, /v3 api key/);
+});
+
+test("补丁5：网络异常与上游错误码要分开", () => {
+  const unreachable = interpretTmdbStatus({
+    configured: true, probe: { checked: true, ok: false, status: null, hint: "请求异常：fetch failed" }
+  });
+  assert.equal(unreachable.state, "unreachable");
+
+  const upstream = interpretTmdbStatus({
+    configured: true, probe: { checked: true, ok: false, status: 429 }
+  });
+  assert.equal(upstream.state, "upstream_error");
+  assert.match(upstream.title, /429/);
+});
+
+test("补丁5：拿不到响应（例如端点 404）要提示先重新部署", () => {
+  assert.match(interpretTmdbStatus(null).detail, /404/);
+  assert.match(interpretTmdbStatus(null).detail, /重新部署/);
+  assert.equal(interpretTmdbStatus("not json").state, "unknown");
+});
+
+test("补丁5：诊断解读绝不回显任何凭据字段", () => {
+  const r = interpretTmdbStatus({
+    configured: true, variable: "TMDB_ACCESS_TOKEN",
+    probe: { checked: true, ok: true, status: 200, resultCount: 1 }
+  });
+  const text = JSON.stringify(r);
+  assert.ok(!/eyJ|Bearer|[0-9a-f]{32}/.test(text), "解读文本里不得出现任何形似凭据的内容");
 });
