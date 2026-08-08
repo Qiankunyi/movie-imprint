@@ -268,6 +268,51 @@ function tmdbRequest(baseUrl) {
   return { url: `${baseUrl}&api_key=${encodeURIComponent(apiKey)}`, headers };
 }
 
+/** R6 补丁 4：TMDB 配置诊断（本地版，与 functions/api/tmdb/status.js 行为一致）。 */
+async function handleTmdbStatus(requestUrl, response) {
+  const { token, apiKey } = tmdbAuth();
+  const variable = token ? "TMDB_ACCESS_TOKEN" : apiKey ? "TMDB_API_KEY" : null;
+  const body = {
+    configured: !!variable,
+    variable,
+    language: tmdbLanguage(),
+    runtime: {
+      functions_deployed: true,
+      access_password_enabled: !!process.env.ACCESS_PASSWORD?.trim(),
+      // 本地开发没有 D1（server.mjs 从来没实现过 /api/sync/*），如实报 false
+      d1_bound: false
+    },
+    probe: { checked: false }
+  };
+
+  if (!body.configured || requestUrl.searchParams.get("probe") !== "1") {
+    respondJson(response, 200, body);
+    return;
+  }
+
+  try {
+    const { url, headers } = tmdbRequest(buildTmdbSearchRequest("Birdman", { language: body.language }).url);
+    const upstream = await fetch(url, { headers, signal: AbortSignal.timeout(6000) });
+    let resultCount = null;
+    if (upstream.ok) {
+      const payload = await upstream.json().catch(() => null);
+      resultCount = Array.isArray(payload?.results) ? payload.results.length : null;
+    }
+    body.probe = {
+      checked: true,
+      ok: upstream.ok,
+      status: upstream.status,
+      resultCount,
+      hint: upstream.status === 401
+        ? "TMDB 拒绝了这个凭据：v4 token 要填 TMDB_ACCESS_TOKEN，v3 key 要填 TMDB_API_KEY，别互相填错"
+        : upstream.ok ? null : `TMDB 返回 ${upstream.status}`
+    };
+  } catch (error) {
+    body.probe = { checked: true, ok: false, status: null, resultCount: null, hint: `请求异常：${error.message}` };
+  }
+  respondJson(response, 200, body);
+}
+
 async function handleTmdbSearch(requestUrl, response) {
   const query = requestUrl.searchParams.get("q")?.trim() || "";
   if (!query || query.length > 80) {
@@ -458,6 +503,10 @@ createServer((request, response) => {
   }
   if (request.method === "GET" && requestPath === "/api/bangumi/subject") {
     void handleBangumiSubject(requestUrl, response);
+    return;
+  }
+  if (request.method === "GET" && requestPath === "/api/tmdb/status") {
+    void handleTmdbStatus(requestUrl, response);
     return;
   }
   if (request.method === "GET" && requestPath === "/api/tmdb/search") {

@@ -714,3 +714,68 @@ Pages 项目 → Settings → Environment variables → Production
 
 配好并重新部署后，搜索面板的状态行会从
 「TMDB 未配置密钥」变成「TMDB N 条」，不需要再去猜。
+
+---
+
+# R6 补丁 4：`/api/tmdb/status` 配置诊断端点
+
+## 先纠正一个我上一轮的错误判断
+
+上一轮我怀疑「`wrangler.toml` 存在会让 Dashboard 环境变量被忽略」。查证后**这个判断是错的**，
+至少对本项目当前的配置是错的。Cloudflare Pages 的官方说明：
+
+> 不添加 `pages_build_output_dir` 时，Wrangler 配置文件
+> "will continue to be **used for local development only**"。
+
+本项目的 `wrangler.toml` **没有** `pages_build_output_dir`，所以它是本地开发专用，
+**不会**接管生产配置，Dashboard 里配的环境变量照常进 `context.env`。
+
+⚠️ 但由此引出一个需要注意的连带事实：**`wrangler.toml` 里的 D1 绑定同样只对本地生效**。
+生产环境的 `DB` 绑定必须在 Dashboard 里单独配置，否则 `context.env.DB` 是 undefined，
+云端同步会静默失效。新端点的 `runtime.d1_bound` 会顺带把这一项报出来。
+
+> 也**不要**为了"统一配置"而给 `wrangler.toml` 补上 `pages_build_output_dir` ——
+> 那会立刻把它变成生产环境的 source of truth，Dashboard 里现有的变量与绑定全部作废，
+> 而 token 又绝不能写进提交到仓库的文件里。
+
+## 环境变量读取代码的核对结果
+
+变量名在四处完全一致，`context.env` 用法也是 Pages Functions 的标准写法：
+
+| 位置 | 写法 |
+|---|---|
+| `functions/api/tmdb/search.js:23-24` | `context.env.TMDB_ACCESS_TOKEN?.trim()` / `context.env.TMDB_API_KEY?.trim()` |
+| `functions/api/tmdb/movie.js:24-25` | 同上 |
+| `functions/api/tmdb/status.js` | 同上 |
+| `server.mjs:251-252` | `process.env.*`（本地开发，对应关系一致） |
+
+读取时机也没问题：在 `onRequest` 里读，不是模块顶层——模块顶层读不到 `context.env`，
+那是 Pages Functions 的经典坑，本项目没踩。
+
+**所以「变量名 / 读取位置 / API 用法」这三项都是对的，问题不在这里。**
+
+## 新端点
+
+```
+GET /api/tmdb/status          只报配置状态，不请求 TMDB
+GET /api/tmdb/status?probe=1  额外真实请求一次 TMDB，确认凭据是否被接受
+```
+
+**安全红线：绝不回显 token 的任何部分，也不回显长度。** 只回答"有没有读到"、
+"读到的是哪个变量名"、"拿它去请求 TMDB 通不通"。已用假 token 实测，
+响应中不含凭据任何片段。
+
+默认不打 TMDB（避免被当成免费探活接口刷），`?probe=1` 才发起一次真实请求，
+且固定用英文查询词 `Birdman`，避免把凭据问题和中文召回问题混在一起。
+
+## 怎么读结果
+
+| 现象 | 结论 | 处理 |
+|---|---|---|
+| 这个端点本身 **404** | 线上部署里没有补丁 4 的代码 | 先重新部署 |
+| `configured: false` | Function 在跑，但 `context.env` 读不到变量 | 变量没生效——多半是配置后没有重新部署（Pages 环境变量只对新 deployment 生效），或配在了 Preview 而非 Production |
+| `configured: true` + `probe.status: 401` | 变量读到了，但凭据被 TMDB 拒绝 | v4 token 要填 `TMDB_ACCESS_TOKEN`，v3 key 要填 `TMDB_API_KEY`，两者填反会 401 |
+| `configured: true` + `probe.ok: true` | 整条链路正常 | 搜不到就是召回问题（见补丁 3 关于 CJK 的说明） |
+
+`runtime` 里另外报三项，能省掉几轮来回：`functions_deployed`（能返回 JSON 就说明
+Functions 在跑）、`access_password_enabled`、`d1_bound`。
