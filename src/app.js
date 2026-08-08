@@ -1,5 +1,5 @@
 import { db, clearAllData, migrateLocalToCloud } from "./db.js?v=14";
-import { interpretTmdbStatus } from "./tmdb.js?v=1";
+import { interpretTmdbStatus } from "./tmdb.js?v=2";
 import { parseTicketText, draftViewingEvent } from "./ticket.js";
 import { buildWorkSearchQuery } from "./bangumi.js?v=13";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
@@ -20,11 +20,13 @@ import {
 } from "./routing.js?v=1";
 import {
   buildSearchResults,
+  countBySource,
+  filterCandidatesBySource,
   hasDegradedSource,
   looksCJK,
   searchLocalWorks,
   summarizeSearchSources
-} from "./work-search.js?v=2";
+} from "./work-search.js?v=4";
 import {
   buildWorkView,
   findWorkById,
@@ -85,6 +87,7 @@ import {
   CARD_TYPES,
   RECOMMENDATIONS,
   RECOMMENDATION_PRESETS,
+  applyCandidateToWork,
   assignViewingRelations,
   attitudeLabel,
   createId,
@@ -103,7 +106,7 @@ import {
   createWorkFromCandidate,
   recommendationLabel,
   resolveWork
-} from "./domain.js?v=16";
+} from "./domain.js?v=17";
 import {
   MIME_TYPES,
   copyExportText,
@@ -135,6 +138,9 @@ const ACCESS_PASSWORD_KEY = "mi_access_password";
 // 要求打字而不是点两次"确定"：这个操作不可撤销，误触两次按钮完全可能，
 // 误打两个字不会。
 const RESET_CONFIRM_PHRASE = "清空";
+// 数据源在界面上的显示名。work-search.js 里的 SOURCE_LABELS 是同一套，
+// 这里再放一份是为了 app.js 不必为一个字符串表额外 import。
+const SOURCE_DISPLAY = { bangumi: "Bangumi", tmdb: "TMDB", local: "已在库中" };
 
 function getAccessPassword() {
   return localStorage.getItem(ACCESS_PASSWORD_KEY) || "";
@@ -234,7 +240,7 @@ const state = {
   // sources 记录每个外部数据源这次的状态（ok / unconfigured / failed），
   // 无论成功失败都要展示——否则"没配密钥""请求失败""确实搜不到"三种情况
   // 在界面上长得一模一样（实测搜「鸟人」只出 Bangumi 就是踩了这个坑）。
-  workSearch: { query: "", local: [], external: [], status: "idle", sources: null, selected: null },
+  workSearch: { query: "", local: [], external: [], status: "idle", sources: null, selected: null, sourceFilter: null },
   // R6 补丁 5：TMDB 诊断。/api/tmdb/status 被 ACCESS_PASSWORD 中间件保护着，
   // 浏览器地址栏直接访问会 401；这里用 App 已认证的 apiFetch 去调，结果显示在设置里。
   // 刻意不给这个端点开匿名白名单——?probe=1 会让 Worker 替调用方发一次外部请求，
@@ -1309,10 +1315,10 @@ function workMatchPanel(record) {
     return `<section class="work-match-panel" data-testid="work-match-panel">
       <div class="work-match-heading"><span class="section-label-icon">${icon("match")}作品匹配</span><b>请选择正确条目</b></div>
       <div class="work-candidates">
-        ${(match.candidates || []).map((candidate) => `<button type="button" class="work-candidate" data-action="confirm-work-match" data-subject-id="${candidate.subjectId}">
-          <b>${escapeHtml(candidate.title)}</b>
-          <span>${escapeHtml(candidate.originalTitle || workTypeLabel(candidate.type))}</span>
-          <small>${escapeHtml(workTypeLabel(candidate.type))}${candidate.releaseDate ? ` · ${escapeHtml(candidate.releaseDate)}` : ""}</small>
+        ${(match.candidates || []).map((candidate, index) => `<button type="button" class="work-candidate" data-action="confirm-work-match" data-index="${index}">
+          <b>${escapeHtml(candidate.title)}<span class="work-search-item-source src-${escapeHtml(candidate.source)}">${escapeHtml(SOURCE_DISPLAY[candidate.source] || candidate.source)}</span></b>
+          <span>${escapeHtml(candidate.originalTitle || "")}</span>
+          <small>${escapeHtml(workTypeLabel(candidate.workType))}${candidate.year ? ` · ${candidate.year}` : ""}</small>
         </button>`).join("")}
       </div>
       <button type="button" class="work-match-secondary" data-action="dismiss-work-match">${match.correcting ? "保留当前匹配" : "都不是，保留本地作品"}</button>
@@ -1715,28 +1721,27 @@ function captureEntryOverlay() {
 function ticketConfirmOverlay() {
   const ctx = state.captureContext;
   if (!ctx) return "";
-  const match = ctx.bangumiMatch || { status: "idle", candidates: [] };
+  const match = ctx.workMatch || { status: "idle", candidates: [] };
   const dateFmt = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "short", timeZone: "Asia/Tokyo" });
   const timeFmt = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Tokyo" });
 
   // 锁定的 Work 直接用它自己的海报引用（可能来自 TMDB）；
   // 未锁定时才回落到"刚匹配到的 bangumi subjectId"这条老路径。
   const lockedWorkForPoster = ctx.lockedWork && ctx.workId ? findWorkById(state.works, ctx.workId) : null;
+  // 选中的候选可能来自 TMDB，海报要用它自己的 posterRef，不能只认 bangumi subjectId
   const posterSrc = lockedWorkForPoster
     ? posterUrlFor(lockedWorkForPoster)
-    : (ctx.subjectId ? posterUrlFor({ poster: { source: "bangumi", subject_id: Number(ctx.subjectId) || null } }) : "");
+    : (ctx.selectedCandidate?.posterRef ? posterUrlFor({ poster: ctx.selectedCandidate.posterRef }) : "");
   const posterBlock = (!ctx.lockedWork && match.status === "searching")
     ? `<div class="ticket-confirm-poster skeleton" aria-hidden="true" data-testid="capture-match-skeleton"></div>`
     : posterSrc
       ? `<img class="ticket-confirm-poster" src="${escapeHtml(posterSrc)}" alt="" data-testid="capture-match-poster" onerror="this.hidden=true" />`
       : "";
 
-  const candidatesBlock = ctx.showMatchCandidates ? `<div class="work-candidates" data-testid="capture-match-candidates">
-    ${(match.candidates || []).slice(0, 3).map((c) => `<button type="button" class="work-candidate" data-action="select-capture-candidate" data-subject-id="${c.subjectId}">
-      <b>${escapeHtml(c.title)}</b><span>${escapeHtml(c.originalTitle || "")}</span>
-    </button>`).join("")}
-    <label class="manual-title-fallback"><span>都不是，手动输入片名</span><input type="text" id="capture-manual-title-input" data-testid="capture-manual-title-input" value="${escapeHtml(ctx.workTitle || "")}" /></label>
-  </div>` : "";
+  const candidatesBlock = ctx.showMatchCandidates
+    ? `${captureCandidatesMarkup(ctx, "select-capture-candidate", "capture-match-candidates")}
+       <label class="manual-title-fallback"><span>都不是，手动输入片名</span><input type="text" id="capture-manual-title-input" data-testid="capture-manual-title-input" value="${escapeHtml(ctx.workTitle || "")}" /></label>`
+    : "";
 
   const allEvents = ctx.pendingEvents || [];
   const selectedCount = selectedPendingEvents(allEvents).length;
@@ -1816,7 +1821,6 @@ const CINEMA_FORMAT_OPTIONS = ["2D", "3D", "IMAX", "IMAXレーザー", "Dolby Ci
 function sceneChoiceOverlay() {
   const ctx = state.captureContext || {};
   const locationType = ctx.locationType || null;
-  const match = ctx.bangumiMatch || { status: "idle", candidates: [] };
   const eventTypes = ctx.eventTypes || [];
   // Work 已锁定时不要求再填作品名——只需要选观看地点就能确认
   const canConfirm = Boolean(locationType) && (ctx.lockedWork || Boolean(ctx.workTitle?.trim()));
@@ -1844,9 +1848,7 @@ function sceneChoiceOverlay() {
             <small>从作品页进入，这次记录会直接挂到这部作品，不需要重新识别。</small>
           </div>`
         : `<label class="scene-work-title"><span>作品</span><input type="text" id="scene-work-title-input" data-testid="scene-work-title-input" value="${escapeHtml(ctx.workTitle || "")}" placeholder="作品名" /></label>
-      ${match.status === "candidates" ? `<div class="work-candidates" data-testid="scene-match-candidates">
-        ${match.candidates.slice(0, 3).map((c) => `<button type="button" class="work-candidate" data-action="select-scene-candidate" data-subject-id="${c.subjectId}"><b>${escapeHtml(c.title)}</b><span>${escapeHtml(c.originalTitle || "")}</span></button>`).join("")}
-      </div>` : ""}`}
+      ${captureCandidatesMarkup(ctx, "select-scene-candidate", "scene-match-candidates")}`}
       ${ctx.hasHistory ? `<div class="relation-toggle" role="group" aria-label="初看或重看">
         <button type="button" class="relation-choice ${(ctx.relationOverride || tentativeViewingRelation(ctx.existingHistoryCount || 0, 0)) === "first" ? "selected" : ""}" data-action="set-scene-relation" data-value="first">初看</button>
         <button type="button" class="relation-choice ${(ctx.relationOverride || tentativeViewingRelation(ctx.existingHistoryCount || 0, 0)) === "rewatch" ? "selected" : ""}" data-action="set-scene-relation" data-value="rewatch">重看 · 第 ${(ctx.existingHistoryCount || 0) + 1} 次</button>
@@ -2082,8 +2084,25 @@ function sourceStatusMarkup(search) {
   if (!search.sources) return "";
   const items = summarizeSearchSources(search.sources);
   const degraded = hasDegradedSource(search.sources);
+  const counts = countBySource(search.external);
+  const active = search.sourceFilter;
+
+  // R6 补丁 8：这排 chip 从纯状态显示升级成**可点击的筛选**。
+  // 搜「魔女宅急便」时 Bangumi 10 条 + TMDB 2 条混在一起，同名条目一大串，
+  // 光看标题分不清哪条来自哪个库。ok 且有结果的源才可点；未配置/失败的源
+  // 没有结果可筛，保持不可点，只做状态提示。
   return `<p class="work-search-sources ${degraded ? "degraded" : ""}" data-testid="work-search-sources">
-    ${items.map((item) => `<span class="source-chip tone-${item.tone}" data-testid="source-status-${item.source}">${escapeHtml(item.text)}</span>`).join("")}
+    ${active ? `<button type="button" class="source-chip filter" data-action="filter-search-source" data-source="all" data-testid="source-filter-all">← 全部</button>` : ""}
+    ${items.map((item) => {
+      const clickable = item.state === "ok" && (counts[item.source] || 0) > 0;
+      if (!clickable) {
+        return `<span class="source-chip tone-${item.tone}" data-testid="source-status-${item.source}">${escapeHtml(item.text)}</span>`;
+      }
+      return `<button type="button" class="source-chip filter tone-${item.tone} ${active === item.source ? "active" : ""}"
+        data-action="filter-search-source" data-source="${item.source}"
+        aria-pressed="${active === item.source}"
+        data-testid="source-status-${item.source}">${escapeHtml(item.text)}</button>`;
+    }).join("")}
   </p>`;
 }
 
@@ -2126,10 +2145,16 @@ function workSearchOverlay() {
       ? `<span class="work-search-item-meta">可能与列表中另一条是同一部（《${escapeHtml(candidate.possibleDuplicateOf.title || "")}》）</span>`
       : "";
     const poster = posterUrlFor({ poster: candidate.posterRef });
+    // 来源徽章：同名条目一大串时，知道这条来自 Bangumi 还是 TMDB 才好判断该选哪个
+    const badge = candidate.source === "local"
+      ? ""
+      : `<span class="work-search-item-source src-${escapeHtml(candidate.source)}">${escapeHtml(SOURCE_DISPLAY[candidate.source] || candidate.source)}</span>`;
     return `<button type="button" class="work-search-item ${selected ? "selected" : ""}" data-action="select-search-candidate" data-group="${group}" data-index="${index}" data-testid="work-search-item-${group}-${index}" ${candidate.inThisCollection ? "disabled" : ""}>
       ${poster ? `<img class="work-search-item-poster" src="${escapeHtml(poster)}" alt="" loading="lazy" />` : ""}
       <span class="work-search-item-body">
-        <span class="work-search-item-title">${escapeHtml(candidate.title || "")}</span>
+        <span class="work-search-item-title-row">
+          <span class="work-search-item-title">${escapeHtml(candidate.title || "")}</span>${badge}
+        </span>
         ${meta ? `<span class="work-search-item-meta">${escapeHtml(meta)}</span>` : ""}
         ${dupHint}
       </span>
@@ -2139,8 +2164,11 @@ function workSearchOverlay() {
   const localGroup = search.local.length
     ? `<p class="work-search-group-title">已经在你的库里</p>${search.local.map((c, i) => itemMarkup(c, i, "local")).join("")}`
     : "";
-  const externalGroup = search.external.length
-    ? `<p class="work-search-group-title">从数据库中找到</p>${search.external.map((c, i) => itemMarkup(c, i, "external")).join("")}`
+  // 注意索引：itemMarkup 传的是**筛选后**数组里的下标，选中回调必须用同一份数组，
+  // 否则筛选状态下点第 1 条会选中未筛选数组的第 1 条（不同的片）。
+  const visibleExternal = filterCandidatesBySource(search.external, search.sourceFilter);
+  const externalGroup = visibleExternal.length
+    ? `<p class="work-search-group-title">${search.sourceFilter ? `只看 ${SOURCE_DISPLAY[search.sourceFilter] || search.sourceFilter}` : "从数据库中找到"}</p>${visibleExternal.map((c, i) => itemMarkup(c, i, "external")).join("")}`
     : "";
 
   let body;
@@ -2371,8 +2399,18 @@ async function finishCompose() {
   if (state.captureContext?.workId && (isSupplement || state.captureContext.lockedWork)) {
     work = findWorkById(state.works, state.captureContext.workId);
   }
+
+  // R6 补丁 10：用户在捕获流程里选了候选（可能来自本地／Bangumi／TMDB）时，
+  // 走和片单添加**完全同一条**落库路径——它会补 TMDB 详情、按发行地区挑海报、
+  // 并保证相同 external id 不重复建 Work。
+  // 以前这里只把 bangumi subjectId 传给 resolveWork，TMDB 候选的 id、海报、
+  // 时长这些信息在落库时全部丢失。
+  if (!work && state.captureContext?.selectedCandidate) {
+    work = await resolveOrCreateWorkFromCandidate(state.captureContext.selectedCandidate);
+  }
+
   if (!work) {
-    // R1：同一部电影无论写几条感想，只解析出一个 Work（按标题/别名查重，不新建 1:1 Work）
+    // 没选任何候选（手填片名直接保存）：仍然按标题/别名查重，不新建 1:1 Work
     ({ work } = resolveWork(state.works, {
       title: resolvedTitle,
       subjectId: state.captureContext?.subjectId ?? null,
@@ -2575,28 +2613,47 @@ async function requestWorkMatch(recordId, { force = false } = {}) {
   work.match = { status: "searching", query, candidates: [], message: null, correcting: force };
   await db.put("works", work);
   renderPreservingScroll();
-  try {
-    const response = await apiFetch(`/api/bangumi/search?q=${encodeURIComponent(query)}`, { headers: { accept: "application/json" } });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.message || "作品匹配暂不可用");
-    work.match = payload.candidates?.length
-      ? { status: "needs_confirmation", query, candidates: payload.candidates, message: null, correcting: force }
+
+  // R6 补丁 10：这里原本只打 /api/bangumi/search。记录一部真人电影时 Bangumi
+  // 常常没有条目，于是首页永远挂着"待确认作品"却怎么点都匹配不上。
+  // 现在与捕获流程、片单搜索走同一条统一搜索：Bangumi + TMDB 并行。
+  const [bangumiResult, tmdbResult] = await Promise.allSettled([
+    fetchSearchSource(`/api/bangumi/search?q=${encodeURIComponent(query)}`),
+    fetchSearchSource(`/api/tmdb/search?q=${encodeURIComponent(query)}`)
+  ]);
+  const unwrap = (settled) => settled.status === "fulfilled"
+    ? settled.value
+    : { state: "failed", candidates: [], error: settled.reason?.message || "网络错误" };
+  const bangumiInfo = unwrap(bangumiResult);
+  const tmdbInfo = unwrap(tmdbResult);
+  const bothFailed = bangumiInfo.state === "failed" && tmdbInfo.state === "failed";
+
+  const { external } = buildSearchResults({
+    local: [],
+    bangumi: bangumiInfo.candidates,
+    tmdb: tmdbInfo.candidates,
+    query
+  });
+
+  if (bothFailed) {
+    work.match = force
+      ? { status: "confirmed", query, candidates: [], message: "暂时无法重新匹配，已保留当前作品。", correcting: false }
+      : { status: "unavailable", query, candidates: [], message: "两个数据库都暂时连不上", correcting: false };
+  } else {
+    work.match = external.length
+      ? { status: "needs_confirmation", query, candidates: external, message: null, correcting: force }
       : force
         ? { status: "confirmed", query, candidates: [], message: "没有找到新的候选，已保留当前匹配。", correcting: false }
         : { status: "no_results", query, candidates: [], message: null, correcting: false };
-  } catch (error) {
-    work.match = force
-      ? { status: "confirmed", query, candidates: [], message: "暂时无法重新匹配，已保留当前作品。", correcting: false }
-      : { status: "unavailable", query, candidates: [], message: error.message, correcting: false };
   }
   await db.put("works", work);
   renderPreservingScroll();
 }
 
-async function confirmWorkMatch(subjectId) {
+async function confirmWorkMatch(candidateIndex) {
   const record = currentRecord();
   const work = currentWork(record);
-  const candidate = work?.match?.candidates?.find((item) => item.subjectId === subjectId);
+  const candidate = work?.match?.candidates?.[Number(candidateIndex)];
   if (!record || !work || !candidate) return;
 
   // R6：匹配 Bangumi 只是给这个 Work 增加一条 external_ref，**work.id 不再变更**。
@@ -2609,19 +2666,16 @@ async function confirmWorkMatch(subjectId) {
   // 持有 bangumi:123 —— 同一个外部标识指向两个 Work，那它们确定是同一部电影
   // （R6 §9：相同 bangumi_id → 不重复创建 Work）。这时才合并，并把所有指向被合并
   // 一方的 record / viewing event 改指过去。这是罕见路径，不再是每次匹配的常规流程。
-  const conflictingWork = state.works.find(
-    (item) => item.id !== work.id && externalRefId(item, "bangumi") === String(subjectId)
-  );
+  // R6 补丁 10：候选可能来自 Bangumi 也可能来自 TMDB，冲突检测要按候选自己的源来查，
+  // 不能写死 bangumi。
+  const candidateSource = candidate.source;
+  const conflictingWork = candidateSource && candidateSource !== "local"
+    ? state.works.find(
+        (item) => item.id !== work.id && externalRefId(item, candidateSource) === String(candidate.sourceId)
+      )
+    : null;
 
-  const promoted = promoteWorkToMatched(work, subjectId, {
-    title: candidate.title,
-    originalTitle: candidate.originalTitle,
-    type: candidate.type,
-    releaseDate: candidate.releaseDate,
-    // R5：Bangumi 的 summary 用来抽"一句话简介"的首句；抽不出（太长/没有）时
-    // tagline 会留空，由用户在作品页手写或点「让 AI 概括一句」。
-    summary: candidate.summary || null
-  });
+  const promoted = applyCandidateToWork(work, candidate);
   const oldId = work.id;
   // 合并时以「已经持有这个 external_ref 的一方」为主体，被匹配的一方并入它
   const finalWork = conflictingWork ? mergeWorks(conflictingWork, [promoted]) : promoted;
@@ -2732,7 +2786,8 @@ function handleCapturePaste(rawText) {
     workTitle,
     subjectId: locked?.subjectId ?? null,
     showMatchCandidates: false,
-    bangumiMatch: { status: "idle", candidates: [], query: workTitle },
+    workMatch: { status: "idle", candidates: [], query: workTitle, sources: null },
+    selectedCandidate: null,
     hasHistory: false,
     existingHistoryCount: 0,
     pendingEvents
@@ -2740,32 +2795,103 @@ function handleCapturePaste(rawText) {
   state.captureTagsExpanded = new Set();
   applyCaptureTransition("paste-ticket");
   render();
-  if (!locked) void runCaptureBangumiMatch(workTitle);
+  if (!locked) void runCaptureWorkMatch(workTitle);
   void refreshCaptureHistoryFlag();
 }
 
 /**
- * 用捕获上下文当前的作品标题去搜 Bangumi，结果写进 captureContext.bangumiMatch。
- * 与 requestWorkMatch 的区别：这里操作的是还没有落库的 Work，只是给确认卡展示用。
+ * 捕获流程里的作品匹配。
+ *
+ * R6 补丁 10：原来叫 runCaptureBangumiMatch，**只搜 Bangumi**。
+ * 当初那样写是因为最早只接了一个源、且用户以看动画电影为主，先拿一个源试效果。
+ * 但只要看真人电影，Bangumi 常常根本没有条目，用户就卡在"匹配不到"——
+ * 而这正是引入 TMDB 要解决的问题。现在与片单那套走**同一条**统一搜索：
+ * 本地 + Bangumi + TMDB 并行，任一源失败不阻塞另一个。
+ *
+ * @param {string} query
  */
-async function runCaptureBangumiMatch(query) {
+async function runCaptureWorkMatch(query) {
   const ctx = state.captureContext;
-  if (!ctx || !query?.trim()) return;
-  ctx.bangumiMatch = { status: "searching", candidates: [], query };
+  if (!ctx || ctx.lockedWork || !query?.trim()) return;
+
+  ctx.workMatch = { status: "searching", candidates: [], query, sources: null };
   render();
-  try {
-    const response = await apiFetch(`/api/bangumi/search?q=${encodeURIComponent(query)}`, { headers: { accept: "application/json" } });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.message || "作品匹配暂不可用");
-    if (state.captureContext !== ctx) return; // 用户已经离开或重新开始
-    ctx.bangumiMatch = payload.candidates?.length
-      ? { status: "candidates", candidates: payload.candidates, query }
-      : { status: "none", candidates: [], query };
-  } catch (error) {
-    if (state.captureContext !== ctx) return;
-    ctx.bangumiMatch = { status: "unavailable", candidates: [], query, message: error.message };
+
+  const [bangumiResult, tmdbResult] = await Promise.allSettled([
+    fetchSearchSource(`/api/bangumi/search?q=${encodeURIComponent(query)}`),
+    fetchSearchSource(`/api/tmdb/search?q=${encodeURIComponent(query)}`)
+  ]);
+  if (state.captureContext !== ctx) return;   // 用户已经离开或重新开始
+
+  const unwrap = (settled) => settled.status === "fulfilled"
+    ? settled.value
+    : { state: "failed", candidates: [], error: settled.reason?.message || "网络错误" };
+  const bangumiInfo = unwrap(bangumiResult);
+  const tmdbInfo = unwrap(tmdbResult);
+
+  const { local, external } = buildSearchResults({
+    local: searchLocalWorks(state.works, query, { limit: 4 }),
+    bangumi: bangumiInfo.candidates,
+    tmdb: tmdbInfo.candidates,
+    query
+  });
+
+  // 本地已有的排最前——记录一部已经在库里的片时，直接引用比重新匹配外部源更对
+  const candidates = [...local, ...external].slice(0, 8);
+
+  ctx.workMatch = {
+    status: candidates.length ? "candidates" : "none",
+    candidates,
+    query,
+    sources: {
+      bangumi: { state: bangumiInfo.state, count: bangumiInfo.candidates.length, error: bangumiInfo.error },
+      tmdb: { state: tmdbInfo.state, count: tmdbInfo.candidates.length, error: tmdbInfo.error }
+    }
+  };
+  render();
+}
+
+/**
+ * 选中一条候选。统一候选可能来自本地库，也可能来自任一外部源，
+ * 所以这里存的是**整条候选**，而不是像以前那样只存一个 bangumi subjectId——
+ * 那样存不下 tmdb_id、海报路径这些信息，落库时就丢了。
+ *
+ * `subjectId` 仍然同步维护一份，是因为老代码（草稿卡海报等）还在读它。
+ */
+function selectCaptureCandidate(ctx, candidate) {
+  ctx.selectedCandidate = candidate;
+  ctx.workTitle = candidate.title;
+  ctx.subjectId = candidate.externalIds?.bangumi ? Number(candidate.externalIds.bangumi) : null;
+  // 选中本地已有作品 → 直接锁定，后面 finishCompose 会挂到这个 work_id 上
+  ctx.workId = candidate.source === "local" ? candidate.workId : null;
+}
+
+/** 候选列表的公共渲染（捕获流程的两个面板共用）。 */
+function captureCandidatesMarkup(ctx, action, testId) {
+  const match = ctx.workMatch || { status: "idle", candidates: [] };
+  if (match.status === "searching") {
+    return `<p class="capture-match-note">正在从数据库匹配…</p>`;
   }
-  render();
+  if (!match.candidates?.length) {
+    return match.status === "none"
+      ? `<p class="capture-match-note" data-testid="${testId}-empty">没有匹配到条目，直接用你填的片名保存也可以。</p>`
+      : "";
+  }
+  const selected = ctx.selectedCandidate;
+  return `<div class="work-candidates" data-testid="${testId}">
+    ${match.sources ? `<p class="work-search-sources">${summarizeSearchSources(match.sources)
+      .map((item) => `<span class="source-chip tone-${item.tone}">${escapeHtml(item.text)}</span>`).join("")}</p>` : ""}
+    ${match.candidates.map((c, i) => {
+      const isSelected = selected && selected.source === c.source && String(selected.sourceId) === String(c.sourceId);
+      const badge = c.source === "local"
+        ? `<span class="work-search-item-source">已在库中</span>`
+        : `<span class="work-search-item-source src-${escapeHtml(c.source)}">${escapeHtml(SOURCE_DISPLAY[c.source] || c.source)}</span>`;
+      return `<button type="button" class="work-candidate ${isSelected ? "selected" : ""}" data-action="${action}" data-index="${i}">
+        <b>${escapeHtml(c.title)}${badge}</b>
+        <span>${escapeHtml([c.year || null, c.originalTitle].filter(Boolean).join(" · "))}</span>
+      </button>`;
+    }).join("")}
+  </div>`;
 }
 
 /**
@@ -3175,7 +3301,7 @@ let workSearchTimer = null;
 let workSearchToken = 0;
 
 function openWorkSearch() {
-  state.workSearch = { query: "", local: [], external: [], status: "idle", sources: null, selected: null };
+  state.workSearch = { query: "", local: [], external: [], status: "idle", sources: null, selected: null, sourceFilter: null };
   state.overlay = "work-search";
   render();
   requestAnimationFrame(() => document.querySelector("#work-search-input")?.focus());
@@ -3203,6 +3329,7 @@ function handleWorkSearchInput(value) {
   state.workSearch.external = [];
   // 上一次的数据源状态跟着作废——否则改了查询词之后，状态行还挂着旧一轮的条数
   state.workSearch.sources = null;
+  state.workSearch.sourceFilter = null;
 
   clearTimeout(workSearchTimer);
   // token 让过期的请求结果直接作废：用户继续打字后，先发出的那次请求即使晚回来
@@ -3304,7 +3431,11 @@ function renderWorkSearchResults() {
 }
 
 function selectWorkSearchCandidate(group, index) {
-  const list = group === "local" ? state.workSearch.local : state.workSearch.external;
+  // 必须和渲染时用的是同一份数组——外部组在筛选状态下渲染的是过滤后的列表，
+  // 这里若用未过滤的原数组，下标会错位，点第 1 条选中的是另一部片。
+  const list = group === "local"
+    ? state.workSearch.local
+    : filterCandidatesBySource(state.workSearch.external, state.workSearch.sourceFilter);
   const candidate = list[Number(index)];
   if (!candidate || candidate.inThisCollection) return;
   const current = state.workSearch.selected;
@@ -3404,7 +3535,7 @@ async function addSelectedCandidateToCollection(reason) {
   await persistCollection(addWorkToCollection(collection, work.id, { reason }));
 
   state.overlay = null;
-  state.workSearch = { query: "", local: [], external: [], status: "idle", sources: null, selected: null };
+  state.workSearch = { query: "", local: [], external: [], status: "idle", sources: null, selected: null, sourceFilter: null };
   render();
   announce(`已把《${work.title}》加入${collection.title}`);
 }
@@ -3768,6 +3899,11 @@ document.addEventListener("click", async (event) => {
     await performDataReset();
   } else if (action === "open-work-search") {
     openWorkSearch();
+  } else if (action === "filter-search-source") {
+    const next = trigger.dataset.source;
+    state.workSearch.sourceFilter = next === "all" ? null : next;
+    state.workSearch.selected = null;   // 筛选变了，之前选中的可能已经不在列表里
+    renderWorkSearchResults();
   } else if (action === "select-search-candidate") {
     selectWorkSearchCandidate(trigger.dataset.group, trigger.dataset.index);
   } else if (action === "open-collections") {
@@ -3876,7 +4012,8 @@ document.addEventListener("click", async (event) => {
       eventTypes: [],
       bonusNote: null,
       subjectId: locked?.subjectId ?? null,
-      bangumiMatch: { status: "idle", candidates: [] },
+      workMatch: { status: "idle", candidates: [], sources: null },
+      selectedCandidate: null,
       hasHistory: false,
       existingHistoryCount: 0,
       relationOverride: null,
@@ -3898,10 +4035,9 @@ document.addEventListener("click", async (event) => {
   } else if (action === "select-capture-candidate") {
     const ctx = state.captureContext;
     if (!ctx) return;
-    const candidate = ctx.bangumiMatch?.candidates?.find((c) => c.subjectId === Number(trigger.dataset.subjectId));
+    const candidate = ctx.workMatch?.candidates?.[Number(trigger.dataset.index)];
     if (!candidate) return;
-    ctx.workTitle = candidate.title;
-    ctx.subjectId = candidate.subjectId;
+    selectCaptureCandidate(ctx, candidate);
     ctx.showMatchCandidates = false;
     render();
     void refreshCaptureHistoryFlag();
@@ -3961,10 +4097,9 @@ document.addEventListener("click", async (event) => {
   } else if (action === "select-scene-candidate") {
     const ctx = state.captureContext;
     if (!ctx) return;
-    const candidate = ctx.bangumiMatch?.candidates?.find((c) => c.subjectId === Number(trigger.dataset.subjectId));
+    const candidate = ctx.workMatch?.candidates?.[Number(trigger.dataset.index)];
     if (!candidate) return;
-    ctx.workTitle = candidate.title;
-    ctx.subjectId = candidate.subjectId;
+    selectCaptureCandidate(ctx, candidate);
     render();
     void refreshCaptureHistoryFlag();
   } else if (action === "confirm-scene-choice") {
@@ -4032,7 +4167,7 @@ document.addEventListener("click", async (event) => {
   } else if (action === "go-home") {
     goHome();
   } else if (action === "confirm-work-match") {
-    await confirmWorkMatch(Number(trigger.dataset.subjectId));
+    await confirmWorkMatch(trigger.dataset.index);
   } else if (action === "dismiss-work-match") {
     await dismissWorkMatch();
   } else if (action === "retry-work-match") {
@@ -4292,7 +4427,7 @@ document.addEventListener("input", (event) => {
     const query = event.target.value.trim();
     if (query.length >= 2) {
       sceneTitleMatchTimer = setTimeout(() => {
-        void runCaptureBangumiMatch(query);
+        void runCaptureWorkMatch(query);
         void refreshCaptureHistoryFlag();
       }, 400);
     }

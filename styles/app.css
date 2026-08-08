@@ -4344,3 +4344,54 @@ svg {
 .ticket-locked-note {
   margin: 0 0 var(--space-2, 8px);
 }
+
+/* ─── R6 补丁 8：数据源徽章与可点击筛选 ──────────────────────────────────────
+   搜「魔女宅急便」时 Bangumi 10 条 + TMDB 2 条混在一起，同名条目一大串，
+   光看标题分不清哪条来自哪个库。来源徽章 + 可点筛选解决这个问题。 */
+.source-chip.filter {
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.source-chip.filter:hover {
+  border-color: var(--accent);
+}
+
+.source-chip.filter.active {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+  background: var(--accent-container);
+  font-weight: 600;
+}
+
+.work-search-item-title-row {
+  display: flex;
+  gap: var(--space-1, 4px);
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.work-search-item-source {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 4px;
+  font: var(--type-meta);
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--ink-soft);
+  background: var(--surface-variant, rgba(0, 0, 0, 0.05));
+  border: 1px solid var(--outline-soft);
+}
+
+/* 两个源给不同色调，扫一眼就能分辨，不用逐条读文字 */
+.work-search-item-source.src-bangumi {
+  color: #c2185b;
+  border-color: rgba(194, 24, 91, 0.35);
+  background: rgba(194, 24, 91, 0.08);
+}
+
+.work-search-item-source.src-tmdb {
+  color: #01875f;
+  border-color: rgba(1, 135, 95, 0.35);
+  background: rgba(1, 135, 95, 0.08);
+}

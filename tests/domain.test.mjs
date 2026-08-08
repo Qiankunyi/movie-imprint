@@ -22,7 +22,8 @@ import {
   workIdFor,
   upsertExternalRef,
   findWorkByExternalRef,
-  createWorkFromCandidate
+  createWorkFromCandidate,
+  applyCandidateToWork
 } from "../src/domain.js";
 
 test("五项态度都有可快速回忆的评判标准", () => {
@@ -600,4 +601,62 @@ test("R6：mergeWorks 合并跨源重复作品时，两边的 external_refs 取�
   assert.equal(merged.external_refs.length, 3, "bangumi + tmdb + imdb 全部保留");
   assert.deepEqual(merged.merged_from, ["w_tmdb"]);
   assert.equal(merged.first_recorded_at, "2026-01-01T00:00:00.000Z", "取最早");
+});
+
+// ─── R6 补丁 10：source-agnostic 的候选应用 ─────────────────────────────────
+
+test("补丁10：applyCandidateToWork 支持 TMDB 候选——真人电影不再依赖 Bangumi", () => {
+  const local = createLocalWork({ id: "r1", workId: "work_x", title: "鸟人", inputHints: {} });
+  const applied = applyCandidateToWork(local, {
+    source: "tmdb",
+    sourceId: "194662",
+    title: "鸟人",
+    originalTitle: "Birdman or (The Unexpected Virtue of Ignorance)",
+    releaseDate: "2014-08-27",
+    year: 2014,
+    workType: "live_action_film",
+    posterRef: { source: "tmdb", path: "/rSZs93P0LLxqlVEbI001UKoeCQC.jpg" },
+    externalIds: { imdb: "tt2562232" }
+  });
+
+  assert.equal(applied.id, local.id, "id 不得变更");
+  assert.equal(applied.identity_status, "matched");
+  assert.equal(applied.work_type, "live_action_film");
+  assert.equal(applied.release_year, 2014);
+  assert.equal(applied.external_refs.find((r) => r.source === "tmdb").id, "194662");
+  assert.equal(applied.external_refs.find((r) => r.source === "imdb").id, "tt2562232");
+  assert.deepEqual(applied.poster, { source: "tmdb", path: "/rSZs93P0LLxqlVEbI001UKoeCQC.jpg" });
+  assert.ok(applied.aliases.includes("Birdman or (The Unexpected Virtue of Ignorance)"));
+  // 上映日不带地区语义，一律按 unknown 落库由用户认领
+  assert.deepEqual(applied.release_dates.entries, [
+    { id: "unknown_2014-08-27", region: "unknown", date: "2014-08-27", source: "tmdb" }
+  ]);
+});
+
+test("补丁10：Bangumi 候选走同一条路径，且两个源可以先后叠加", () => {
+  const local = createLocalWork({ id: "r1", workId: "work_y", title: "你的名字。", inputHints: {} });
+  const withBgm = applyCandidateToWork(local, {
+    source: "bangumi", sourceId: "150775", title: "你的名字。", workType: "animation_film"
+  });
+  const withBoth = applyCandidateToWork(withBgm, {
+    source: "tmdb", sourceId: "372058", title: "你的名字。", workType: "animation_film"
+  });
+
+  assert.equal(withBoth.id, local.id);
+  assert.equal(withBoth.external_refs.length, 2, "两个源共存，后写的不抹掉先写的");
+  assert.equal(withBoth.primary_source, "bangumi", "primary_source 一旦确定就不被后来的覆盖");
+});
+
+test("补丁10：候选判断不出类型时，不把 Work 已有的类型倒退成 unspecified", () => {
+  const known = { ...createLocalWork({ id: "r1", workId: "w", title: "某片", inputHints: {} }), work_type: "animation_film" };
+  const applied = applyCandidateToWork(known, { source: "tmdb", sourceId: "1", title: "某片", workType: "unspecified" });
+  assert.equal(applied.work_type, "animation_film");
+});
+
+test("补丁10：已有海报不被候选覆盖（用户可能已经挑过）", () => {
+  const withPoster = { ...createLocalWork({ id: "r1", workId: "w", title: "某片", inputHints: {} }), poster: { source: "tmdb", path: "/chosen-by-user.jpg" } };
+  const applied = applyCandidateToWork(withPoster, {
+    source: "bangumi", sourceId: "1", title: "某片", posterRef: { source: "bangumi", subject_id: 1 }
+  });
+  assert.deepEqual(applied.poster, { source: "tmdb", path: "/chosen-by-user.jpg" });
 });

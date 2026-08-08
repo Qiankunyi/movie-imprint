@@ -9,6 +9,8 @@ import {
   searchLocalWorks,
   sortExternalCandidates,
   summarizeSearchSources,
+  filterCandidatesBySource,
+  countBySource,
   hasDegradedSource,
   looksCJK,
   tmdbCandidateToUnified
@@ -235,4 +237,41 @@ test("补丁3：CJK 查询识别——用于解释「TMDB 对中文片名收录�
   assert.equal(looksCJK("君の名は。"), true);
   assert.equal(looksCJK("Birdman"), false);
   assert.equal(looksCJK(""), false);
+});
+
+// ─── R6 补丁 8：按数据源筛选结果 ────────────────────────────────────────────
+
+test("补丁8：按来源过滤外部候选，不传或传 all 时不过滤", () => {
+  const list = [
+    bangumiCandidateToUnified(bgm(1, "魔女宅急便")),
+    bangumiCandidateToUnified(bgm(2, "魔女宅急便 真人版")),
+    tmdbCandidateToUnified(tmdb(3, "魔女宅急便"))
+  ];
+  assert.deepEqual(filterCandidatesBySource(list, "bangumi").map((c) => c.sourceId), ["1", "2"]);
+  assert.deepEqual(filterCandidatesBySource(list, "tmdb").map((c) => c.sourceId), ["3"]);
+  assert.equal(filterCandidatesBySource(list, null).length, 3);
+  assert.equal(filterCandidatesBySource(list, "all").length, 3);
+  assert.deepEqual(filterCandidatesBySource(list, "不存在的源"), []);
+});
+
+test("补丁8：countBySource 用于判断筛选 chip 该不该可点", () => {
+  const list = [
+    bangumiCandidateToUnified(bgm(1, "甲")),
+    tmdbCandidateToUnified(tmdb(2, "乙")),
+    tmdbCandidateToUnified(tmdb(3, "丙"))
+  ];
+  assert.deepEqual(countBySource(list), { bangumi: 1, tmdb: 2 });
+  assert.deepEqual(countBySource([]), {});
+});
+
+test("补丁8：筛选不改变原数组，也不影响跨源疑似标记", () => {
+  const list = markCrossSourceDuplicates([
+    bangumiCandidateToUnified(bgm(1, "魔女の宅急便", { releaseDate: "1989-07-29" })),
+    tmdbCandidateToUnified(tmdb(2, "魔女宅急便", { year: 1989, originalTitle: "魔女の宅急便" }))
+  ]);
+  const onlyTmdb = filterCandidatesBySource(list, "tmdb");
+  assert.equal(list.length, 2, "原数组不变");
+  assert.equal(onlyTmdb.length, 1);
+  // 疑似标记是筛选前就打好的，筛掉另一条之后标记仍然在——用户切回全部还能看到对照
+  assert.ok(onlyTmdb[0].possibleDuplicateOf);
 });

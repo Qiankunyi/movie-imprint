@@ -52,6 +52,7 @@ export function localWorkToCandidate(work, { inThisCollection = false } = {}) {
     workId: work.id,
     title: work.title,
     originalTitle: work.original_title || null,
+    releaseDate: null,
     year: work.release_year ?? null,
     workType: work.work_type || "unspecified",
     posterRef: work.poster || null,
@@ -68,6 +69,7 @@ export function bangumiCandidateToUnified(candidate) {
     workId: null,
     title: candidate.title,
     originalTitle: candidate.originalTitle || null,
+    releaseDate: candidate.releaseDate || null,
     year: /^\d{4}/.test(candidate.releaseDate || "") ? Number(String(candidate.releaseDate).slice(0, 4)) : null,
     // Bangumi 的 type 只有 anime / real 两种有意义的取值，映射是可靠的
     workType: candidate.type === "anime"
@@ -88,6 +90,7 @@ export function tmdbCandidateToUnified(candidate) {
     workId: null,
     title: candidate.title,
     originalTitle: candidate.originalTitle || null,
+    releaseDate: candidate.releaseDate || null,
     year: candidate.year ?? null,
     workType: candidate.workType || "unspecified",
     posterRef: candidate.posterPath ? { source: "tmdb", path: candidate.posterPath } : null,
@@ -287,4 +290,32 @@ export function hasDegradedSource(sources = {}) {
  */
 export function looksCJK(query) {
   return /[぀-ヿ㐀-䶿一-鿿豈-﫿]/.test(String(query || ""));
+}
+
+/**
+ * 按数据源过滤外部候选。
+ *
+ * 起因：搜「魔女宅急便」出来 Bangumi 10 条 + TMDB 2 条混在一起，同名条目一大串
+ * （1989 动画版、2014 真人版、各种关联条目），光看标题分不清哪条来自哪个库，
+ * 也就没法判断该选哪个。
+ *
+ * 这不违背「用户不需要选数据源」那条原则——搜索**入口**仍然只有一个，两个源仍然
+ * 都会被搜；来源只是结果上的一条**可见信息 + 可选筛选**，不是搜索前必须做的选择。
+ *
+ * @param {object[]} candidates
+ * @param {string|null} source null / "all" 表示不过滤
+ */
+export function filterCandidatesBySource(candidates, source) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  if (!source || source === "all") return list;
+  return list.filter((candidate) => candidate.source === source);
+}
+
+/** 某个源在当前结果里有没有条目——没有的话对应的筛选 chip 应该禁用。 */
+export function countBySource(candidates) {
+  const counts = {};
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    counts[candidate.source] = (counts[candidate.source] || 0) + 1;
+  }
+  return counts;
 }

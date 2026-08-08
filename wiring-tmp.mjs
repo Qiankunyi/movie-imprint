@@ -53,7 +53,8 @@ const KNOWN_NOISE = new Set([
   "mutate", "mutator",      // updateCurrentWork / updateRecord 的形参
   "preventDefault",         // .preventDefault() 跨行时前瞻没挡住
   "resolveDailyWallpaper",  // 只出现在注释里（R3 已删除的函数）
-  "translateX"              // 模板串里的 CSS transform
+  "translateX",             // 模板串里的 CSS transform
+  "Work"                    // 中文注释里「Work（可能来自…）」这类写法
 ]);
 const undefinedCalls = called.filter((n) => !defined.has(n) && !GLOBALS.has(n) && !KNOWN_NOISE.has(n));
 if (undefinedCalls.length) fail(`可能未定义就被调用：${undefinedCalls.join(", ")}`);

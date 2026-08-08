@@ -303,6 +303,90 @@ export function promoteWorkToMatched(work, subjectId, bangumiData = {}) {
 }
 
 /**
+ * 把一条**统一搜索候选**应用到已有 Work 上（source-agnostic）。
+ *
+ * R6 补丁 10：原来只有 `promoteWorkToMatched()`，签名是 `(work, subjectId, bangumiData)`
+ * ——写死了 Bangumi。于是「记录一部库里还没有的新片」时，无论捕获流程还是详情页的
+ * 待确认面板，都只能拿 Bangumi 的候选；看真人电影时 Bangumi 常常根本没有条目，
+ * 用户就卡在"匹配不到"。
+ *
+ * 这个函数接受统一候选（local / bangumi / tmdb 同形），做的事只有两件：
+ *   1. 把候选携带的**全部** external id upsert 进去（绝不整体覆盖）
+ *   2. 用候选的元数据补全 Work 上还空着的字段
+ *
+ * **不改 work.id**——作品身份从头到尾没变过，这是 R6 的红线。
+ *
+ * @param {object} work
+ * @param {object} candidate 统一候选（见 work-search.js 顶部的形状说明）
+ */
+export function applyCandidateToWork(work, candidate = {}) {
+  const aliases = [...new Set([
+    ...(work.aliases || []),
+    work.title,
+    candidate.title,
+    candidate.originalTitle
+  ].filter(Boolean))];
+
+  // 上映日：候选给的日期不带地区语义（Bangumi 的 date 是这样，TMDB 的
+  // release_date 也随 language 变），所以一律按 region: "unknown" 落库，
+  // 由用户在作品页认领——这是 R5 就定下的规矩。
+  const scrapedDate = typeof candidate.releaseDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(candidate.releaseDate)
+    ? candidate.releaseDate
+    : null;
+  const releaseDates = scrapedDate
+    ? addReleaseDate(work.release_dates, { region: "unknown", date: scrapedDate, source: candidate.source || "external" })
+    : normalizeReleaseDates(work.release_dates);
+
+  const releaseYear = candidate.year
+    ?? (releaseDates.entries.length ? Number(releaseDates.entries[0].date.slice(0, 4)) : null)
+    ?? work.release_year
+    ?? null;
+
+  const ids = { ...(candidate.externalIds || {}) };
+  if (candidate.source && candidate.source !== "local" && candidate.sourceId) {
+    ids[candidate.source] = candidate.sourceId;
+  }
+  let externalRefs = work.external_refs || [];
+  for (const source of EXTERNAL_SOURCES) {
+    const value = ids[source];
+    if (value === undefined || value === null || value === "") continue;
+    externalRefs = upsertExternalRef(externalRefs, { source, id: value });
+  }
+
+  return {
+    ...work,
+    // id 不变
+    title: candidate.title || work.title,
+    original_title: candidate.originalTitle ?? work.original_title ?? null,
+    // 候选判断不出类型时保留 Work 原有的，绝不倒退成 unspecified
+    work_type: (candidate.workType && candidate.workType !== "unspecified")
+      ? candidate.workType
+      : (work.work_type || "unspecified"),
+    aliases,
+    release_year: releaseYear,
+    release_dates: releaseDates,
+    summary: candidate.summary || work.summary || null,
+    tagline: work.tagline
+      || (candidate.summary ? buildTagline(taglineFromSummary(candidate.summary), candidate.source || "external") : null),
+    // 已有海报不被覆盖——用户可能已经挑过，或先前的源画质更好
+    poster: work.poster || candidate.posterRef || null,
+    runtime_minutes: work.runtime_minutes ?? candidate.runtimeMinutes ?? null,
+    genres: work.genres?.length ? work.genres : (candidate.genres || []),
+    external_refs: externalRefs,
+    primary_source: work.primary_source || (candidate.source !== "local" ? candidate.source : null) || null,
+    identity_status: externalRefs.length ? "matched" : work.identity_status,
+    match: {
+      status: "confirmed",
+      query: work.match?.query || null,
+      candidates: [],
+      message: null,
+      confirmedSource: candidate.source || null,
+      confirmedSourceId: candidate.sourceId ? String(candidate.sourceId) : null
+    }
+  };
+}
+
+/**
  * 合并重复 Work。优先保留已匹配 Bangumi 的一方；别名并集去重；
  * first_recorded_at 取最早；release_dates 各字段取非空值，冲突时以已匹配方为准。
  * @param {object} primary

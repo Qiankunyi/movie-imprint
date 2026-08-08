@@ -31,11 +31,87 @@ export function buildTmdbSearchRequest(query, { language = "zh-CN", page = 1 } =
  * 详情请求。append_to_response 一次把 external_ids 带回来——imdb_id 与 wikidata_id
  * 都是长期稳定的身份标识，值得存；其余 TMDB 字段不做「以后可能有用」的囤积（R6 §12）。
  */
+/**
+ * TMDB 只会返回 `language` 那一档的图片，想要别的语言版本必须显式列出来。
+ * `null` 是**无文字海报**（textless），通常最接近原始视觉设计，作为最后的兜底很合适。
+ * 这个集合刻意保持有限——列太多语言会让响应体明显变大，而收益递减。
+ */
+const IMAGE_LANGUAGES = "en,ja,zh,ko,fr,de,it,es,null";
+
 export function buildTmdbDetailRequest(movieId, { language = "zh-CN" } = {}) {
   const id = Number(movieId);
   if (!Number.isInteger(id) || id <= 0) return null;
-  const params = new URLSearchParams({ language, append_to_response: "external_ids" });
+  const params = new URLSearchParams({
+    language,
+    // images 走 append_to_response，**不产生额外请求**——这是海报按地区择优
+    // 成本很低的原因。
+    append_to_response: "external_ids,images",
+    include_image_language: IMAGE_LANGUAGES
+  });
   return { url: `${API_BASE}/movie/${id}?${params.toString()}` };
+}
+
+// ─── R6 补丁 9：按发行地区挑海报 ────────────────────────────────────────────
+
+/**
+ * 出品国 → 该地区海报通常使用的语言。
+ *
+ * **不是硬编码的绝对规则**：查不到的国家会走下面 pickPosterPath 的回落链，
+ * 而不是失败。这张表只覆盖常见出品国，缺的随时可以加。
+ */
+export const COUNTRY_POSTER_LANGUAGE = {
+  JP: "ja", US: "en", GB: "en", CA: "en", AU: "en", IE: "en", NZ: "en",
+  FR: "fr", DE: "de", AT: "de", IT: "it", ES: "es", MX: "es", AR: "es",
+  KR: "ko", CN: "zh", HK: "zh", TW: "zh", SG: "zh"
+};
+
+/**
+ * 从 TMDB 的 images.posters 里挑一张最接近**原始发行地区**的海报。
+ *
+ * 起因：用户把 TMDB_LANGUAGE 设成 zh-CN，于是像 Birdman 这种没在中国大陆上映的
+ * 欧美片，默认拿到的可能是港台中文版海报，和作品原本的视觉设计相去甚远。
+ *
+ * 回落链（前一档没有就往下走，任何一档都不算失败）：
+ *   1. 出品国对应语言（JP→ja、US→en …）
+ *   2. 原始语言（original_language，出品国表查不到时的近似）
+ *   3. 无文字海报（iso_639_1 为 null）—— 通常最接近原始视觉
+ *   4. 英语
+ *   5. TMDB 自己给的 poster_path（也就是当前 language 那一档）
+ *   6. 候选里的第一张
+ *
+ * 同一档内有多张时按 vote_average 取高的——TMDB 自己的社区评分，比随机取稳。
+ *
+ * @param {object[]} posters images.posters
+ * @param {{ countries?: string[], originalLanguage?: string|null, fallbackPath?: string|null }} context
+ * @returns {string|null}
+ */
+export function pickPosterPath(posters, { countries = [], originalLanguage = null, fallbackPath = null } = {}) {
+  const list = (Array.isArray(posters) ? posters : []).filter((p) => isValidTmdbPosterPath(p?.file_path));
+  if (!list.length) return isValidTmdbPosterPath(fallbackPath) ? fallbackPath : null;
+
+  const best = (predicate) => list
+    .filter(predicate)
+    .sort((a, b) => (Number(b?.vote_average) || 0) - (Number(a?.vote_average) || 0))[0];
+
+  const preferredLanguages = [
+    ...countries.map((code) => COUNTRY_POSTER_LANGUAGE[String(code || "").toUpperCase()]).filter(Boolean),
+    originalLanguage || null
+  ].filter(Boolean);
+
+  for (const lang of preferredLanguages) {
+    const hit = best((p) => p.iso_639_1 === lang);
+    if (hit) return hit.file_path;
+  }
+
+  // 无文字海报：iso_639_1 为 null 或空
+  const textless = best((p) => !p.iso_639_1);
+  if (textless) return textless.file_path;
+
+  const english = best((p) => p.iso_639_1 === "en");
+  if (english) return english.file_path;
+
+  if (isValidTmdbPosterPath(fallbackPath)) return fallbackPath;
+  return list[0].file_path;
 }
 
 /**
@@ -145,7 +221,14 @@ export function normalizeTmdbDetail(payload) {
     releaseDate: payload?.release_date || null,
     year: yearOf(payload?.release_date),
     workType: inferWorkType(payload?.genres),
-    posterPath: isValidTmdbPosterPath(payload?.poster_path) ? payload.poster_path : null,
+    posterPath: pickPosterPath(payload?.images?.posters, {
+      countries: [
+        ...(Array.isArray(payload?.origin_country) ? payload.origin_country : []),
+        ...(Array.isArray(payload?.production_countries) ? payload.production_countries.map((c) => c?.iso_3166_1) : [])
+      ].filter(Boolean),
+      originalLanguage: payload?.original_language || null,
+      fallbackPath: payload?.poster_path || null
+    }),
     summary: typeof payload?.overview === "string" && payload.overview.trim() ? payload.overview.trim() : null,
     runtimeMinutes: Number.isFinite(runtime) && runtime > 0 ? runtime : null,
     genres: (Array.isArray(payload?.genres) ? payload.genres : [])

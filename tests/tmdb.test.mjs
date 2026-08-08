@@ -9,7 +9,8 @@ import {
   isAllowedTmdbImageUrl,
   isValidTmdbPosterPath,
   normalizeTmdbDetail,
-  normalizeTmdbMovies
+  normalizeTmdbMovies,
+  pickPosterPath
 } from "../src/tmdb.js";
 
 test("搜索请求：带语言与分页，明确排除成人内容", () => {
@@ -240,4 +241,117 @@ test("补丁5：诊断解读绝不回显任何凭据字段", () => {
   });
   const text = JSON.stringify(r);
   assert.ok(!/eyJ|Bearer|[0-9a-f]{32}/.test(text), "解读文本里不得出现任何形似凭据的内容");
+});
+
+// ─── R6 补丁 9：按发行地区挑海报 ────────────────────────────────────────────
+
+const poster = (path, lang, vote = 5) => ({ file_path: path, iso_639_1: lang, vote_average: vote });
+const P = {
+  ja: "/jajajajajajajaja.jpg",
+  en: "/enenenenenenenen.jpg",
+  enBetter: "/enenenenenenenB.jpg",
+  zh: "/zhzhzhzhzhzhzhzh.jpg",
+  none: "/textlesstextless.jpg",
+  fr: "/frfrfrfrfrfrfrfr.jpg"
+};
+
+test("补丁9：日本作品优先日文海报，即便 TMDB 当前语言给的是中文版", () => {
+  const picked = pickPosterPath(
+    [poster(P.zh, "zh"), poster(P.ja, "ja"), poster(P.en, "en")],
+    { countries: ["JP"], originalLanguage: "ja", fallbackPath: P.zh }
+  );
+  assert.equal(picked, P.ja);
+});
+
+test("补丁9：美国／英国作品优先英文海报——正是 Birdman 那个场景", () => {
+  // 用户把 TMDB_LANGUAGE 设成 zh-CN，默认可能拿到港台中文版海报
+  const us = pickPosterPath(
+    [poster(P.zh, "zh"), poster(P.en, "en")],
+    { countries: ["US"], originalLanguage: "en", fallbackPath: P.zh }
+  );
+  assert.equal(us, P.en, "不该沿用 zh-CN 那一档");
+
+  const gb = pickPosterPath([poster(P.zh, "zh"), poster(P.en, "en")], { countries: ["GB"] });
+  assert.equal(gb, P.en);
+});
+
+test("补丁9：其他国家按出品国选对应语言", () => {
+  assert.equal(
+    pickPosterPath([poster(P.en, "en"), poster(P.fr, "fr")], { countries: ["FR"] }),
+    P.fr
+  );
+});
+
+test("补丁9：同一语言有多张时按 TMDB 社区评分取高的", () => {
+  const picked = pickPosterPath(
+    [poster(P.en, "en", 5.1), poster(P.enBetter, "en", 8.4)],
+    { countries: ["US"] }
+  );
+  assert.equal(picked, P.enBetter);
+});
+
+test("补丁9：回落链——出品国查不到 → 原始语言 → 无文字 → 英语", () => {
+  // 出品国不在映射表里（例如 XX），但有 original_language
+  assert.equal(
+    pickPosterPath([poster(P.ja, "ja"), poster(P.en, "en")], { countries: ["XX"], originalLanguage: "ja" }),
+    P.ja
+  );
+  // 首选语言都没有 → 无文字海报（最接近原始视觉设计）
+  assert.equal(
+    pickPosterPath([poster(P.zh, "zh"), poster(P.none, null)], { countries: ["US"] }),
+    P.none
+  );
+  // 连无文字都没有 → 英语
+  assert.equal(
+    pickPosterPath([poster(P.zh, "zh"), poster(P.en, "en")], { countries: ["KR"] }),
+    P.en
+  );
+});
+
+test("补丁9：完全没有 images 时回落到 TMDB 给的 poster_path，不返回 null", () => {
+  assert.equal(pickPosterPath([], { countries: ["JP"], fallbackPath: P.zh }), P.zh);
+  assert.equal(pickPosterPath(undefined, { fallbackPath: P.zh }), P.zh);
+  assert.equal(pickPosterPath([], {}), null);
+});
+
+test("补丁9：非法 file_path 一律排除，不会被拼进图片代理", () => {
+  const picked = pickPosterPath(
+    [poster("/../../evil.jpg", "ja"), poster(P.en, "en")],
+    { countries: ["JP"], originalLanguage: "ja" }
+  );
+  assert.equal(picked, P.en, "日文那张路径非法，应跳过而不是采用");
+  assert.equal(pickPosterPath([poster("/../../evil.jpg", "ja")], { fallbackPath: "/../../also-evil.jpg" }), null);
+});
+
+test("补丁9：详情请求带上 images 与 include_image_language（不产生额外请求）", () => {
+  const { url } = buildTmdbDetailRequest(194662);
+  const parsed = new URL(url);
+  assert.equal(parsed.searchParams.get("append_to_response"), "external_ids,images");
+  const langs = parsed.searchParams.get("include_image_language");
+  assert.match(langs, /\bja\b/);
+  assert.match(langs, /\ben\b/);
+  assert.match(langs, /\bnull\b/, "必须包含 null 才能拿到无文字海报");
+});
+
+test("补丁9：normalizeTmdbDetail 端到端——日本动画电影选到日文海报", () => {
+  const detail = normalizeTmdbDetail({
+    id: 372058,
+    title: "你的名字。",
+    original_title: "君の名は。",
+    original_language: "ja",
+    origin_country: ["JP"],
+    production_countries: [{ iso_3166_1: "JP", name: "Japan" }],
+    poster_path: P.zh,                      // TMDB 按 zh-CN 给的
+    genres: [{ id: 16, name: "动画" }],
+    images: { posters: [poster(P.zh, "zh"), poster(P.ja, "ja"), poster(P.en, "en")] }
+  });
+  assert.equal(detail.posterPath, P.ja, "应按出品国 JP 选日文海报，而不是沿用 zh-CN");
+  assert.equal(detail.workType, "animation_film");
+});
+
+test("补丁9：没有 images 字段的旧响应仍然工作（向后兼容）", () => {
+  const detail = normalizeTmdbDetail({
+    id: 1, title: "某片", poster_path: P.en, original_language: "en"
+  });
+  assert.equal(detail.posterPath, P.en);
 });
