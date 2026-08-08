@@ -4311,3 +4311,36 @@ svg {
 .diag-error {
   color: var(--danger, #d3453c);
 }
+
+/* ─── R6 补丁 7：从作品页发起记录时，作品名只做展示 ──────────────────────────
+   Work 已经确定，捕获流程不该再问"这是哪部作品"，也不该重新做外部身份匹配。 */
+.scene-work-locked {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  border: 1px dashed var(--outline-soft);
+  border-radius: var(--radius-md, 12px);
+  background: var(--surface-container);
+}
+
+.scene-work-locked-label {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.scene-work-locked-title {
+  color: var(--ink);
+  font: var(--type-body);
+  font-weight: 600;
+}
+
+.scene-work-locked small,
+.ticket-locked-note {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.ticket-locked-note {
+  margin: 0 0 var(--space-2, 8px);
+}

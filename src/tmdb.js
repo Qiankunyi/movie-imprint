@@ -209,7 +209,7 @@ export function interpretTmdbStatus(status) {
       title: `TMDB 链路正常${via}`,
       detail: `真实请求成功，返回 ${probe.resultCount ?? "若干"} 条结果。`
         + "搜索里仍然找不到某部片，那就是召回问题而不是配置问题——"
-        + "TMDB 对中文／日文译名的收录有限，用原名或英文名再试一次。",
+        + "换成原名或英文名再试一次，通常更容易命中。",
       tone: "ok"
     };
   }

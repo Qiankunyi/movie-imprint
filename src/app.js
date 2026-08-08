@@ -549,7 +549,7 @@ function fabActionsFor() {
       themeItem,
       workWatched
         ? { action: "open-supplement", icon: "edit", label: "补充记录", testId: "open-supplement-fab" }
-        : { action: "open-capture", icon: "edit", label: "记录这次观看", testId: "work-start-record-fab" },
+        : { action: "open-work-capture", icon: "edit", label: "记录这次观看", testId: "work-start-record-fab" },
       { action: "close-work", icon: "back", label: "返回作品书架", testId: "work-back" }
     ];
   }
@@ -1051,7 +1051,7 @@ function renderWork() {
       ${impressionsListMarkup(view.impressions)}
       ${watched
         ? `<button type="button" class="sheet-done work-supplement-button" data-action="open-supplement" data-testid="open-supplement">＋ 补充记录</button>`
-        : `<button type="button" class="sheet-done work-supplement-button" data-action="open-capture" data-testid="work-start-record">＋ 记录这次观看</button>`}
+        : `<button type="button" class="sheet-done work-supplement-button" data-action="open-work-capture" data-testid="work-start-record">＋ 记录这次观看</button>`}
     </article>
   </main>`;
 }
@@ -1719,10 +1719,16 @@ function ticketConfirmOverlay() {
   const dateFmt = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "short", timeZone: "Asia/Tokyo" });
   const timeFmt = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Tokyo" });
 
-  const posterBlock = match.status === "searching"
+  // 锁定的 Work 直接用它自己的海报引用（可能来自 TMDB）；
+  // 未锁定时才回落到"刚匹配到的 bangumi subjectId"这条老路径。
+  const lockedWorkForPoster = ctx.lockedWork && ctx.workId ? findWorkById(state.works, ctx.workId) : null;
+  const posterSrc = lockedWorkForPoster
+    ? posterUrlFor(lockedWorkForPoster)
+    : (ctx.subjectId ? posterUrlFor({ poster: { source: "bangumi", subject_id: Number(ctx.subjectId) || null } }) : "");
+  const posterBlock = (!ctx.lockedWork && match.status === "searching")
     ? `<div class="ticket-confirm-poster skeleton" aria-hidden="true" data-testid="capture-match-skeleton"></div>`
-    : ctx.subjectId
-      ? `<img class="ticket-confirm-poster" src="${escapeHtml(posterUrlFor({ poster: { source: "bangumi", subject_id: Number(ctx.subjectId) || null } }))}" alt="" data-testid="capture-match-poster" onerror="this.hidden=true" />`
+    : posterSrc
+      ? `<img class="ticket-confirm-poster" src="${escapeHtml(posterSrc)}" alt="" data-testid="capture-match-poster" onerror="this.hidden=true" />`
       : "";
 
   const candidatesBlock = ctx.showMatchCandidates ? `<div class="work-candidates" data-testid="capture-match-candidates">
@@ -1787,9 +1793,9 @@ function ticketConfirmOverlay() {
       ${posterBlock}
       <div class="ticket-confirm-title-row">
         <h2 id="ticket-confirm-title">《${escapeHtml(ctx.workTitle || "未命名作品")}》</h2>
-        <button type="button" class="text-action" data-action="toggle-capture-match-candidates" data-testid="change-capture-match">更换</button>
+        ${ctx.lockedWork ? "" : `<button type="button" class="text-action" data-action="toggle-capture-match-candidates" data-testid="change-capture-match">更换</button>`}
       </div>
-      ${candidatesBlock}
+      ${ctx.lockedWork ? `<p class="ticket-locked-note" data-testid="ticket-work-locked">从作品页进入，作品已确定；票务里的片名会被忽略。</p>` : candidatesBlock}
       <div class="ticket-confirm-cards">${cards}</div>
       ${!allSelected && allEvents.length > 1 ? `<button type="button" class="text-action" data-action="select-all-ticket-events" data-testid="select-all-ticket-events">全选</button>` : ""}
       <p class="ticket-privacy-note">姓名、邮箱、取票码已本地移除，原始邮件不保存</p>
@@ -1812,7 +1818,8 @@ function sceneChoiceOverlay() {
   const locationType = ctx.locationType || null;
   const match = ctx.bangumiMatch || { status: "idle", candidates: [] };
   const eventTypes = ctx.eventTypes || [];
-  const canConfirm = Boolean(locationType) && Boolean(ctx.workTitle?.trim());
+  // Work 已锁定时不要求再填作品名——只需要选观看地点就能确认
+  const canConfirm = Boolean(locationType) && (ctx.lockedWork || Boolean(ctx.workTitle?.trim()));
   return `<div class="overlay" data-testid="scene-choice">
     <button class="overlay-backdrop" type="button" data-action="close-capture" aria-label="关闭"></button>
     <section class="bottom-sheet scene-choice-sheet" role="dialog" aria-modal="true" aria-labelledby="scene-choice-title">
@@ -1830,10 +1837,16 @@ function sceneChoiceOverlay() {
         ${eventTypeTagsRow(eventTypes, "scene")}
         ${eventTypes.includes("bonus_distribution") ? `<label class="bonus-note-input"><span>特典</span><input type="text" data-field="bonus-note" data-event-index="scene" value="${escapeHtml(ctx.bonusNote || "")}" placeholder="如：第3週 色紙" /></label>` : ""}
       </div>` : ""}
-      <label class="scene-work-title"><span>作品</span><input type="text" id="scene-work-title-input" data-testid="scene-work-title-input" value="${escapeHtml(ctx.workTitle || "")}" placeholder="作品名" /></label>
+      ${ctx.lockedWork
+        ? `<div class="scene-work-locked" data-testid="scene-work-locked">
+            <span class="scene-work-locked-label">作品</span>
+            <span class="scene-work-locked-title">《${escapeHtml(ctx.workTitle || "")}》</span>
+            <small>从作品页进入，这次记录会直接挂到这部作品，不需要重新识别。</small>
+          </div>`
+        : `<label class="scene-work-title"><span>作品</span><input type="text" id="scene-work-title-input" data-testid="scene-work-title-input" value="${escapeHtml(ctx.workTitle || "")}" placeholder="作品名" /></label>
       ${match.status === "candidates" ? `<div class="work-candidates" data-testid="scene-match-candidates">
         ${match.candidates.slice(0, 3).map((c) => `<button type="button" class="work-candidate" data-action="select-scene-candidate" data-subject-id="${c.subjectId}"><b>${escapeHtml(c.title)}</b><span>${escapeHtml(c.originalTitle || "")}</span></button>`).join("")}
-      </div>` : ""}
+      </div>` : ""}`}
       ${ctx.hasHistory ? `<div class="relation-toggle" role="group" aria-label="初看或重看">
         <button type="button" class="relation-choice ${(ctx.relationOverride || tentativeViewingRelation(ctx.existingHistoryCount || 0, 0)) === "first" ? "selected" : ""}" data-action="set-scene-relation" data-value="first">初看</button>
         <button type="button" class="relation-choice ${(ctx.relationOverride || tentativeViewingRelation(ctx.existingHistoryCount || 0, 0)) === "rewatch" ? "selected" : ""}" data-action="set-scene-relation" data-value="rewatch">重看 · 第 ${(ctx.existingHistoryCount || 0) + 1} 次</button>
@@ -2077,15 +2090,19 @@ function sourceStatusMarkup(search) {
 /**
  * 外部源都正常、却一条都没搜到时的补充说明。
  *
- * TMDB 的 `language` 参数只决定**返回字段用哪种语言**，不决定**用哪种语言去匹配**。
- * 它对中文译名的收录本来就有限，所以中文查询在 TMDB 上召回为空是常态、不是故障。
- * 这里给一句可操作的提示，而不是替某部具体电影写死映射。
+ * ⚠️ 更正：我此前断言过"TMDB 对中文译名收录有限，中文查询召回为空是常态"。
+ * 实测推翻了这个说法——配置生效后搜「鸟人」，TMDB 是能返回电影结果的。
+ * `language=zh-CN` 对匹配的影响比我说的大。
+ *
+ * 所以这条提示改成只陈述**这一次**发生了什么，不再对 TMDB 的中文能力下普遍结论：
+ * 这次没匹配到，换原名或英文名再试通常更容易命中——这句话无论 TMDB 的中文收录
+ * 好不好都成立。
  */
 function emptyResultHint(search) {
   if (!search.sources) return "";
   const tmdbOk = search.sources.tmdb?.state === "ok" && (search.sources.tmdb?.count || 0) === 0;
   if (tmdbOk && looksCJK(search.query)) {
-    return `<p class="work-search-state">TMDB 对中文／日文译名的收录有限，用原名或英文名（例如 <code>Birdman</code>）通常能搜到。</p>`;
+    return `<p class="work-search-state">TMDB 这次没有匹配到这个中文／日文片名。换成原名或英文名再试一次，通常更容易命中。</p>`;
   }
   return "";
 }
@@ -2345,8 +2362,13 @@ async function finishCompose() {
   // R4 §3.4：补充记录从作品页发起，作品已经明确——直接用 captureContext.workId 对应的
   // work，不再走 resolveWork 的标题模糊匹配（避免撞到另一部同名作品）。
   const isSupplement = state.captureContext?.mode === "supplement";
+  // R6：两种情况下 Work 都是**已经确定**的，绝不能再走 resolveWork 的标题模糊匹配
+  //（那有可能撞到另一部同名作品，或者因为译名不同而新建出第二个 Work）：
+  //   1. 补充记录 —— R4 起就从作品页发起
+  //   2. lockedWork —— R6 新增，从作品页发起的正式观影记录
+  // 这是 §14 闭环"看完之后必须命中原 Work"的最后一道保障。
   let work;
-  if (isSupplement && state.captureContext.workId) {
+  if (state.captureContext?.workId && (isSupplement || state.captureContext.lockedWork)) {
     work = findWorkById(state.works, state.captureContext.workId);
   }
   if (!work) {
@@ -2696,12 +2718,19 @@ function handleCapturePaste(rawText) {
   // 默认全选，但每场都保留 selected 标记——用户可以单独排除误识别的场次，
   // 不必因为一场解析错了就整体重新粘贴。
   const pendingEvents = result.screenings.map((s) => ({ ...draftViewingEvent(s, "work_capture_pending"), selected: true }));
-  const workTitle = result.screenings[0]?.movieTitle || "";
+
+  // 从作品页发起时 Work 已经锁定：票务里解析出的片名一律忽略，
+  // 也不再做任何外部身份匹配。票务其余字段（影院/时间/座位/票价）照常采用。
+  const locked = state.captureContext?.lockedWork ? state.captureContext : null;
+  const workTitle = locked ? locked.workTitle : (result.screenings[0]?.movieTitle || "");
+
   state.captureContext = {
     source: "ticket_paste",
     locationType: "cinema",
+    lockedWork: !!locked,
+    workId: locked?.workId || null,
     workTitle,
-    subjectId: null,
+    subjectId: locked?.subjectId ?? null,
     showMatchCandidates: false,
     bangumiMatch: { status: "idle", candidates: [], query: workTitle },
     hasHistory: false,
@@ -2711,7 +2740,7 @@ function handleCapturePaste(rawText) {
   state.captureTagsExpanded = new Set();
   applyCaptureTransition("paste-ticket");
   render();
-  void runCaptureBangumiMatch(workTitle);
+  if (!locked) void runCaptureBangumiMatch(workTitle);
   void refreshCaptureHistoryFlag();
 }
 
@@ -2746,10 +2775,16 @@ async function runCaptureBangumiMatch(query) {
 async function refreshCaptureHistoryFlag() {
   const ctx = state.captureContext;
   if (!ctx) return;
-  const title = ctx.workTitle;
-  if (!title?.trim()) { ctx.hasHistory = false; ctx.existingHistoryCount = 0; render(); return; }
-  const { work, isNew } = resolveWork(state.works, { title, subjectId: ctx.subjectId, aliases: [] });
-  if (isNew) { ctx.hasHistory = false; ctx.existingHistoryCount = 0; render(); return; }
+  // Work 已锁定时直接用它，不再按标题模糊反查——那有可能撞到另一部同名作品，
+  // 把别人的观影次数算到这次头上。
+  let work = ctx.lockedWork && ctx.workId ? findWorkById(state.works, ctx.workId) : null;
+  if (!work) {
+    const title = ctx.workTitle;
+    if (!title?.trim()) { ctx.hasHistory = false; ctx.existingHistoryCount = 0; render(); return; }
+    const resolved = resolveWork(state.works, { title, subjectId: ctx.subjectId, aliases: [] });
+    if (resolved.isNew) { ctx.hasHistory = false; ctx.existingHistoryCount = 0; render(); return; }
+    work = resolved.work;
+  }
   const events = await fetchWorkEvents(work.id); // 含 merged_from——否则合并过的作品会被误判成"第一次看"
   if (state.captureContext !== ctx) return;
   ctx.hasHistory = events.length > 0;
@@ -3559,6 +3594,39 @@ async function updateCurrentWorkType(workType) {
  * Step 1/2（场景已经明确——就是这个作品）。生成的 record 是 record_kind: "supplement"，
  * viewing_event_id: null，finishCompose() 里据此跳过 ViewingEvent 的创建。
  */
+/**
+ * 从**已有作品页**发起一次观影记录。
+ *
+ * 与全局「＋ 开始记录」的关键区别：**Work 已经确定**。
+ * 所以整条捕获流程都不再问"这是哪部作品"，也不再去 Bangumi / TMDB 做身份匹配——
+ * 作品名只做展示，ViewingRecord 与 ViewingEvent 直接挂到当前 work_id。
+ *
+ * 这正是 R6 §14 闭环的后半段：片单里先建好的 Work，日后真的看了要能直接接着记，
+ * 不能再要求用户重新识别一次作品。
+ *
+ * 仍然走完整的 Step 1（可以粘贴票务，拿到影院/座位/时间/票价），只是票务里解析出的
+ * 片名会被忽略——锁定的 Work 优先级更高。
+ */
+function openWorkCapture(workId) {
+  const work = findWorkById(state.works, workId);
+  if (!work) return;
+  state.returnScrollY = scrollY;
+  state.captureContext = {
+    source: "manual",
+    lockedWork: true,          // ← 这一个标记贯穿整条流程
+    workId: work.id,
+    workTitle: work.title,
+    subjectId: externalRefId(work, "bangumi") || null
+  };
+  state.captureTagsExpanded = new Set();
+  state.clipboardTicketDetected = false;
+  pendingClipboardText = null;
+  applyCaptureTransition("open-capture");
+  render();
+  void peekClipboardForTicket();
+  void refreshCaptureHistoryFlag();
+}
+
 function openSupplementCompose(workId) {
   const work = findWorkById(state.works, workId);
   if (!work) return;
@@ -3766,6 +3834,8 @@ document.addEventListener("click", async (event) => {
     await db.put("meta", state.aiPreference);
     render();
     announce(`已选择${trigger.textContent.trim()}作为整理服务`);
+  } else if (action === "open-work-capture") {
+    openWorkCapture(state.currentWorkId);
   } else if (action === "open-capture") {
     // R2 Step 1：点＋不再直接进 composer，先认场景。
     state.returnScrollY = scrollY;
@@ -3792,15 +3862,20 @@ document.addEventListener("click", async (event) => {
   } else if (action === "use-clipboard-ticket") {
     handleCapturePaste(pendingClipboardText || "");
   } else if (action === "skip-to-scene") {
+    // 「没有票，直接写」会重建 captureContext。从作品页进来时必须把锁定的 Work
+    // 一并带过去——否则走这条分支就会退回"请输入作品名"，正是要修的那个问题。
+    const locked = state.captureContext?.lockedWork ? state.captureContext : null;
     state.captureContext = {
       source: "manual",
+      lockedWork: !!locked,
+      workId: locked?.workId || null,
       locationType: null,
-      workTitle: "",
+      workTitle: locked?.workTitle || "",
       cinemaName: null,
       format: null,
       eventTypes: [],
       bonusNote: null,
-      subjectId: null,
+      subjectId: locked?.subjectId ?? null,
       bangumiMatch: { status: "idle", candidates: [] },
       hasHistory: false,
       existingHistoryCount: 0,
@@ -3808,6 +3883,7 @@ document.addEventListener("click", async (event) => {
       relationLocked: false
     };
     state.captureTagsExpanded = new Set();
+    if (locked) void refreshCaptureHistoryFlag();
     applyCaptureTransition("skip");
     render();
   } else if (action === "repaste-ticket-capture") {

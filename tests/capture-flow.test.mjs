@@ -396,3 +396,94 @@ describe("resolveWork 配合历史判断（该作品无历史记录时不应显�
     assert.equal(isNew, false);
   });
 });
+
+// ─── R6 补丁 7：从已有作品页发起记录时，Work 必须被锁定 ──────────────────────
+//
+// 实测发现的问题：进入 Birdman 作品页点「记录这次观看」，捕获流程仍然要求重新
+// 输入作品名，不填就无法确认；填了还会再去搜一次外部数据库。根因是那个按钮
+// 当时接的是**全局**入口（open-capture），根本没有携带 work_id。
+//
+// 下面这几条锁的是这条闭环里"Work 已知就不再重新识别"这个契约。
+// captureContext 的形状与 src/app.js 里的一致。
+
+describe("R6 补丁 7：lockedWork 的行为契约", () => {
+  const lockedCtx = () => ({
+    source: "manual",
+    lockedWork: true,
+    workId: "work_birdman",
+    workTitle: "鸟人",
+    subjectId: null
+  });
+
+  it("锁定时作品名来自 Work，不从正文里解析 # 标签", () => {
+    const ctx = lockedCtx();
+    // 正文里写了另一个 # 标签也不该影响——作品是页面给的，不是文本给的
+    assert.equal(captureWorkTitle("#完全不相干的片 今天终于看了", ctx), "鸟人");
+  });
+
+  it("锁定时确认按钮不该被「作品名为空」卡住", () => {
+    // canConfirm = Boolean(locationType) && (lockedWork || Boolean(workTitle))
+    const canConfirm = (ctx, locationType) =>
+      Boolean(locationType) && (ctx.lockedWork || Boolean(ctx.workTitle?.trim()));
+
+    assert.equal(canConfirm(lockedCtx(), "cinema"), true);
+    // 即便标题被清空，锁定态仍然可以确认
+    assert.equal(canConfirm({ ...lockedCtx(), workTitle: "" }, "home"), true);
+    // 未锁定则仍然要求填作品名
+    assert.equal(canConfirm({ lockedWork: false, workTitle: "" }, "cinema"), false);
+  });
+
+  it("「没有票，直接写」重建上下文时必须保留锁", () => {
+    // 复现 src/app.js skip-to-scene 分支的语义
+    const rebuild = (prev) => {
+      const locked = prev?.lockedWork ? prev : null;
+      return {
+        source: "manual",
+        lockedWork: !!locked,
+        workId: locked?.workId || null,
+        workTitle: locked?.workTitle || "",
+        subjectId: locked?.subjectId ?? null
+      };
+    };
+    const after = rebuild(lockedCtx());
+    assert.equal(after.lockedWork, true);
+    assert.equal(after.workId, "work_birdman");
+    assert.equal(after.workTitle, "鸟人", "重建后仍要带着作品名，不能退回空输入框");
+
+    // 全局入口进来的（没有锁）照旧是空的，要求用户填
+    const fresh = rebuild({ source: "manual" });
+    assert.equal(fresh.lockedWork, false);
+    assert.equal(fresh.workId, null);
+    assert.equal(fresh.workTitle, "");
+  });
+
+  it("票务粘贴时，锁定的作品名优先于票面片名", () => {
+    // 复现 handleCapturePaste 的取值逻辑
+    const resolveTitle = (prev, ticketTitle) =>
+      prev?.lockedWork ? prev.workTitle : (ticketTitle || "");
+
+    // 票面写的是日文原名，但用户是从「鸟人」这个 Work 进来的
+    assert.equal(resolveTitle(lockedCtx(), "バードマン あるいは（無知がもたらす予期せぬ奇跡）"), "鸟人");
+    // 全局入口则采用票面片名
+    assert.equal(resolveTitle(null, "バードマン"), "バードマン");
+  });
+
+  it("§14 最后一道保障：Work 已知时绝不走 resolveWork 的标题模糊匹配", () => {
+    // 复现 finishCompose 的判定
+    const shouldUseKnownWork = (ctx) =>
+      Boolean(ctx?.workId) && (ctx.mode === "supplement" || Boolean(ctx.lockedWork));
+
+    assert.equal(shouldUseKnownWork(lockedCtx()), true);
+    assert.equal(shouldUseKnownWork({ mode: "supplement", workId: "work_x" }), true);
+    // 全局入口没有 workId，只能靠 resolveWork
+    assert.equal(shouldUseKnownWork({ source: "manual", workTitle: "鸟人" }), false);
+    assert.equal(shouldUseKnownWork(null), false);
+  });
+
+  it("锁定时不发起外部身份匹配", () => {
+    // 复现 handleCapturePaste 末尾的条件
+    const shouldMatchExternally = (ctx) => !ctx?.lockedWork;
+    assert.equal(shouldMatchExternally(lockedCtx()), false);
+    assert.equal(shouldMatchExternally({ source: "ticket_paste" }), true);
+  });
+});
