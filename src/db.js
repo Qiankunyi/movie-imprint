@@ -305,12 +305,49 @@ export const db = {
   }
 };
 
-export async function clearLocalData() {
-  return cloudOp(
-    async () => {
+/**
+ * R6 补丁：清空全部数据。
+ *
+ * **不能走 cloudOp。** cloudOp 的语义是"云端优先，失败才降级到本地"——云端调用
+ * 成功就直接返回，`idb.clear()` 永远不会执行。对读写单条数据来说这是对的，
+ * 但对"清空一切"来说是错的：开着云端同步时只清掉了 D1，本机 IndexedDB 里那份
+ * 副本原封不动留着。用户日后一旦断开同步，被"清掉"的数据就会整批复活。
+ *
+ * 所以这里两边都清，而且**本地一定清**，与云端是否开启、是否成功都无关。
+ *
+ * @returns {Promise<{ local: boolean, cloud: "cleared"|"skipped"|"failed", cloudError: string|null }>}
+ *   逐项汇报结果，让调用方能如实告诉用户"清了什么、哪一步没成"，
+ *   而不是笼统地报一句成功或失败。
+ */
+export async function clearAllData() {
+  let cloud = "skipped";
+  let cloudError = null;
+
+  if (isCloudSyncEnabled()) {
+    try {
       const response = await apiFetch("/api/sync/clear", { method: "POST" });
       if (!response.ok) throw new Error(`db_clear_error_${response.status}`);
-    },
-    () => idb.clear()
-  );
+      cloud = "cleared";
+    } catch (error) {
+      cloud = "failed";
+      cloudError = error.message;
+      if (error.message === "db_401") localStorage.removeItem(ACCESS_PASSWORD_KEY);
+    }
+  }
+
+  let local = false;
+  try {
+    await idb.clear();
+    local = true;
+  } catch (error) {
+    console.error("[db] 本地数据清空失败:", error.message);
+  }
+
+  return { local, cloud, cloudError };
+}
+
+/** @deprecated R6 起改用 clearAllData()。保留只为不打断可能存在的外部调用。 */
+export async function clearLocalData() {
+  const result = await clearAllData();
+  if (!result.local || result.cloud === "failed") throw new Error("数据清空未完全成功");
 }

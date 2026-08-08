@@ -1,4 +1,4 @@
-import { db, clearLocalData, migrateLocalToCloud } from "./db.js?v=13";
+import { db, clearAllData, migrateLocalToCloud } from "./db.js?v=14";
 import { parseTicketText, draftViewingEvent } from "./ticket.js";
 import { buildWorkSearchQuery } from "./bangumi.js?v=13";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
@@ -128,6 +128,9 @@ const activeDraftId = "active";
 // 部署到 Cloudflare 后，如果配置了 ACCESS_PASSWORD 环境变量，
 // 所有 /api/* 请求需要携带此密码。密码存在 localStorage 里，一次输入长期有效。
 const ACCESS_PASSWORD_KEY = "mi_access_password";
+// 要求打字而不是点两次"确定"：这个操作不可撤销，误触两次按钮完全可能，
+// 误打两个字不会。
+const RESET_CONFIRM_PHRASE = "清空";
 
 function getAccessPassword() {
   return localStorage.getItem(ACCESS_PASSWORD_KEY) || "";
@@ -225,6 +228,9 @@ const state = {
   // selected 是用户选中的候选（选中后面板下方出现「为什么想看」输入框）。
   // Phase 4 只有本地搜索；Phase 5/6 接入 Bangumi + TMDB 后 external 才会有内容。
   workSearch: { query: "", local: [], external: [], status: "idle", message: null, selected: null },
+  resetConfirmText: "",       // R6：清空数据的确认词输入
+  resetBusy: false,
+  resetMessage: null,
   seriesReturnView: "work",   // R5：系列页从哪进来的，决定返回去哪
   taglineBusy: false,         // R5：AI 概括一句话简介进行中
   taglineSummary: "",         // R5：当前作品抓回来的完整简介原文（AI 概括的输入）
@@ -1399,6 +1405,59 @@ function syncSettingsSection() {
   <p class="settings-note" style="margin-top:var(--space-2)">输入部署时设置的访问密码，开启后数据跨设备同步。无密码时数据仅保存在本机。</p>`;
 }
 
+/**
+ * R6 补丁：清空所有数据的确认面板。
+ *
+ * 取代原来的 `?reset` URL 触发。那个做法有三个问题：
+ * 1. **完全没有确认**——任何一次访问带 `?reset` 的地址都会静默清库。
+ *    地址一旦被收藏、被分享、或被浏览器的会话恢复重新打开，数据就没了。
+ * 2. 它在模块顶层用 top-level await 执行，且没有 try/catch。清库一旦抛错
+ *    （云端 500、网络中断），未捕获的 rejection 会让整个模块加载失败，
+ *    表现就是"打开是一片空白"，而且看不出和清库有关。
+ * 3. 清完之后 `history.replaceState` 把查询串抹掉，用户既没有任何反馈，
+ *    也不知道到底清没清。
+ *
+ * 现在改成偏好设置里的显式入口 + 输入确认词。要求打字而不是点两次"确定"，
+ * 是因为这个操作不可撤销：误触两次按钮完全可能，误打两个字不会。
+ */
+function resetDataOverlay() {
+  const cloudEnabled = !!getAccessPassword();
+  const counts = [
+    [state.records.length, "条感想"],
+    [state.works.length, "部作品"],
+    [state.allViewingEvents?.length || 0, "场观影"],
+    [state.collections.length, "个片单"],
+    [state.series.length, "个系列"]
+  ].filter(([n]) => n > 0).map(([n, label]) => `${n} ${label}`);
+
+  const typed = state.resetConfirmText || "";
+  const ready = typed.trim() === RESET_CONFIRM_PHRASE;
+  const busy = state.resetBusy;
+
+  return `<div class="overlay" data-testid="reset-data">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="reset-data-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">危险操作</span><h2 id="reset-data-title">清空所有数据</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+
+      <p class="settings-note">将要删除${counts.length ? `：<b>${counts.join(" · ")}</b>` : "当前所有数据（现在看起来已经是空的）"}。</p>
+      <p class="settings-note">清空范围：<b>${cloudEnabled ? "本机数据 + 云端数据库" : "本机数据"}</b>${cloudEnabled ? "" : "（未开启云端同步）"}。<b>此操作无法撤销。</b></p>
+
+      <div class="settings-actions">
+        <button type="button" data-action="export-all-download" data-testid="reset-backup-first"><span><b>先下载一份 JSON 备份</b><small>强烈建议——清空后没有任何找回途径</small></span>${icon("export")}</button>
+      </div>
+
+      <label class="reset-confirm-field">
+        <span>确认请输入「${RESET_CONFIRM_PHRASE}」</span>
+        <input type="text" id="reset-confirm-input" autocomplete="off" autocapitalize="off" spellcheck="false" value="${escapeHtml(typed)}" placeholder="${RESET_CONFIRM_PHRASE}" data-testid="reset-confirm-input" />
+      </label>
+
+      <button type="button" class="sheet-done reset-confirm-button" data-action="confirm-reset-data" ${ready && !busy ? "" : "disabled"} data-testid="confirm-reset-data">${busy ? "正在清空…" : "永久删除全部数据"}</button>
+      ${state.resetMessage ? `<p class="settings-note" data-testid="reset-message">${escapeHtml(state.resetMessage)}</p>` : ""}
+    </section>
+  </div>`;
+}
+
 function settingsOverlay() {
   return `<div class="overlay" data-testid="settings">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭偏好设置"></button>
@@ -1421,6 +1480,10 @@ function settingsOverlay() {
         <button type="button" data-action="export-all-download" ${state.records.length || state.collections.length ? "" : "disabled"}><span><b>下载全部记录（JSON 备份）</b><small>结构化数据，适合长期存档</small></span>${icon("export")}</button>
       </div>
       <p class="settings-note">偏好只保存在本机，不会修改已有作品记录。</p>
+      <h3 class="settings-section-title danger">危险区域</h3>
+      <div class="settings-actions">
+        <button type="button" class="settings-danger" data-action="open-reset-data" data-testid="open-reset-data"><span><b>清空所有数据</b><small>删除全部感想、作品、观影场次、系列与片单。无法撤销。</small></span>${icon("trash")}</button>
+      </div>
     </section>
   </div>`;
 }
@@ -2069,6 +2132,8 @@ function render() {
         ? entryReasonEditorOverlay(currentCollectionForOverlay)
       : state.overlay === "work-search"
         ? workSearchOverlay()
+      : state.overlay === "reset-data"
+        ? resetDataOverlay()
         : "";
 
   // 三块分别挂载，各自只在自己变化时重写：
@@ -2856,6 +2921,63 @@ async function persistSeries(series) {
     : [...state.series, series];
 }
 
+// ─── R6 补丁：清空所有数据 ───────────────────────────────────────────────────
+
+/**
+ * 执行清库。
+ *
+ * 三件事都要做，缺一件都会留下"数据没真的清干净"的观感：
+ * 1. 云端 D1（开了同步才有）与本机 IndexedDB —— 由 db.clearAllData 保证两边都清；
+ * 2. Service Worker 的缓存（shell 与海报）—— 否则清完之后旧海报还会从缓存里冒出来；
+ * 3. 重新加载页面 —— 内存里有二十多个 state 字段、路由栈、渲染缓存，逐个手动重置
+ *    既冗长又容易漏。直接重载到干净地址最稳，也顺便满足"清完回到 App 正常入口，
+ *    不停留在特殊 URL"。
+ *
+ * 全程 try/catch：清库失败必须让用户看见原因，而不是把页面搞成一片空白
+ * （那正是旧的 `?reset` 顶层 await 会造成的结果）。
+ */
+async function performDataReset() {
+  if (state.resetBusy) return;
+  state.resetBusy = true;
+  state.resetMessage = null;
+  render();
+
+  let result;
+  try {
+    result = await clearAllData();
+  } catch (error) {
+    state.resetBusy = false;
+    state.resetMessage = `清空失败：${error.message}。数据没有被改动。`;
+    render();
+    return;
+  }
+
+  // Service Worker 缓存：清不掉也不算致命，只是旧海报可能残留一阵，
+  // 所以单独 catch，不让它影响主流程的成功判定。
+  try {
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key)));
+    }
+  } catch (error) {
+    console.error("[reset] Service Worker 缓存清理失败:", error.message);
+  }
+
+  if (!result.local || result.cloud === "failed") {
+    state.resetBusy = false;
+    state.resetMessage = [
+      result.local ? "本机数据已清空。" : "本机数据清空失败。",
+      result.cloud === "failed" ? `云端清空失败（${result.cloudError || "未知原因"}），请检查同步密码或稍后重试。` : ""
+    ].filter(Boolean).join("");
+    render();
+    return;
+  }
+
+  showToast(result.cloud === "cleared" ? "本机与云端数据已清空" : "本机数据已清空");
+  // 留一拍让 toast 能被看到，然后重载到干净地址（去掉任何 hash / 查询串）
+  setTimeout(() => location.replace(location.origin + location.pathname), 700);
+}
+
 // ─── R6：统一作品搜索 + 一次完成的片单添加 ───────────────────────────────────
 
 let workSearchTimer = null;
@@ -3401,6 +3523,15 @@ document.addEventListener("click", async (event) => {
   } else if (action === "edit-collection") {
     state.overlay = "collection-editor";
     render();
+  } else if (action === "open-reset-data") {
+    state.resetConfirmText = "";
+    state.resetMessage = null;
+    state.resetBusy = false;
+    state.overlay = "reset-data";
+    render();
+  } else if (action === "confirm-reset-data") {
+    if (state.resetConfirmText.trim() !== RESET_CONFIRM_PHRASE) return;
+    await performDataReset();
   } else if (action === "open-work-search") {
     openWorkSearch();
   } else if (action === "select-search-candidate") {
@@ -3891,6 +4022,13 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("input", (event) => {
+  if (event.target.id === "reset-confirm-input") {
+    state.resetConfirmText = event.target.value;
+    // 只切按钮的 disabled，不走 render()——重渲染会重建输入框、丢焦点
+    const button = document.querySelector("[data-testid='confirm-reset-data']");
+    if (button) button.disabled = state.resetConfirmText.trim() !== RESET_CONFIRM_PHRASE || state.resetBusy;
+    return;
+  }
   if (event.target.id === "work-search-input") {
     handleWorkSearchInput(event.target.value);
     return;
@@ -4633,11 +4771,6 @@ if ("serviceWorker" in navigator && serviceWorkerOriginAllowed) {
 const storedTheme = localStorage.getItem("movie-imprint-theme");
 applyTheme(storedTheme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
 updateVisualViewport();
-
-if (new URLSearchParams(location.search).has("reset")) {
-  await clearLocalData();
-  history.replaceState({}, "", location.pathname);
-}
 
 try {
   // R1：三层数据模型迁移必须在任何数据读取之前完成一次。不新增界面元素——

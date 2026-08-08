@@ -4153,3 +4153,52 @@ svg {
   border-radius: 4px;
   object-fit: cover;
 }
+
+/* ─── R6 补丁：偏好设置的危险区域 ────────────────────────────────────────────
+   取代原来靠 `?reset` 隐藏 URL 触发的清库。视觉上必须和上面的普通设置项拉开
+   距离，否则「清空所有数据」看起来会像又一个无害的开关。 */
+.settings-section-title.danger {
+  margin-top: var(--space-6, 32px);
+  color: var(--danger, #d3453c);
+}
+
+.settings-danger {
+  border-color: var(--danger, #d3453c) !important;
+  color: var(--danger, #d3453c);
+}
+
+.settings-danger b {
+  color: var(--danger, #d3453c);
+}
+
+.reset-confirm-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  margin: var(--space-4, 16px) 0 var(--space-2, 8px);
+}
+
+.reset-confirm-field span {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.reset-confirm-field input {
+  min-height: 44px;
+  padding: 0 var(--space-3, 12px);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-md, 12px);
+  background: var(--surface-container);
+  color: var(--ink);
+  font: var(--type-body);
+}
+
+.reset-confirm-button {
+  width: 100%;
+  background: var(--danger, #d3453c);
+  color: #fff;
+}
+
+.reset-confirm-button:disabled {
+  opacity: 0.4;
+}

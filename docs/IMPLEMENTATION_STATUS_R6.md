@@ -461,3 +461,103 @@ tests/export.test.mjs        片单导出、watched 快照、merged_from 回查
 - 搜索面板边打字边搜时输入框是否保持焦点（含中文输入法组合态）
 - 书架两个原生 `<select>` 在手机上的实际观感与两排是否真的没被撑破
 - 片单条目的上移/下移与手势层是否冲突
+
+---
+
+# R6 补丁 1：清库入口从隐藏 URL 改成偏好设置里的显式操作
+
+## 起因
+
+按上一节的说明去线上访问 `https://movie-imprint.pages.dev/?reset`，返回的是
+Cloudflare Pages 的 404，App 根本没加载。
+
+## 1. 404 的真正原因：`index.html` 被一次提交删掉了
+
+和 `?reset` 无关。查 git：
+
+```
+b61cfd3 chore: bind D1 database and initial schema
+ index.html | 33 ---------------------------------
+ 1 file changed, 33 deletions(-)
+```
+
+这次提交把 `index.html` 从仓库里删除了。Pages 的构建产物因此没有根文档，
+访问 `/`（无论带不带查询串）都只能落到 Cloudflare 的 404。
+
+已从该提交的父提交恢复：`git show b61cfd3^:index.html > index.html`，并把里面的
+`app.css` / `app.js` 版本号补到 R6 的当前值。
+
+**同时修掉一个连带问题**：R6 期间 bump 了 `index.html` 与各模块的 `?v=`，却漏了
+`sw.js` 里 `SHELL` 数组的那几条——预缓存的是一批再也不会被请求到的旧 URL
+（`index.html` 要 `app.js?v=39`，SHELL 里存的还是 `?v=35`），预缓存等于白做，
+离线时反而拿不到新壳。现在三处版本号统一由静态检查脚本比对。
+
+## 2. `?reset` 本身也确实不该继续用
+
+原实现在 `src/app.js` 模块顶层：
+
+```js
+if (new URLSearchParams(location.search).has("reset")) {
+  await clearLocalData();
+  history.replaceState({}, "", location.pathname);
+}
+```
+
+四个问题，每一个单独都够格把它废掉：
+
+| 问题 | 后果 |
+|---|---|
+| **完全没有确认** | 任何一次访问带 `?reset` 的地址都会静默清库。地址被收藏、被分享、或被浏览器会话恢复重新打开，数据就没了 |
+| **顶层 await 且无 try/catch** | 清库一旦抛错（云端 500、网络中断），未捕获的 rejection 让整个模块加载失败，表现是"打开一片空白"，且看不出和清库有关 |
+| **云端模式下本地根本没清** | `clearLocalData` 走 `cloudOp`，而 `cloudOp` 的语义是"云端优先，失败才降级本地"——云端成功就直接返回，`idb.clear()` 永远不执行。开着同步时只清了 D1，本机 IndexedDB 副本原样留着，日后一断开同步就整批复活 |
+| **没有任何反馈** | 清完把查询串一抹，用户不知道到底清没清 |
+
+## 3. 新的清库入口
+
+**偏好设置 → 危险区域 → 清空所有数据**，随后弹出确认面板：
+
+- 列出**具体会删掉什么**（N 条感想 · N 部作品 · N 场观影 · N 个片单 · N 个系列）
+- 说明**清空范围**（本机数据 / 本机数据 + 云端数据库，按同步开关如实显示）
+- 面板内直接提供「先下载一份 JSON 备份」
+- **要求输入确认词「清空」**才解锁删除按钮
+
+用打字而不是"再点一次确定"，是因为这个操作不可撤销：误触两次按钮完全可能，
+误打两个字不会。
+
+### `db.clearAllData()`
+
+新函数，**刻意不走 `cloudOp`**：
+
+```
+开了云端同步 → POST /api/sync/clear      （失败则如实汇报，不静默吞掉）
+无论如何     → idb.clear()               （本地一定清）
+```
+
+返回 `{ local, cloud: "cleared"|"skipped"|"failed", cloudError }`，让 UI 能如实告诉
+用户"清了什么、哪一步没成"，而不是笼统一句成功或失败。
+
+`clearLocalData()` 保留为 deprecated 包装，不打断可能存在的外部调用。
+
+### 清库后的收尾
+
+1. 清 Service Worker 的全部缓存（shell + 海报）——否则清完之后旧海报还会从缓存里冒出来。
+   这一步单独 catch，清不掉不影响主流程的成功判定。
+2. `location.replace(location.origin + location.pathname)` 重载到干净地址。
+   内存里有二十多个 state 字段、路由栈、渲染缓存，逐个手动重置既冗长又容易漏；
+   重载最稳，也顺便满足"清完回到 App 正常入口，不停留在特殊 URL"。
+3. 全程 try/catch，失败时把原因显示在面板里，页面不会变空白。
+
+## 4. 验证
+
+- 376 个测试全绿（本补丁未改动纯函数层，无新增用例）
+- 静态检查新增 reset 专项：`?reset` 触发已移除 ✓ / 偏好设置有入口 ✓ /
+  有确认词门槛 ✓ / `clearAllData` 不走 `cloudOp` ✓ / 本地无条件清 ✓ /
+  云端走 `/api/sync/clear` ✓ / 清完重载到干净地址 ✓
+- 静态检查新增资源专项：`index.html` 存在、它与 `sw.js` SHELL 引用的每个文件都真实存在、
+  两边版本号一致——**这条就是这次 404 的直接防线**
+- 本地 `node server.mjs`：`/` 与 `/?reset` 均 200（后者不再有任何特殊行为），
+  `index.html` 引用的 5 个资源全部 200
+
+> 注：`POST /api/sync/clear` 在本地 dev 返回 404 是预期的——`server.mjs` 从来没有
+> 实现 `/api/sync/*`（D1 只存在于 Cloudflare）。本地开发始终是 IndexedDB 单机模式，
+> 云端分支不会被走到。

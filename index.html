@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#f7f8f6" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0c1214" media="(prefers-color-scheme: dark)" />
+    <meta name="description" content="安静地记下电影在你身上留下的痕迹。" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/public/icon-192.png" type="image/png" />
+    <link rel="stylesheet" href="/docs/design/tokens-v2.css?v=17" />
+    <link rel="stylesheet" href="/styles/app.css?v=38" />
+    <title>电影印记</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <!-- 浮层与右下角 FAB 都渲染在 #app 之外的独立容器里。
+         之前它们是 app.innerHTML 的一部分，于是"打开侧边栏""展开 FAB 菜单"这类
+         纯浮层操作也会把整个时间线重建一遍——所有 <img> 被重新创建、海报重新加载，
+         表现就是列表闪一下、海报刷新。拆开之后浮层开合完全不碰列表。 -->
+    <div id="overlay-root"></div>
+    <div id="fab-root"></div>
+    <!-- 侧边栏右滑手势的临时承载层：必须在 #app 之外。手势进行中如果直接 render()，
+         app.innerHTML 会被整体重建，touchstart 的目标元素被销毁后就从文档树里脱离，
+         后续 touchmove/touchend 不再冒泡到 document，手势会直接卡死（这是
+         "右滑拖不出侧边栏" 的原因之一）。改成先把抽屉塞进这个常驻层里跟手，
+         等 touchend 之后再真正 render()。 -->
+    <div id="gesture-layer"></div>
+    <div id="live-region" class="sr-only" aria-live="polite"></div>
+    <div id="toast-region" class="toast" aria-hidden="true"></div>
+    <script type="module" src="/src/app.js?v=39"></script>
+  </body>
+</html>
