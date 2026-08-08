@@ -253,3 +253,100 @@ test("merged_from 里的旧 work id 也能查到该 work", () => {
   assert.equal(findWorkById(works, "work_local_old-title")?.id, "work_bgm_123");
   assert.equal(findWorkById(works, "work_does_not_exist"), undefined);
 });
+
+// ─── R6：书架 = 全部 Work 总库，观看状态筛选 ──────────────────────────────────
+
+const shelfWork = (id, extra = {}) => ({ id, title: id, work_type: "unspecified", merged_from: [], first_recorded_at: "2026-01-01T00:00:00.000Z", ...extra });
+
+test("R6：summarizeWorksForShelf 派生 isWatched —— 有 Record 但没有 ViewingEvent 也算已看", () => {
+  const works = [shelfWork("w_event"), shelfWork("w_record"), shelfWork("w_none")];
+  const events = [{ id: "e1", work_id: "w_event", viewed_on: "2026-03-01" }];
+  const records = [{ id: "r1", work_id: "w_record" }];
+
+  const summaries = summarizeWorksForShelf(works, events, { records, collections: [] });
+  const byId = Object.fromEntries(summaries.map((s) => [s.work.id, s]));
+
+  assert.equal(byId.w_event.isWatched, true);
+  // 补充记录不产生 ViewingEvent，只看 Event 会把确实看过的作品误判成没看过
+  assert.equal(byId.w_record.isWatched, true, "有 Record 无 Event 也必须算已看");
+  assert.equal(byId.w_none.isWatched, false);
+});
+
+test("R6：summarizeWorksForShelf 派生 inCollection，含 merged_from 回查", () => {
+  const works = [shelfWork("w1"), shelfWork("w_merged", { merged_from: ["w_old"] }), shelfWork("w_free")];
+  const collections = [
+    { id: "c1", entries: [{ work_id: "w1" }, { work_id: "w_old" }] }
+  ];
+  const byId = Object.fromEntries(
+    summarizeWorksForShelf(works, [], { records: [], collections }).map((s) => [s.work.id, s])
+  );
+  assert.equal(byId.w1.inCollection, true);
+  assert.equal(byId.w_merged.inCollection, true, "片单里存的是合并前的旧 id，也要能认出来");
+  assert.equal(byId.w_free.inCollection, false);
+});
+
+test("R6：三种观看状态的筛选定义", () => {
+  const entries = [
+    { work: shelfWork("watched"), watchCount: 1, hasEvents: false, isWatched: true, inCollection: false },
+    { work: shelfWork("want"), watchCount: 0, hasEvents: false, isWatched: false, inCollection: true },
+    { work: shelfWork("orphan"), watchCount: 0, hasEvents: false, isWatched: false, inCollection: false }
+  ];
+  const ids = (filter) => filterShelfEntries(entries, filter).map((e) => e.work.id);
+
+  assert.deepEqual(ids({ watchStatus: "watched" }), ["watched"]);
+  // 想看 = 没看过 且 至少在一个片单里；既没看过又不在任何片单里的只是孤立条目
+  assert.deepEqual(ids({ watchStatus: "want" }), ["want"]);
+  assert.deepEqual(ids({ watchStatus: "all" }), ["watched", "want", "orphan"]);
+});
+
+test("R6：观看状态与作品类型两个维度正交", () => {
+  const entries = [
+    { work: shelfWork("a", { work_type: "animation_film" }), watchCount: 0, hasEvents: false, isWatched: false, inCollection: true },
+    { work: shelfWork("b", { work_type: "live_action_film" }), watchCount: 0, hasEvents: false, isWatched: false, inCollection: true },
+    { work: shelfWork("c", { work_type: "animation_film" }), watchCount: 2, hasEvents: false, isWatched: true, inCollection: false }
+  ];
+  const got = filterShelfEntries(entries, { watchStatus: "want", workType: "animation_film" });
+  assert.deepEqual(got.map((e) => e.work.id), ["a"]);
+});
+
+test("R6：想看状态下「特别场次」筛选被短路（没有观影事件就不可能有舞台挨拶）", () => {
+  const entries = [
+    { work: shelfWork("want"), watchCount: 0, hasEvents: false, isWatched: false, inCollection: true }
+  ];
+  assert.equal(filterShelfEntries(entries, { watchStatus: "want", eventsOnly: true }).length, 1);
+  assert.equal(filterShelfEntries(entries, { watchStatus: "all", eventsOnly: true }).length, 0);
+});
+
+test("R6 §10：想看状态强制按「首次记录」排序，不发明新的排序体系", () => {
+  const entries = [
+    { work: shelfWork("late", { first_recorded_at: "2026-08-20T00:00:00.000Z" }), watchCount: 0, lastWatchedAt: "2026-08-20T00:00:00.000Z", isWatched: false, inCollection: true },
+    { work: shelfWork("early", { first_recorded_at: "2026-08-08T00:00:00.000Z" }), watchCount: 0, lastWatchedAt: "2026-08-08T00:00:00.000Z", isWatched: false, inCollection: true }
+  ];
+  // 即便调用方传的是「最近观看」，想看状态也应落到首次记录顺序
+  const sorted = sortShelfEntries(entries, "recent", { watchStatus: "want" });
+  assert.deepEqual(sorted.map((e) => e.work.id), ["early", "late"]);
+
+  // 已看状态下排序行为不变
+  const watched = sortShelfEntries(entries, "recent", { watchStatus: "watched" });
+  assert.deepEqual(watched.map((e) => e.work.id), ["late", "early"]);
+});
+
+test("R6 §14：看完之后作品自动从「想看」转到「已看」，不产生第二个 Work", () => {
+  const birdman = shelfWork("work_birdman", { first_recorded_at: "2026-08-08T00:00:00.000Z" });
+  const collections = [{ id: "c1", entries: [{ work_id: "work_birdman", reason: "因为 Michael Keaton" }] }];
+
+  const before = summarizeWorksForShelf([birdman], [], { records: [], collections });
+  assert.deepEqual(filterShelfEntries(before, { watchStatus: "want" }).map((e) => e.work.id), ["work_birdman"]);
+  assert.deepEqual(filterShelfEntries(before, { watchStatus: "watched" }), []);
+
+  // 9/5 真的看了：新增一条 ViewingEvent，Work 本身没变
+  const after = summarizeWorksForShelf([birdman], [
+    { id: "e1", work_id: "work_birdman", viewed_on: "2026-09-05" }
+  ], { records: [{ id: "r1", work_id: "work_birdman" }], collections });
+
+  assert.deepEqual(filterShelfEntries(after, { watchStatus: "watched" }).map((e) => e.work.id), ["work_birdman"]);
+  assert.deepEqual(filterShelfEntries(after, { watchStatus: "want" }), [], "看完后应从想看里消失");
+  // 片单条目与 first_recorded_at 都不受影响
+  assert.equal(collections[0].entries[0].reason, "因为 Michael Keaton");
+  assert.equal(after[0].work.first_recorded_at, "2026-08-08T00:00:00.000Z", "首次记录时间不因为后来看了而改变");
+});

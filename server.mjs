@@ -8,18 +8,34 @@ import {
   isAllowedBangumiImageUrl,
   normalizeBangumiSubjects
 } from "./src/bangumi.js";
-import { listAiProviders, requestAiAnalysis, requestAiRecommendation } from "./src/ai-providers.js";
+import {
+  buildTmdbDetailRequest,
+  buildTmdbImageUrl,
+  buildTmdbSearchRequest,
+  isAllowedTmdbImageUrl,
+  normalizeTmdbDetail,
+  normalizeTmdbMovies
+} from "./src/tmdb.js";
+import { describeAiError, listAiProviders, requestAiAnalysis, requestAiRecommendation, requestAiTagline } from "./src/ai-providers.js";
 
 const port = Number(process.env.PORT || process.argv[2] || 4173);
 const host = process.env.HOST?.trim() || "127.0.0.1";
 const root = process.cwd();
 const bangumiSearchCache = new Map();
 const bangumiImageCache = new Map();
+const bangumiSubjectCache = new Map();
 const BANGUMI_CACHE_TTL = 24 * 60 * 60 * 1000;
 const BANGUMI_IMAGE_CACHE_TTL = 24 * 60 * 60 * 1000;
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_AI_REQUEST_BYTES = 64 * 1024;
 const DEFAULT_BANGUMI_USER_AGENT = "qiankunyi/movie-imprint/0.1";
+// R6：TMDB 三个端点的本地开发实现。生产环境走 functions/api/tmdb/*.js
+// （Cloudflare Pages Functions），这里只是让 `npm run dev` 也能跑通同样的接口，
+// 逻辑保持一致——尤其是海报代理的 host 白名单与体积/类型校验，不能只在生产有。
+const tmdbSearchCache = new Map();
+const tmdbDetailCache = new Map();
+const tmdbImageCache = new Map();
+const TMDB_CACHE_TTL = 24 * 60 * 60 * 1000;
 const types = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -38,14 +54,14 @@ function respondJson(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-function respondImage(response, image, cacheState) {
+function respondImage(response, image, cacheState, source = "Bangumi") {
   response.writeHead(200, {
     "content-type": image.contentType,
     "content-length": String(image.data.byteLength),
     "cache-control": "public, max-age=86400, stale-while-revalidate=604800",
     "x-content-type-options": "nosniff",
     "cross-origin-resource-policy": "same-origin",
-    "x-image-source": "Bangumi",
+    "x-image-source": source,
     "x-image-cache": cacheState
   });
   response.end(image.data);
@@ -105,6 +121,81 @@ async function handleAiAnalysis(request, response) {
   }
 }
 
+/**
+ * R6 补漏：/api/bangumi/subject 与 /api/ai/tagline 此前只有生产实现
+ * （functions/api/…），本地开发服务器一直没接——于是 `npm run dev` 下作品页的
+ * 「一句话简介」整块功能是坏的：拉不到完整简介，也没法让 AI 概括。
+ * 这两个 handler 与对应的 Pages Function 行为保持一致，包括错误码与文案。
+ */
+async function handleBangumiSubject(requestUrl, response) {
+  const id = Number(requestUrl.searchParams.get("id"));
+  if (!Number.isInteger(id) || id <= 0) {
+    respondJson(response, 400, { error: "invalid_subject_id", message: "条目 id 不合法" });
+    return;
+  }
+
+  const cached = bangumiSubjectCache.get(id);
+  if (cached && Date.now() - cached.savedAt < BANGUMI_CACHE_TTL) {
+    respondJson(response, 200, { ...cached.data, source: "cache" });
+    return;
+  }
+
+  const headers = {
+    accept: "application/json",
+    "user-agent": process.env.BANGUMI_USER_AGENT?.trim() || DEFAULT_BANGUMI_USER_AGENT
+  };
+  const token = process.env.BANGUMI_ACCESS_TOKEN?.trim();
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  try {
+    const upstream = await fetch(`https://api.bgm.tv/v0/subjects/${id}`, {
+      headers,
+      signal: AbortSignal.timeout(6000)
+    });
+    if (!upstream.ok) throw new Error(`Bangumi ${upstream.status}`);
+    const subject = await upstream.json();
+    const data = {
+      subjectId: id,
+      title: String(subject?.name_cn || subject?.name || "").trim(),
+      originalTitle: String(subject?.name || "").trim() || null,
+      date: subject?.date || null,
+      summary: typeof subject?.summary === "string" ? subject.summary.trim() : ""
+    };
+    bangumiSubjectCache.set(id, { data, savedAt: Date.now() });
+    respondJson(response, 200, { ...data, source: "bangumi" });
+  } catch {
+    respondJson(response, 502, { error: "bangumi_unavailable", message: "暂时拿不到这部作品的简介" });
+  }
+}
+
+async function handleAiTagline(request, response) {
+  try {
+    const body = await readJsonBody(request);
+    const result = await requestAiTagline({
+      provider: typeof body.provider === "string" ? body.provider : null,
+      title: typeof body.title === "string" ? body.title.slice(0, 160) : "",
+      originalTitle: typeof body.originalTitle === "string" ? body.originalTitle.slice(0, 160) : null,
+      year: Number.isInteger(body.year) ? body.year : null,
+      summary: typeof body.summary === "string" ? body.summary.slice(0, 4000) : ""
+    });
+    respondJson(response, 200, result);
+  } catch (error) {
+    const missingSummary = error.message === "missing_summary";
+    const invalid = ["invalid_json", "request_too_large", "invalid_ai_input", "invalid_ai_output", "unsupported_ai_provider"].includes(error.message);
+    const notConfigured = error.message === "ai_provider_not_configured";
+    respondJson(response, missingSummary || invalid ? 400 : notConfigured ? 503 : 502, {
+      error: missingSummary ? "missing_summary" : invalid ? error.message : notConfigured ? "ai_not_configured" : "ai_tagline_failed",
+      message: missingSummary
+        ? "没有拿到这部作品的简介原文，无法概括——可以自己写一句"
+        : invalid
+          ? "这部作品的信息不足以生成简介"
+          : notConfigured
+            ? "所选整理服务尚未配置"
+            : describeAiError(error, "这次没能生成一句话简介")
+    });
+  }
+}
+
 async function handleAiRecommendation(request, response) {
   try {
     const body = await readJsonBody(request);
@@ -155,6 +246,134 @@ async function fetchBangumiImage(url, headers, redirects = 0) {
   if (!data.byteLength || data.byteLength > MAX_IMAGE_BYTES) throw new Error("image_too_large");
   return { contentType, data };
 }
+
+function tmdbAuth() {
+  const token = process.env.TMDB_ACCESS_TOKEN?.trim();
+  const apiKey = process.env.TMDB_API_KEY?.trim();
+  return { token, apiKey, configured: !!(token || apiKey) };
+}
+
+function tmdbLanguage() {
+  return process.env.TMDB_LANGUAGE?.trim() || "zh-CN";
+}
+
+/** 把鉴权拼进请求：优先 v4 bearer token，否则退回 v3 api_key 查询参数。 */
+function tmdbRequest(baseUrl) {
+  const { token, apiKey } = tmdbAuth();
+  const headers = { accept: "application/json" };
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+    return { url: baseUrl, headers };
+  }
+  return { url: `${baseUrl}&api_key=${encodeURIComponent(apiKey)}`, headers };
+}
+
+async function handleTmdbSearch(requestUrl, response) {
+  const query = requestUrl.searchParams.get("q")?.trim() || "";
+  if (!query || query.length > 80) {
+    respondJson(response, 400, { error: "invalid_query", message: "作品名需为 1—80 个字符" });
+    return;
+  }
+
+  // 没配密钥不算错误——用户可能只想用 Bangumi。返回空候选，让统一搜索面板
+  // 照常展示另一个源的结果，而不是整个搜索报错。
+  if (!tmdbAuth().configured) {
+    respondJson(response, 200, { query, candidates: [], source: "tmdb", configured: false });
+    return;
+  }
+
+  const language = tmdbLanguage();
+  const cacheKey = `${language}::${query}`;
+  const cached = tmdbSearchCache.get(cacheKey);
+  if (cached && Date.now() - cached.savedAt < TMDB_CACHE_TTL) {
+    respondJson(response, 200, { query, candidates: cached.candidates, source: "cache", configured: true });
+    return;
+  }
+
+  try {
+    const { url, headers } = tmdbRequest(buildTmdbSearchRequest(query, { language }).url);
+    const upstream = await fetch(url, { headers, signal: AbortSignal.timeout(6000) });
+    if (!upstream.ok) throw new Error(`TMDB ${upstream.status}`);
+    const candidates = normalizeTmdbMovies(await upstream.json());
+    tmdbSearchCache.set(cacheKey, { candidates, savedAt: Date.now() });
+    respondJson(response, 200, { query, candidates, source: "tmdb", configured: true });
+  } catch {
+    respondJson(response, 502, {
+      error: "tmdb_unavailable",
+      message: "暂时无法从 TMDB 搜索，其他来源的结果不受影响"
+    });
+  }
+}
+
+async function handleTmdbMovie(requestUrl, response) {
+  const id = Number(requestUrl.searchParams.get("id"));
+  const request = buildTmdbDetailRequest(id, { language: tmdbLanguage() });
+  if (!request) {
+    respondJson(response, 400, { error: "invalid_movie_id", message: "电影 id 不合法" });
+    return;
+  }
+  if (!tmdbAuth().configured) {
+    respondJson(response, 200, { configured: false, detail: null });
+    return;
+  }
+
+  const cached = tmdbDetailCache.get(id);
+  if (cached && Date.now() - cached.savedAt < TMDB_CACHE_TTL) {
+    respondJson(response, 200, { detail: cached.detail, source: "cache", configured: true });
+    return;
+  }
+
+  try {
+    const { url, headers } = tmdbRequest(request.url);
+    const upstream = await fetch(url, { headers, signal: AbortSignal.timeout(6000) });
+    if (!upstream.ok) throw new Error(`TMDB ${upstream.status}`);
+    const detail = normalizeTmdbDetail(await upstream.json());
+    if (!detail) throw new Error("tmdb_bad_payload");
+    tmdbDetailCache.set(id, { detail, savedAt: Date.now() });
+    respondJson(response, 200, { detail, source: "tmdb", configured: true });
+  } catch {
+    respondJson(response, 502, { error: "tmdb_unavailable", message: "暂时拿不到这部电影的详细信息" });
+  }
+}
+
+async function handleTmdbImage(requestUrl, response) {
+  const path = requestUrl.searchParams.get("path") || "";
+  const size = requestUrl.searchParams.get("size") || "w500";
+  const upstreamUrl = buildTmdbImageUrl(path, size);
+  if (!upstreamUrl) {
+    respondJson(response, 400, { error: "invalid_poster_path", message: "无效的海报路径" });
+    return;
+  }
+
+  const cached = tmdbImageCache.get(upstreamUrl);
+  if (cached && Date.now() - cached.savedAt < TMDB_CACHE_TTL) {
+    respondImage(response, cached.image, "hit", "TMDB");
+    return;
+  }
+
+  try {
+    const upstream = await fetch(upstreamUrl, { redirect: "follow", signal: AbortSignal.timeout(8000) });
+    if (upstream.status === 404) throw new Error("image_not_found");
+    // 跟随重定向后仍要校验落点主机——不能只信最初那个 URL
+    if (!upstream.ok || !isAllowedTmdbImageUrl(upstream.url)) throw new Error("image_unavailable");
+
+    const contentType = upstream.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
+    if (!["image/jpeg", "image/png", "image/webp"].includes(contentType)) throw new Error("invalid_image_type");
+
+    const data = Buffer.from(await upstream.arrayBuffer());
+    if (!data.byteLength || data.byteLength > MAX_IMAGE_BYTES) throw new Error("image_too_large");
+
+    const image = { contentType, data };
+    tmdbImageCache.set(upstreamUrl, { image, savedAt: Date.now() });
+    respondImage(response, image, "miss", "TMDB");
+  } catch (error) {
+    respondJson(response, error.message === "image_not_found" ? 404 : 502, {
+      error: error.message === "image_not_found" ? "image_not_found" : "image_unavailable",
+      message: "作品图片暂不可用"
+    });
+  }
+}
+
 
 async function handleBangumiImage(requestUrl, response) {
   const subjectId = Number(requestUrl.searchParams.get("subjectId"));
@@ -237,12 +456,32 @@ createServer((request, response) => {
     handleBangumiImage(requestUrl, response);
     return;
   }
+  if (request.method === "GET" && requestPath === "/api/bangumi/subject") {
+    void handleBangumiSubject(requestUrl, response);
+    return;
+  }
+  if (request.method === "GET" && requestPath === "/api/tmdb/search") {
+    void handleTmdbSearch(requestUrl, response);
+    return;
+  }
+  if (request.method === "GET" && requestPath === "/api/tmdb/movie") {
+    void handleTmdbMovie(requestUrl, response);
+    return;
+  }
+  if (request.method === "GET" && requestPath === "/api/tmdb/image") {
+    void handleTmdbImage(requestUrl, response);
+    return;
+  }
   if (request.method === "GET" && requestPath === "/api/ai/providers") {
     respondJson(response, 200, listAiProviders());
     return;
   }
   if (request.method === "POST" && requestPath === "/api/ai/analyze") {
     void handleAiAnalysis(request, response);
+    return;
+  }
+  if (request.method === "POST" && requestPath === "/api/ai/tagline") {
+    void handleAiTagline(request, response);
     return;
   }
   if (request.method === "POST" && requestPath === "/api/ai/recommendation") {

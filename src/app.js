@@ -1,11 +1,11 @@
 import { db, clearLocalData, migrateLocalToCloud } from "./db.js?v=13";
 import { parseTicketText, draftViewingEvent } from "./ticket.js";
-import { buildWorkSearchQuery } from "./bangumi.js?v=12";
+import { buildWorkSearchQuery } from "./bangumi.js?v=13";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
 import { runMigrationIfNeeded } from "./migrate.js?v=3";
 import { EVENT_TYPES } from "./event-types.js?v=1";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
-import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=6";
+import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=7";
 import { memoryListMarkup } from "./memory-list.js?v=1";
 import { formatBadge, eventBadges } from "./format-badge.js";
 import {
@@ -18,12 +18,16 @@ import {
   goHome as routeGoHome
 } from "./routing.js?v=1";
 import {
+  buildSearchResults,
+  searchLocalWorks
+} from "./work-search.js?v=1";
+import {
   buildWorkView,
   findWorkById,
   summarizeWorksForShelf,
   filterShelfEntries,
   sortShelfEntries
-} from "./work-view.js?v=1";
+} from "./work-view.js?v=2";
 import {
   RELEASE_REGIONS,
   SERIES_RELATION_TYPES,
@@ -32,8 +36,14 @@ import {
   addWorkToSeries,
   buildTagline,
   collectionWorks,
+  collectionWorkEntries,
+  collectionEntries,
+  collectionHasWork,
   collectionsForWork,
   createCollection,
+  findCollectionEntry,
+  moveCollectionEntry,
+  updateCollectionEntryReason,
   createSeries,
   findSeriesForWork,
   moveWorkInSeries,
@@ -50,7 +60,7 @@ import {
   setSeriesRelation,
   taglineFromSummary,
   taglineSourceLabel
-} from "./library.js?v=2";
+} from "./library.js?v=3";
 import {
   captureTransition,
   toggleEventType,
@@ -74,30 +84,36 @@ import {
   assignViewingRelations,
   attitudeLabel,
   createId,
-  deterministicAnalysis,
   emptyRecommendationDetails,
   isRecommendationAllowed,
   mergeWorks,
   parseDraft,
   promoteWorkToMatched,
+  normalizeTitle,
   reconcileLocalWorkTitle,
   sortRecordsByViewingDate,
+  workPosterRef,
+  externalRefId,
+  upsertExternalRef,
+  findWorkByExternalRef,
+  createWorkFromCandidate,
   recommendationLabel,
   resolveWork
-} from "./domain.js?v=15";
+} from "./domain.js?v=16";
 import {
   MIME_TYPES,
   copyExportText,
   deliverExport,
   downloadExport,
   exportAllFilename,
+  buildCollectionsExport,
   exportAllJSON,
   exportAllMarkdown,
   exportFilename,
   exportJSON,
   exportMarkdown,
   exportTXT
-} from "./export.js?v=2";
+} from "./export.js?v=3";
 
 const app = document.querySelector("#app");
 // 浮层与 FAB 各自有独立的挂载点（见 index.html 的注释）：只有它们变化时不去动 #app，
@@ -136,10 +152,25 @@ async function apiFetch(url, options = {}) {
 }
 
 // 带访问密码的图片 URL（海报以 URL 形式嵌入 <img src>，无法加请求头，改用 ?token= 参数）
-function apiBangumiImageUrl(subjectId) {
-  const base = `/api/bangumi/image?subjectId=${subjectId}`;
+function withImageToken(base) {
   const password = getAccessPassword();
   return password ? `${base}&token=${encodeURIComponent(password)}` : base;
+}
+
+/**
+ * R6：海报 URL 按数据源分发。R5 之前只有 Bangumi 一个图源，海报判断直接读
+ * work.poster_subject_id；现在 Work 可能带 TMDB 海报，统一走 work.poster 引用，
+ * 由这里决定用哪个图片代理端点。两个端点分别是 functions/api/bangumi/image.js 与
+ * functions/api/tmdb/image.js，各自做 host 白名单 + 体积/类型校验，前端不直接连外部图床。
+ * @param {object} work
+ * @returns {string} 没有可用海报时返回空字符串
+ */
+function posterUrlFor(work) {
+  const ref = workPosterRef(work);
+  if (!ref) return "";
+  if (ref.source === "bangumi") return withImageToken(`/api/bangumi/image?subjectId=${ref.subject_id}`);
+  if (ref.source === "tmdb") return withImageToken(`/api/tmdb/image?path=${encodeURIComponent(ref.path)}`);
+  return "";
 }
 
 const state = {
@@ -158,7 +189,11 @@ const state = {
   returnScrollY: 0,            // 时间线离开时的滚动位置（R3 已有字段，R4 沿用同一套约定）
   shelfScrollY: 0,             // R4：作品书架离开时的滚动位置
   workScrollY: 0,              // R4：作品页离开时的滚动位置
-  shelfFilter: { workType: "all", eventsOnly: false, sort: "recent" }, // R4：书架筛选/排序，运行时状态，不持久化
+  // R4 起是书架筛选/排序的运行时状态（不持久化）。
+  // R6 新增 watchStatus：书架现在是「App 中所有 Work 的统一总库」，观影前从片单
+  // 建的 Work 同样在这里，靠这个维度区分。默认 watched——总库归总库，日常打开
+  // 书架想看到的仍然是自己的观影收藏。
+  shelfFilter: { workType: "all", eventsOnly: false, sort: "recent", watchStatus: "watched" },
   editingHistoryEventId: null, // R4：正在编辑/补充信息的 ViewingEvent id
   recordingPreference: null,
   aiPreference: null,
@@ -185,6 +220,11 @@ const state = {
   collections: [],
   currentSeriesId: null,      // R5：系列页当前显示的系列
   currentCollectionId: null,  // R5：片单详情页当前显示的片单
+  editingEntryWorkId: null,   // R6：正在编辑「想看理由」的片单条目对应的 work id
+  // R6：统一作品搜索面板。query 是输入框当前值，local/external 是两组结果，
+  // selected 是用户选中的候选（选中后面板下方出现「为什么想看」输入框）。
+  // Phase 4 只有本地搜索；Phase 5/6 接入 Bangumi + TMDB 后 external 才会有内容。
+  workSearch: { query: "", local: [], external: [], status: "idle", message: null, selected: null },
   seriesReturnView: "work",   // R5：系列页从哪进来的，决定返回去哪
   taglineBusy: false,         // R5：AI 概括一句话简介进行中
   taglineSummary: "",         // R5：当前作品抓回来的完整简介原文（AI 概括的输入）
@@ -299,105 +339,7 @@ function notify(message) {
   showToast(message);
 }
 
-function publicSeedRecords() {
-  const samples = [
-    {
-      title: "穿越时空的少女",
-      rawText: "#穿越时空的少女 #电影院\n重映这天再看，还是会被最后那句来自未来的约定击中。明暗细节很好，但后排一直说话，有点遗憾。",
-      offset: 0,
-      attitude: "like",
-      recommendation: "depends",
-      recommendationNote: "适合喜欢青春动画的人"
-    },
-    {
-      title: "雨中的车站",
-      rawText: "#雨中的车站\n像是真的被带进那场雨里。散场以后，脑子里还全是车站和烟花。",
-      offset: 86400000 * 3,
-      attitude: null,
-      recommendation: null,
-      recommendationNote: ""
-    }
-  ];
-  // R1：种子数据也走 resolveWork 去重，不再无条件给每条记录建一张独立档案卡——
-  // 这批演示数据目前彼此都是不同电影，实际不会触发合并，但保持路径一致，
-  // 避免留一条"仍在用旧建卡方式"的代码分支。
-  const works = [];
-  return samples.map((sample, index) => {
-    const analysis = deterministicAnalysis(sample.rawText);
-    const record = {
-      id: `record_demo_${index + 1}`,
-      schema_version: "0.1-local",
-      title: sample.title,
-      rawText: sample.rawText,
-      tags: analysis.tags,
-      inputHints: analysis.inputHints,
-      createdAt: new Date(Date.now() - sample.offset).toISOString(),
-      updatedAt: new Date(Date.now() - sample.offset).toISOString(),
-      status: "confirmed",
-      attitudeSuggestion: analysis.attitudeSuggestion,
-      attitude: sample.attitude,
-      recommendation: sample.recommendation,
-      recommendationNote: sample.recommendationNote,
-      recommendationDetails: sample.recommendation === "depends"
-        ? { ...emptyRecommendationDetails(), audiences: ["喜欢同类题材的人"] }
-        : emptyRecommendationDetails(),
-      cards: analysis.cards
-    };
-    const { work, isNew } = resolveWork(works, {
-      title: analysis.inputHints?.workTitle || sample.title,
-      subjectId: null,
-      aliases: []
-    });
-    if (isNew) works.push(work);
-    record.work_id = work.id;
-    record.workId = work.id;
-    record.record_kind = "viewing";
-    return { record, work };
-  });
-}
-
-async function ensureSeedData() {
-  if (new URLSearchParams(location.search).has("clean")) return;
-  const records = await db.getAll("records");
-  if (records.length) return;
-  await Promise.all(publicSeedRecords().map(({ record, work }) => db.putRecordWithWork(record, work)));
-}
-
-async function ensureWorkLinks(records) {
-  // R1：只有"记录还没有关联到任何 Work"（旧数据缺口）才会走到新建这一步，
-  // 且新建统一通过 resolveWork 去重，不再无条件按 1:1 建一张新档案卡——
-  // 否则一旦这条路径被触发，会重新制造"一部电影多张档案卡"的老问题。
-  const works = await db.getAll("works");
-  for (const record of records) {
-    const linkedId = record.work_id || record.workId;
-    const existingWork = linkedId ? works.find((item) => item.id === linkedId) : null;
-    if (linkedId && existingWork) {
-      const reconciled = reconcileLocalWorkTitle(existingWork, record);
-      if (reconciled !== existingWork) {
-        await db.put("works", reconciled);
-        Object.assign(existingWork, reconciled);
-      }
-      if (record.work_id !== existingWork.id || record.workId !== existingWork.id) {
-        record.work_id = existingWork.id;
-        record.workId = existingWork.id;
-        await db.put("records", record);
-      }
-      continue;
-    }
-    const { work, isNew } = resolveWork(works, {
-      title: record.inputHints?.workTitle || record.title,
-      subjectId: null,
-      aliases: []
-    });
-    if (isNew) works.push(work);
-    record.work_id = work.id;
-    record.workId = work.id;
-    await db.putRecordWithWork(record, work);
-  }
-}
-
 async function loadState() {
-  await ensureSeedData();
   [state.records, state.draft, state.recordingPreference, state.aiPreference, state.aiProviders] = await Promise.all([
     db.getAll("records"),
     db.get("drafts", activeDraftId),
@@ -538,9 +480,14 @@ function fabActionsFor() {
     ];
   }
   if (state.view === "work") {
+    // R6：还没看过的作品（从片单加进来的）不提供「补充记录」——那个动作的前提是
+    // 已经看过。换成直接开始记录这次观看。
+    const workWatched = state.currentWorkId ? isWorkWatched(state.currentWorkId) : true;
     return [
       themeItem,
-      { action: "open-supplement", icon: "edit", label: "补充记录", testId: "open-supplement-fab" },
+      workWatched
+        ? { action: "open-supplement", icon: "edit", label: "补充记录", testId: "open-supplement-fab" }
+        : { action: "open-capture", icon: "edit", label: "记录这次观看", testId: "work-start-record-fab" },
       { action: "close-work", icon: "back", label: "返回作品书架", testId: "work-back" }
     ];
   }
@@ -556,6 +503,7 @@ function fabActionsFor() {
   if (state.view === "collection") {
     return [
       themeItem,
+      { action: "edit-collection", icon: "edit", label: "编辑片单信息", testId: "edit-collection" },
       { action: "delete-collection", icon: "trash", label: "删除这个片单", testId: "delete-collection" },
       { action: "open-collections", icon: "back", label: "返回片单列表", testId: "collection-back" }
     ];
@@ -649,11 +597,11 @@ function updateSeriesHint(text) {
 }
 
 function renderHome() {
-  const draftCard = state.draft?.text?.trim() ? recordCard(state.draft, { isDraft: true, buildPosterUrl: apiBangumiImageUrl }) : "";
+  const draftCard = state.draft?.text?.trim() ? recordCard(state.draft, { isDraft: true, buildPosterUrl: posterUrlFor }) : "";
   const cards = state.records.map((record) => recordCard(record, {
     work: currentWork(record),
     event: state.recordEventById.get(record.id) || null,
-    buildPosterUrl: apiBangumiImageUrl
+    buildPosterUrl: posterUrlFor
   })).join("");
   const hasAnyCard = Boolean(draftCard || cards);
   return `<main class="home-view" data-testid="home">
@@ -690,6 +638,14 @@ const SHELF_TYPE_FILTERS = [
 
 // 标签用用户自己的说法（最近观看 / 最多观看 / 首次记录），既贴近他的原话，
 // 也比"观看次数""首次记录时间"短，第二行在窄屏上才塞得下全部标签。
+// R6 §5：观看状态。已看 = 有 ViewingEvent 或有 Record；想看 = 没看过且至少在一个
+// 片单里；全部 = 全部 Work。定义与判定都在 work-view.js，这里只管标签。
+const SHELF_WATCH_STATUS_OPTIONS = [
+  ["watched", "已看"],
+  ["want", "想看"],
+  ["all", "全部"]
+];
+
 const SHELF_SORTS = [
   ["recent", "最近观看"],
   ["count", "最多观看"],
@@ -705,8 +661,8 @@ function shelfHeader() {
 function shelfPosterMarkup(work) {
   const title = work?.title || "";
   const initial = escapeHtml((title.trim() || "?").charAt(0));
-  const hasPoster = Boolean(work?.identity_status === "matched" && work?.poster_subject_id);
-  const src = hasPoster ? apiBangumiImageUrl(work.poster_subject_id) : "";
+  const src = posterUrlFor(work);
+  const hasPoster = Boolean(src);
   return `<div class="shelf-poster">
     <span class="shelf-poster-fallback" aria-hidden="true">${initial}</span>
     ${hasPoster ? `<img class="shelf-poster-img" src="${escapeHtml(src)}" alt="" loading="lazy" />` : ""}
@@ -715,8 +671,20 @@ function shelfPosterMarkup(work) {
 
 function renderShelf() {
   const filter = state.shelfFilter;
-  const summaries = summarizeWorksForShelf(state.works, state.allViewingEvents);
-  const entries = sortShelfEntries(filterShelfEntries(summaries, filter), filter.sort);
+  const summaries = summarizeWorksForShelf(state.works, state.allViewingEvents, {
+    records: state.records,
+    collections: state.collections
+  });
+  const entries = sortShelfEntries(
+    filterShelfEntries(summaries, filter),
+    filter.sort,
+    { watchStatus: filter.watchStatus }
+  );
+  // R6 §10：想看状态下最近观看/最多观看/特别场次全都无意义（还没有任何观影事件），
+  // 唯一仍然成立的是「首次记录」——它是"作品第一次进入我的记忆系统的时间"，
+  // 因片单加入而建卡同样算一次。所以这一档直接把排序与特别场次收起来，
+  // 而不是留一排点了没反应的按钮。
+  const wantMode = filter.watchStatus === "want";
 
   const grid = entries.map(({ work, watchCount }) => `<button type="button" class="shelf-item" data-action="open-work" data-work-id="${escapeHtml(work.id)}" data-testid="shelf-item-${escapeHtml(work.id)}">
     <span class="shelf-poster-wrap">
@@ -727,22 +695,37 @@ function renderShelf() {
   </button>`).join("");
 
   // 用户反馈：两排筛选要按"是什么"和"怎么看"分开——第一排只回答"这是哪种作品"
-  // （work_type），第二排是排序 + "特别场次"（挂在具体某次观影上的舞台挨拶/应援上映
-  // 等，和作品类型的"活动"是完全不同的两个维度，不能放在同一排造成混淆）。
+  // （work_type），第二排是观看状态 + 排序 + "特别场次"。
+  //
+  // R6：第二排原本是三个排序按钮 + 特别场次共四个 chip，再塞一个观看状态就会
+  // 挤到第三排——手机上放不下（两排是硬约束）。所以把观看状态与排序各收成一个
+  // 原生 <select>，横向空间立刻够用，"特别场次"作为独立筛选功能原样保留成按钮，
+  // **不能被降级成排序菜单里的一项**：它是为日本院线的应援上映/舞台挨拶/声优登台
+  // 这类场次而存在的，和排序完全不是一个维度。
+  //
+  // 用原生 <select> 而不是自绘下拉：手机上直接调起系统 picker，不引入任何新的
+  // 浮层，绕开 R5 记录过的"手势层吃掉 click"以及 render() 三段缓存导致的焦点问题。
   return `<main class="shelf-view" data-testid="shelf">
     ${shelfHeader()}
     <div class="shelf-filters" data-testid="shelf-filters">
       <div class="shelf-chip-row" role="group" aria-label="按作品类型筛选">
         ${SHELF_TYPE_FILTERS.map(([value, label]) => `<button type="button" class="shelf-chip ${filter.workType === value ? "selected" : ""}" data-action="set-shelf-type-filter" data-value="${value}" aria-pressed="${filter.workType === value}">${label}</button>`).join("")}
       </div>
-      <div class="shelf-sort-row" role="group" aria-label="排序与特别场次筛选">
-        ${SHELF_SORTS.map(([value, label]) => `<button type="button" class="shelf-sort ${filter.sort === value ? "selected" : ""}" data-action="set-shelf-sort" data-value="${value}" aria-pressed="${filter.sort === value}">${label}</button>`).join("")}
+      <div class="shelf-sort-row" role="group" aria-label="观看状态、排序与特别场次筛选">
+        <select class="shelf-select" id="shelf-watch-status" aria-label="观看状态" data-testid="shelf-watch-status">
+          ${SHELF_WATCH_STATUS_OPTIONS.map(([value, label]) => `<option value="${value}" ${filter.watchStatus === value ? "selected" : ""}>${label}</option>`).join("")}
+        </select>
+        ${wantMode ? "" : `<select class="shelf-select" id="shelf-sort" aria-label="排序方式" data-testid="shelf-sort">
+          ${SHELF_SORTS.map(([value, label]) => `<option value="${value}" ${filter.sort === value ? "selected" : ""}>${label}</option>`).join("")}
+        </select>
         <span class="shelf-row-divider" aria-hidden="true"></span>
-        <button type="button" class="shelf-sort ${filter.eventsOnly ? "selected" : ""}" data-action="toggle-shelf-events-filter" aria-pressed="${filter.eventsOnly}" data-testid="shelf-events-only">特别场次</button>
+        <button type="button" class="shelf-sort ${filter.eventsOnly ? "selected" : ""}" data-action="toggle-shelf-events-filter" aria-pressed="${filter.eventsOnly}" data-testid="shelf-events-only">特别场次</button>`}
       </div>
     </div>
     <section class="shelf-grid" aria-label="作品书架" data-testid="shelf-grid">
-      ${grid || `<p class="shelf-empty" data-testid="shelf-empty">这个筛选下还没有作品</p>`}
+      ${grid || `<p class="shelf-empty" data-testid="shelf-empty">${wantMode
+        ? "还没有想看的作品——到片单里搜索并加入，作品就会出现在这里"
+        : "这个筛选下还没有作品"}</p>`}
     </section>
   </main>`;
 }
@@ -785,8 +768,8 @@ function formatShortDate(isoLike) {
 // 固定尺寸的缩略图，摆在标题信息区左边、合并进同一个 .work-panel 网格里，
 // 和下面 .work-content 共用同一条左右内边距，宽窄屏都不用另起一套结构。
 function workHeroMarkup(work) {
-  const hasPoster = Boolean(work.identity_status === "matched" && work.poster_subject_id);
-  const src = hasPoster ? apiBangumiImageUrl(work.poster_subject_id) : "";
+  const src = posterUrlFor(work);
+  const hasPoster = Boolean(src);
   return `<div class="work-hero" data-testid="work-hero">
     ${hasPoster
       ? `<img class="work-hero-img" src="${escapeHtml(src)}" alt="" />`
@@ -972,6 +955,11 @@ function renderWork() {
   const work = findWorkById(state.works, state.currentWorkId);
   if (!work) return renderShelf();
   const view = buildWorkView(work, recordsForWork(work), state.currentWorkEvents);
+  // R6：作品可能是"观影前从片单加进来的"，此时没有任何 Record / ViewingEvent。
+  // 这一档的文案与主按钮都要换——「补充记录」在还没看过的作品上语义不成立
+  // （补充记录本来就是"对已经看过的这部片再补一段感想"）。
+  const watched = isWorkWatched(work.id);
+  const wantedIn = collectionsForWork(state.collections, work.id);
   return `<main class="work-view" data-testid="work">
     <div class="work-panel" data-testid="work-panel">
       <div class="work-poster-col">${workHeroMarkup(work)}</div>
@@ -989,11 +977,19 @@ function renderWork() {
       </section>
       <section class="work-section" data-testid="work-history">
         <h2 class="work-section-title">观影履历</h2>
-        ${view.history.length ? view.history.map((item, i) => workHistoryRow(item, i)).join("") : `<p class="work-section-empty">还没有观影场次</p>`}
+        ${view.history.length
+          ? view.history.map((item, i) => workHistoryRow(item, i)).join("")
+          : `<p class="work-section-empty" data-testid="work-history-empty">${watched
+              ? "还没有观影场次"
+              : wantedIn.length
+                ? `还没有看过。在${wantedIn.map((item) => `《${escapeHtml(item.title)}》`).join("、")}里等着。`
+                : "还没有看过这部作品。"}</p>`}
       </section>
       ${attitudeTimelineMarkup(view.attitudeTimeline)}
       ${impressionsListMarkup(view.impressions)}
-      <button type="button" class="sheet-done work-supplement-button" data-action="open-supplement" data-testid="open-supplement">＋ 补充记录</button>
+      ${watched
+        ? `<button type="button" class="sheet-done work-supplement-button" data-action="open-supplement" data-testid="open-supplement">＋ 补充记录</button>`
+        : `<button type="button" class="sheet-done work-supplement-button" data-action="open-capture" data-testid="work-start-record">＋ 记录这次观看</button>`}
     </article>
   </main>`;
 }
@@ -1059,21 +1055,28 @@ function renderSeries() {
 
 /** 片单列表页（侧边栏入口）。 */
 function renderCollections() {
-  const rows = state.collections.map((collection) => `<button type="button" class="collection-row" data-action="open-collection" data-collection-id="${escapeHtml(collection.id)}" data-testid="collection-row-${escapeHtml(collection.id)}">
+  const rows = state.collections.map((collection) => {
+    // R6：片单里现在可能同时有已看和没看的作品，行摘要直接把"还没看几部"说出来——
+    // 补片片单的核心信息就是"我还欠自己几部"。
+    const entries = collectionEntries(collection);
+    const unwatched = entries.filter((entry) => !isWorkWatched(entry.work_id)).length;
+    return `<button type="button" class="collection-row" data-action="open-collection" data-collection-id="${escapeHtml(collection.id)}" data-testid="collection-row-${escapeHtml(collection.id)}">
     <span class="collection-row-main">
       <b>${escapeHtml(collection.title)}</b>
       ${collection.description ? `<small>${escapeHtml(collection.description)}</small>` : ""}
     </span>
-    <span class="collection-row-count">${(collection.work_ids || []).length} 部</span>
-  </button>`).join("");
+    <span class="collection-row-count">${entries.length} 部${unwatched ? ` · ${unwatched} 部未看` : ""}</span>
+  </button>`;
+  }).join("");
 
   return `<main class="shelf-view" data-testid="collections">
     <article class="work-content">
       <h1 class="page-title">片单</h1>
-      <p class="settings-note">片单是你自己定义的主题列表：想怎么归类都可以，和作品客观所属的「系列」互不影响。</p>
+      <p class="settings-note">片单是你自己定义的主题列表：想怎么归类都可以，和作品客观所属的「系列」互不影响。还没看过的电影也可以先加进来。</p>
       <div class="collection-rows">${rows || `<p class="work-section-empty">还没有片单，先建一个吧</p>`}</div>
       <form id="collection-create-form">
-        <label><span>新建片单</span><input type="text" name="title" maxlength="60" placeholder="例如：重看过三次以上" data-testid="new-collection-input" required /></label>
+        <label><span>新建片单</span><input type="text" name="title" maxlength="60" placeholder="例如：Michael Keaton 补片" data-testid="new-collection-input" required /></label>
+        <label><span>描述（可选）</span><input type="text" name="description" maxlength="120" placeholder="例如：重看《英雄归来》之后想补的" data-testid="new-collection-description" /></label>
         <button class="sheet-done" type="submit">创建</button>
       </form>
     </article>
@@ -1081,14 +1084,67 @@ function renderCollections() {
 }
 
 /** 片单详情页。 */
+/**
+ * R6 §5：某部作品是否已经看过，**永远由「Work 是否存在观影记录」派生**，
+ * 绝不存在片单条目里。所以同一部《鸟人》同时在三个片单里时，看完之后三个片单
+ * 都会自动显示"已看"，不需要分别去改三条条目。
+ */
+function isWorkWatched(workId) {
+  if (!workId) return false;
+  const work = findWorkById(state.works, workId);
+  const ids = new Set([workId, ...(work ? [work.id, ...(work.merged_from || [])] : [])]);
+  if (state.records.some((record) => ids.has(record.work_id || record.workId))) return true;
+  return (state.allViewingEvents || []).some((event) => ids.has(event.work_id));
+}
+
+/**
+ * 片单详情页。
+ *
+ * R6 之前这里只有一个作品网格 + 一句"到作品页点＋加入片单把它放进来"的空状态——
+ * 加入动作的唯一起点是作品页，而作品页只能从书架进入、书架只列已有作品，
+ * 于是片单事实上只能从"已经看过的作品"里挑。现在改成列表式条目，每条带：
+ * 加入理由（reason）、已看/未看状态、移除、上下移，并在页内直接提供「添加作品」。
+ */
 function renderCollection() {
   const collection = state.collections.find((item) => item.id === state.currentCollectionId);
   if (!collection) return renderCollections();
-  const works = collectionWorks(collection, state.works);
+
+  const pairs = collectionWorkEntries(collection, state.works);
+  const total = pairs.length;
+  const rows = pairs.map(({ work, entry }, index) => {
+    const watched = isWorkWatched(work.id);
+    const year = releaseYearOf(work);
+    return `<li class="collection-entry ${watched ? "watched" : "unwatched"}" data-testid="collection-entry-${escapeHtml(work.id)}">
+      <button type="button" class="collection-entry-main" data-action="open-work" data-work-id="${escapeHtml(work.id)}">
+        <span class="collection-entry-poster">${shelfPosterMarkup(work)}</span>
+        <span class="collection-entry-body">
+          <span class="collection-entry-title">${escapeHtml(work.title || "未命名作品")}${year ? `<small>（${year}）</small>` : ""}</span>
+          <span class="collection-entry-status" data-testid="collection-entry-status-${escapeHtml(work.id)}">${watched ? "已看" : "未看"}</span>
+          ${entry.reason
+            ? `<span class="collection-entry-reason">${escapeHtml(entry.reason)}</span>`
+            : `<span class="collection-entry-reason empty">还没写想看的理由</span>`}
+        </span>
+      </button>
+      <span class="collection-entry-actions">
+        <button type="button" class="icon-button" data-action="edit-entry-reason" data-work-id="${escapeHtml(work.id)}" aria-label="编辑想看的理由" data-testid="edit-entry-reason-${escapeHtml(work.id)}">${icon("more")}</button>
+        <button type="button" class="icon-button" data-action="move-entry-up" data-work-id="${escapeHtml(work.id)}" aria-label="上移" ${index === 0 ? "disabled" : ""}>↑</button>
+        <button type="button" class="icon-button" data-action="move-entry-down" data-work-id="${escapeHtml(work.id)}" aria-label="下移" ${index === total - 1 ? "disabled" : ""}>↓</button>
+        <button type="button" class="icon-button" data-action="remove-from-collection" data-work-id="${escapeHtml(work.id)}" aria-label="移出这个片单" data-testid="remove-from-collection-${escapeHtml(work.id)}">${icon("trash")}</button>
+      </span>
+    </li>`;
+  }).join("");
+
+  const unwatched = pairs.filter(({ work }) => !isWorkWatched(work.id)).length;
+
   return `<main class="shelf-view" data-testid="collection">
     <article class="work-content">
       <h1 class="page-title">${escapeHtml(collection.title)}</h1>
-      ${workGridMarkup(works, "这个片单还没有作品——到作品页点「＋ 加入片单」把它放进来")}
+      ${collection.description ? `<p class="settings-note">${escapeHtml(collection.description)}</p>` : ""}
+      <p class="collection-summary" data-testid="collection-summary">${total} 部${unwatched ? ` · ${unwatched} 部还没看` : ""}</p>
+      <button type="button" class="sheet-done collection-add-button" data-action="open-work-search" data-testid="collection-add-work">＋ 添加作品</button>
+      ${total
+        ? `<ul class="collection-entries" data-testid="collection-entries">${rows}</ul>`
+        : `<p class="work-section-empty">这个片单还没有作品——点上面的「＋ 添加作品」搜索，还没看过的电影也可以直接加进来</p>`}
     </article>
   </main>`;
 }
@@ -1361,8 +1417,8 @@ function settingsOverlay() {
       ${syncSettingsSection()}
       <h3 class="settings-section-title">数据导出</h3>
       <div class="settings-actions">
-        <button type="button" data-action="export-all-share" ${state.records.length ? "" : "disabled"}><span><b>分享全部记录（Markdown 合集）</b><small>${state.records.length ? `共 ${state.records.length} 条，一次分享` : "还没有可导出的记录"}</small></span>${icon("share")}</button>
-        <button type="button" data-action="export-all-download" ${state.records.length ? "" : "disabled"}><span><b>下载全部记录（JSON 备份）</b><small>结构化数据，适合长期存档</small></span>${icon("export")}</button>
+        <button type="button" data-action="export-all-share" ${state.records.length || state.collections.length ? "" : "disabled"}><span><b>分享全部记录（Markdown 合集）</b><small>${state.records.length ? `共 ${state.records.length} 条，一次分享` : "还没有可导出的记录"}</small></span>${icon("share")}</button>
+        <button type="button" data-action="export-all-download" ${state.records.length || state.collections.length ? "" : "disabled"}><span><b>下载全部记录（JSON 备份）</b><small>结构化数据，适合长期存档</small></span>${icon("export")}</button>
       </div>
       <p class="settings-note">偏好只保存在本机，不会修改已有作品记录。</p>
     </section>
@@ -1823,7 +1879,7 @@ function collectionsEditorOverlay(work) {
   const mine = new Set(collectionsForWork(state.collections, work.id).map((item) => item.id));
   const options = state.collections.map((collection) => `<button type="button" class="series-option ${mine.has(collection.id) ? "selected" : ""}" data-action="toggle-collection" data-collection-id="${escapeHtml(collection.id)}" data-testid="toggle-collection-${escapeHtml(collection.id)}">
     <span class="series-option-title">${escapeHtml(collection.title)}</span>
-    <span class="series-option-count">${(collection.work_ids || []).length} 部</span>
+    <span class="series-option-count">${collectionEntries(collection).length} 部</span>
   </button>`).join("");
 
   return `<div class="overlay" data-testid="collections-editor">
@@ -1836,6 +1892,121 @@ function collectionsEditorOverlay(work) {
       <form id="collection-form">
         <label><span>新建片单</span><input type="text" name="title" maxlength="60" placeholder="例如：一个人在影院哭过的" data-testid="collection-title-input" /></label>
         <button class="sheet-done" type="submit">新建并加入</button>
+      </form>
+    </section>
+  </div>`;
+}
+
+/**
+ * R6 §10：统一作品搜索面板。
+ *
+ * 用户不需要理解 Bangumi 和 TMDB 的区别，也不需要选「从哪里添加」——只有一个
+ * 「搜索作品」。结果分成两组呈现：先是本地已有的 Work（优先引用，绝不重复建卡），
+ * 再是外部数据源的候选。选中外部候选后一次完成 Work 创建 + 片单条目创建，
+ * 不要求用户先「导入作品」再回到片单添加。
+ */
+function workSearchOverlay() {
+  const search = state.workSearch;
+  const collection = state.collections.find((item) => item.id === state.currentCollectionId);
+
+  const itemMarkup = (candidate, index, group) => {
+    const selected = search.selected
+      && search.selected.source === candidate.source
+      && String(search.selected.sourceId) === String(candidate.sourceId);
+    const meta = [
+      candidate.year || null,
+      candidate.originalTitle && candidate.originalTitle !== candidate.title ? candidate.originalTitle : null,
+      group === "local" && candidate.inThisCollection ? "已在这个片单里" : null
+    ].filter(Boolean).join(" · ");
+    // R6 §9：跨源疑似同一部片只提示，绝不自动合并——同名不同片、重制版与原版、
+    // 剧场版与 TV 版都会踩中"标题+年份"这类启发式，误判的代价远大于让用户多看一眼。
+    const dupHint = candidate.possibleDuplicateOf
+      ? `<span class="work-search-item-meta">可能与列表中另一条是同一部（《${escapeHtml(candidate.possibleDuplicateOf.title || "")}》）</span>`
+      : "";
+    const poster = posterUrlFor({ poster: candidate.posterRef });
+    return `<button type="button" class="work-search-item ${selected ? "selected" : ""}" data-action="select-search-candidate" data-group="${group}" data-index="${index}" data-testid="work-search-item-${group}-${index}" ${candidate.inThisCollection ? "disabled" : ""}>
+      ${poster ? `<img class="work-search-item-poster" src="${escapeHtml(poster)}" alt="" loading="lazy" />` : ""}
+      <span class="work-search-item-body">
+        <span class="work-search-item-title">${escapeHtml(candidate.title || "")}</span>
+        ${meta ? `<span class="work-search-item-meta">${escapeHtml(meta)}</span>` : ""}
+        ${dupHint}
+      </span>
+    </button>`;
+  };
+
+  const localGroup = search.local.length
+    ? `<p class="work-search-group-title">已经在你的库里</p>${search.local.map((c, i) => itemMarkup(c, i, "local")).join("")}`
+    : "";
+  const externalGroup = search.external.length
+    ? `<p class="work-search-group-title">从数据库中找到</p>${search.external.map((c, i) => itemMarkup(c, i, "external")).join("")}`
+    : "";
+
+  let body;
+  if (!search.query.trim()) {
+    body = `<p class="work-search-state">输入片名开始搜索。还没看过的电影也可以直接加进片单。</p>`;
+  } else if (search.status === "loading" && !localGroup && !externalGroup) {
+    body = `<p class="work-search-state">正在搜索…</p>`;
+  } else if (!localGroup && !externalGroup) {
+    body = `<p class="work-search-state" data-testid="work-search-empty">没有找到「${escapeHtml(search.query)}」。可以换个说法，或用原名再试一次。</p>`;
+  } else {
+    body = `${localGroup}${externalGroup}${search.status === "loading" ? `<p class="work-search-state">还在找更多…</p>` : ""}`;
+  }
+
+  return `<div class="overlay" data-testid="work-search">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="work-search-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(collection?.title || "")}》</span><h2 id="work-search-title">添加作品</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <label class="work-search-field"><span class="visually-hidden">搜索作品</span>
+        <input type="search" id="work-search-input" placeholder="搜索片名，例如 Birdman / 鸟人" value="${escapeHtml(search.query)}" autocomplete="off" data-testid="work-search-input" />
+      </label>
+      ${search.message ? `<p class="work-search-state" data-testid="work-search-message">${escapeHtml(search.message)}</p>` : ""}
+      <div class="work-search-results" data-testid="work-search-results">${body}</div>
+      ${search.selected ? `<form id="work-search-add-form">
+        <label><span>为什么想看（可选）</span><textarea name="reason" rows="3" maxlength="500" placeholder="例如：重看《蜘蛛侠：英雄归来》后觉得 Michael Keaton 的秃鹫非常不错。" data-testid="work-search-reason"></textarea></label>
+        <button class="sheet-done" type="submit" data-testid="work-search-confirm">加入《${escapeHtml(collection?.title || "")}》</button>
+      </form>` : ""}
+    </section>
+  </div>`;
+}
+
+/** R6：编辑片单本身的标题与描述。 */
+function collectionEditorOverlay(collection) {
+  return `<div class="overlay" data-testid="collection-editor">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="collection-editor-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">片单</span><h2 id="collection-editor-title">编辑片单信息</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <form id="collection-edit-form">
+        <label><span>标题</span><input type="text" name="title" maxlength="60" value="${escapeHtml(collection.title || "")}" data-testid="collection-edit-title" required /></label>
+        <label><span>描述（可选）</span><input type="text" name="description" maxlength="120" value="${escapeHtml(collection.description || "")}" data-testid="collection-edit-description" /></label>
+        <button class="sheet-done" type="submit">保存</button>
+      </form>
+    </section>
+  </div>`;
+}
+
+/**
+ * R6 §4：编辑某个片单条目的「想看理由」。
+ *
+ * 理由属于 **条目** 而不是作品——同一部《鸟人》在「Michael Keaton 补片」里的理由
+ * 是"重看《英雄归来》后觉得他的秃鹫很好"，在「2010 年代补片」里可能是"补奥斯卡
+ * 最佳影片"。所以这个面板永远绑定"哪个片单 + 哪部作品"，不写到 work 上。
+ */
+function entryReasonEditorOverlay(collection) {
+  const workId = state.editingEntryWorkId;
+  const entry = findCollectionEntry(collection, workId);
+  const work = findWorkById(state.works, workId);
+  if (!entry) return "";
+  return `<div class="overlay" data-testid="entry-reason-editor">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="entry-reason-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work?.title || "")}》</span><h2 id="entry-reason-title">为什么想看</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <p class="settings-note">只属于《${escapeHtml(collection.title)}》这一个片单。同一部作品在别的片单里可以写完全不同的理由。</p>
+      <form id="entry-reason-form">
+        <label><span>理由</span><textarea name="reason" rows="4" maxlength="500" placeholder="例如：重看《蜘蛛侠：英雄归来》后觉得 Michael Keaton 的秃鹫非常不错，想看他的其他代表作。" data-testid="entry-reason-input">${escapeHtml(entry.reason || "")}</textarea></label>
+        <button class="sheet-done" type="submit">保存</button>
       </form>
     </section>
   </div>`;
@@ -1857,6 +2028,7 @@ function render() {
   const record = currentRecord();
   const currentWorkForOverlay = state.view === "work" ? findWorkById(state.works, state.currentWorkId) : null;
   const editingHistoryEvent = state.currentWorkEvents.find((event) => event.id === state.editingHistoryEventId) || null;
+  const currentCollectionForOverlay = state.collections.find((item) => item.id === state.currentCollectionId) || null;
   const overlay = state.overlay === "capture-entry"
     ? captureEntryOverlay()
     : state.overlay === "ticket-confirm"
@@ -1891,6 +2063,12 @@ function render() {
         ? seriesEditorOverlay(currentWorkForOverlay)
       : state.overlay === "collections" && currentWorkForOverlay
         ? collectionsEditorOverlay(currentWorkForOverlay)
+      : state.overlay === "collection-editor" && currentCollectionForOverlay
+        ? collectionEditorOverlay(currentCollectionForOverlay)
+      : state.overlay === "entry-reason" && currentCollectionForOverlay
+        ? entryReasonEditorOverlay(currentCollectionForOverlay)
+      : state.overlay === "work-search"
+        ? workSearchOverlay()
         : "";
 
   // 三块分别挂载，各自只在自己变化时重写：
@@ -2213,9 +2391,20 @@ async function confirmWorkMatch(subjectId) {
   const candidate = work?.match?.candidates?.find((item) => item.subjectId === subjectId);
   if (!record || !work || !candidate) return;
 
-  // R1：local work 匹配到 Bangumi 后升格；若升格后的 id 与某个已存在的 work 冲突
-  // （同一部电影之前已有另一条已匹配记录），合并二者，并把所有指向旧 id 的
-  // record 与 viewing event 改指到合并后的 id——保证"同一部电影只有一个 Work"。
+  // R6：匹配 Bangumi 只是给这个 Work 增加一条 external_ref，**work.id 不再变更**。
+  //
+  // R1～R5 这里的合并触发条件是「升格后的新 id 撞上某个已存在的 work」——因为当时
+  // id 是由 bangumi subjectId 算出来的，所以每次升格都可能撞车，这条高危链路也
+  // 因此出过两次线上 bug（书架幽灵重复条目）。R6 之后 id 恒定，那种撞车不存在了。
+  //
+  // 但真正的重复作品仍然要处理：用户把 Work A 匹配到 bangumi:123，而 Work B 早就
+  // 持有 bangumi:123 —— 同一个外部标识指向两个 Work，那它们确定是同一部电影
+  // （R6 §9：相同 bangumi_id → 不重复创建 Work）。这时才合并，并把所有指向被合并
+  // 一方的 record / viewing event 改指过去。这是罕见路径，不再是每次匹配的常规流程。
+  const conflictingWork = state.works.find(
+    (item) => item.id !== work.id && externalRefId(item, "bangumi") === String(subjectId)
+  );
+
   const promoted = promoteWorkToMatched(work, subjectId, {
     title: candidate.title,
     originalTitle: candidate.originalTitle,
@@ -2226,9 +2415,7 @@ async function confirmWorkMatch(subjectId) {
     summary: candidate.summary || null
   });
   const oldId = work.id;
-  const conflictingWork = promoted.id !== oldId
-    ? state.works.find((item) => item.id === promoted.id)
-    : null;
+  // 合并时以「已经持有这个 external_ref 的一方」为主体，被匹配的一方并入它
   const finalWork = conflictingWork ? mergeWorks(conflictingWork, [promoted]) : promoted;
 
   await db.put("works", finalWork);
@@ -2669,6 +2856,250 @@ async function persistSeries(series) {
     : [...state.series, series];
 }
 
+// ─── R6：统一作品搜索 + 一次完成的片单添加 ───────────────────────────────────
+
+let workSearchTimer = null;
+let workSearchToken = 0;
+
+function openWorkSearch() {
+  state.workSearch = { query: "", local: [], external: [], status: "idle", message: null, selected: null };
+  state.overlay = "work-search";
+  render();
+  requestAnimationFrame(() => document.querySelector("#work-search-input")?.focus());
+}
+
+/** 本地搜索：零延迟，不等网络。命中标题或任一别名（别名里存着各语言标题变体）。 */
+function currentLocalCandidates(query) {
+  const collection = state.collections.find((item) => item.id === state.currentCollectionId);
+  return searchLocalWorks(state.works, query, {
+    isInCollection: (workId) => (collection ? collectionHasWork(collection, workId) : false)
+  });
+}
+
+/**
+ * 输入变化时的搜索调度。
+ *
+ * 本地结果立刻出（同步过滤内存数组，0 延迟）；外部数据源走 350ms debounce ——
+ * 绝不能每敲一个字符就同时打两个外部 API（R6 §11）。少于 2 个字符不发外部请求。
+ */
+function handleWorkSearchInput(value) {
+  const query = value || "";
+  state.workSearch.query = query;
+  state.workSearch.selected = null;
+  state.workSearch.local = currentLocalCandidates(query);
+  state.workSearch.external = [];
+  state.workSearch.message = null;
+
+  clearTimeout(workSearchTimer);
+  // token 让过期的请求结果直接作废：用户继续打字后，先发出的那次请求即使晚回来
+  // 也不会把已经过时的候选写进 state。
+  const token = ++workSearchToken;
+
+  if (query.trim().length < 2) {
+    state.workSearch.status = "idle";
+    renderWorkSearchResults();
+    return;
+  }
+
+  state.workSearch.status = "loading";
+  renderWorkSearchResults();
+  workSearchTimer = setTimeout(() => { void runExternalWorkSearch(query, token); }, 350);
+}
+
+/**
+ * 并行请求 Bangumi 与 TMDB。
+ *
+ * 用 allSettled 而不是 all：**任一数据源失败不阻塞另一个**（R6 §11）。
+ * Bangumi 挂了照样能看到 TMDB 的结果，反之亦然，只在提示条里说明哪个源暂时不可用。
+ * 不做「该搜哪个源」的启发式判断——猜错的代价是"搜不到"，这是最糟的体验；
+ * 两个源的差异只体现在 sortExternalCandidates 的排序权重上。
+ */
+async function runExternalWorkSearch(query, token) {
+  const [bangumiResult, tmdbResult] = await Promise.allSettled([
+    fetchSearchSource(`/api/bangumi/search?q=${encodeURIComponent(query)}`),
+    fetchSearchSource(`/api/tmdb/search?q=${encodeURIComponent(query)}`)
+  ]);
+  if (token !== workSearchToken || state.overlay !== "work-search") return;
+
+  const bangumi = bangumiResult.status === "fulfilled" ? (bangumiResult.value.candidates || []) : [];
+  const tmdb = tmdbResult.status === "fulfilled" ? (tmdbResult.value.candidates || []) : [];
+
+  const failed = [
+    bangumiResult.status === "rejected" ? "Bangumi" : null,
+    tmdbResult.status === "rejected" ? "TMDB" : null
+  ].filter(Boolean);
+
+  const { local, external } = buildSearchResults({
+    local: currentLocalCandidates(query),
+    bangumi,
+    tmdb,
+    query
+  });
+
+  state.workSearch.local = local;
+  state.workSearch.external = external;
+  state.workSearch.status = "done";
+  state.workSearch.message = failed.length === 2
+    ? "两个数据库都暂时连不上，可以稍后再试。"
+    : failed.length === 1
+      ? `${failed[0]} 暂时不可用，下面是其他来源的结果。`
+      : null;
+  renderWorkSearchResults();
+}
+
+async function fetchSearchSource(url) {
+  const response = await apiFetch(url, { headers: { accept: "application/json" } });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || "搜索暂不可用");
+  return payload;
+}
+
+/**
+ * 只重绘结果区，不走 render()。
+ *
+ * 必须这样做：render() 会整体重写 overlay 挂载点的 HTML，输入框会被重建、
+ * 焦点和输入法组合状态全部丢失——边打字边搜索的面板绝对不能走全量重渲染。
+ */
+function renderWorkSearchResults() {
+  if (state.overlay !== "work-search") return;
+  const container = document.querySelector("[data-testid='work-search-results']");
+  if (!container) { render(); return; }
+  const fresh = document.createElement("div");
+  fresh.innerHTML = workSearchOverlay();
+  const next = fresh.querySelector("[data-testid='work-search-results']");
+  if (next) container.innerHTML = next.innerHTML;
+
+  // 选中候选后要出现「为什么想看」表单；它在结果区之外，只能整块换一次。
+  const sheet = container.closest(".bottom-sheet");
+  const hasForm = !!sheet?.querySelector("#work-search-add-form");
+  if (hasForm !== !!state.workSearch.selected) {
+    const input = document.querySelector("#work-search-input");
+    const caret = input?.selectionStart ?? null;
+    render();
+    const restored = document.querySelector("#work-search-input");
+    if (restored) {
+      restored.focus();
+      if (caret != null) restored.setSelectionRange(caret, caret);
+    }
+  }
+}
+
+function selectWorkSearchCandidate(group, index) {
+  const list = group === "local" ? state.workSearch.local : state.workSearch.external;
+  const candidate = list[Number(index)];
+  if (!candidate || candidate.inThisCollection) return;
+  const current = state.workSearch.selected;
+  const same = current && current.source === candidate.source && String(current.sourceId) === String(candidate.sourceId);
+  state.workSearch.selected = same ? null : candidate;
+  renderWorkSearchResults();
+}
+
+/**
+ * 把一条候选解析成 Work：已有就引用，没有才新建。**一次完成**，不要求用户
+ * 先「导入作品」再回到片单添加。
+ *
+ * 去重顺序与 resolveWork 一致：先按外部标识（相同 bangumi_id / tmdb_id 绝不重复
+ * 建卡），再按标题与别名。
+ *
+ * @returns {Promise<object>} Work（可能是已存在的，也可能是刚建的）
+ */
+async function resolveOrCreateWorkFromCandidate(candidate) {
+  if (candidate.source === "local") {
+    const existing = findWorkById(state.works, candidate.workId);
+    if (existing) return existing;
+  }
+
+  // TMDB 搜索结果里没有 runtime、完整 genres 和 external_ids，落库前补一次详情。
+  // 这一步失败不阻断流程——拿不到详情就用搜索结果里已有的字段建卡，
+  // 作品照样能进片单（R6 §13：外部 API 是 metadata source，不是 App 数据库本身）。
+  let enriched = candidate;
+  if (candidate.source === "tmdb") {
+    try {
+      const response = await apiFetch(`/api/tmdb/movie?id=${encodeURIComponent(candidate.sourceId)}`, {
+        headers: { accept: "application/json" }
+      });
+      const payload = await response.json();
+      const detail = payload?.detail;
+      if (response.ok && detail) {
+        enriched = {
+          ...candidate,
+          originalTitle: detail.originalTitle || candidate.originalTitle,
+          year: detail.year ?? candidate.year,
+          // 详情的类型数据比搜索结果完整（genres 带名字而不只是 id），优先用它，
+          // 但仍然守住 §12：判断不了就是 unspecified，绝不默认真人电影。
+          workType: detail.workType && detail.workType !== "unspecified" ? detail.workType : candidate.workType,
+          posterRef: detail.posterPath ? { source: "tmdb", path: detail.posterPath } : candidate.posterRef,
+          summary: detail.summary || candidate.summary,
+          runtimeMinutes: detail.runtimeMinutes,
+          genres: detail.genres,
+          externalIds: {
+            ...candidate.externalIds,
+            ...(detail.externalIds?.imdb ? { imdb: detail.externalIds.imdb } : {}),
+            ...(detail.externalIds?.wikidata ? { wikidata: detail.externalIds.wikidata } : {})
+          }
+        };
+      }
+    } catch (_) { /* 拿不到详情就用搜索结果建卡，不打断添加流程 */ }
+  }
+
+  const externalIds = { ...(enriched.externalIds || {}) };
+  if (enriched.source !== "local" && enriched.sourceId) externalIds[enriched.source] = enriched.sourceId;
+
+  const { work, isNew } = resolveWork(state.works, {
+    title: enriched.title,
+    aliases: [enriched.originalTitle].filter(Boolean),
+    externalRefs: externalIds
+  });
+
+  if (!isNew) {
+    // 已有 Work 但这次的候选带了它还没有的外部标识 —— 顺手补上，
+    // 以后从另一个源搜到同一部片时就能直接命中，不会再产生重复。
+    let merged = work;
+    for (const [source, id] of Object.entries(externalIds)) {
+      if (!id || externalRefId(merged, source)) continue;
+      merged = { ...merged, external_refs: upsertExternalRef(merged.external_refs, { source, id }) };
+    }
+    if (merged !== work) {
+      await db.put("works", merged);
+      state.works = state.works.map((item) => (item.id === merged.id ? merged : item));
+      state.worksById.set(merged.id, merged);
+    }
+    return merged;
+  }
+
+  // 全新作品：只建 Work，**不建任何 Record / ViewingEvent**。
+  // 这是「观影前」路径的核心——作品存在于 App 中，不等于用户看过它。
+  const created = createWorkFromCandidate({ ...enriched, externalIds });
+  await db.put("works", created);
+  state.works = [...state.works, created];
+  state.worksById.set(created.id, created);
+  return created;
+}
+
+async function addSelectedCandidateToCollection(reason) {
+  const candidate = state.workSearch.selected;
+  const collection = state.collections.find((item) => item.id === state.currentCollectionId);
+  if (!candidate || !collection) return;
+
+  const work = await resolveOrCreateWorkFromCandidate(candidate);
+  await persistCollection(addWorkToCollection(collection, work.id, { reason }));
+
+  state.overlay = null;
+  state.workSearch = { query: "", local: [], external: [], status: "idle", message: null, selected: null };
+  render();
+  announce(`已把《${work.title}》加入${collection.title}`);
+}
+
+/** R6：对当前片单做一次不可变更新并落库。片单页的所有编辑都走这一个出口。 */
+async function updateCurrentCollection(mutate) {
+  const collection = state.collections.find((item) => item.id === state.currentCollectionId);
+  if (!collection) return null;
+  const updated = mutate(collection);
+  if (!updated || updated === collection) return collection;
+  await persistCollection(updated);
+  return updated;
+}
+
 async function persistCollection(collection) {
   await db.put("collections", collection);
   const exists = state.collections.some((item) => item.id === collection.id);
@@ -2716,7 +3147,7 @@ async function toggleWorkInCollection(collectionId) {
   const workId = state.currentWorkId;
   const collection = state.collections.find((item) => item.id === collectionId);
   if (!workId || !collection) return;
-  const isIn = (collection.work_ids || []).includes(workId);
+  const isIn = collectionHasWork(collection, workId);
   await persistCollection(isIn ? removeWorkFromCollection(collection, workId) : addWorkToCollection(collection, workId));
   renderPreservingScroll();
   announce(isIn ? `已移出《${collection.title}》` : `已加入《${collection.title}》`);
@@ -2759,8 +3190,7 @@ async function loadTaglineSummary() {
 
   if (work.summary?.trim()) { applySummary(work.summary); return; }
 
-  const bangumiRef = (work.external_refs || []).find((ref) => ref.source === "bangumi");
-  const subjectId = bangumiRef?.id || work.poster_subject_id;
+  const subjectId = externalRefId(work, "bangumi");
   if (!subjectId) { applySummary(""); return; }
 
   state.taglineSummary = "";
@@ -2900,9 +3330,6 @@ document.addEventListener("click", async (event) => {
   } else if (action === "toggle-shelf-events-filter") {
     state.shelfFilter.eventsOnly = !state.shelfFilter.eventsOnly;
     render();
-  } else if (action === "set-shelf-sort") {
-    state.shelfFilter.sort = trigger.dataset.value;
-    render();
   } else if (action === "edit-history-event" || action === "review-history-event") {
     state.editingHistoryEventId = trigger.dataset.eventId;
     state.overlay = "history-event";
@@ -2953,6 +3380,31 @@ document.addEventListener("click", async (event) => {
     render();
   } else if (action === "toggle-collection") {
     await toggleWorkInCollection(trigger.dataset.collectionId);
+  } else if (action === "remove-from-collection") {
+    // R6 §5：只有用户主动移除才会删条目。看完电影**不会**自动把它从片单里删掉——
+    // 片单本身也是"我过去对什么感兴趣、怎么发现它的"这段记录。
+    await updateCurrentCollection((collection) => removeWorkFromCollection(collection, trigger.dataset.workId));
+    renderPreservingScroll();
+    announce("已移出这个片单");
+  } else if (action === "move-entry-up" || action === "move-entry-down") {
+    const collection = state.collections.find((item) => item.id === state.currentCollectionId);
+    const index = collectionEntries(collection).findIndex((entry) => entry.work_id === trigger.dataset.workId);
+    if (index === -1) return;
+    await updateCurrentCollection((current) =>
+      moveCollectionEntry(current, trigger.dataset.workId, index + (action === "move-entry-up" ? -1 : 1))
+    );
+    renderPreservingScroll();
+  } else if (action === "edit-entry-reason") {
+    state.editingEntryWorkId = trigger.dataset.workId;
+    state.overlay = "entry-reason";
+    render();
+  } else if (action === "edit-collection") {
+    state.overlay = "collection-editor";
+    render();
+  } else if (action === "open-work-search") {
+    openWorkSearch();
+  } else if (action === "select-search-candidate") {
+    selectWorkSearchCandidate(trigger.dataset.group, trigger.dataset.index);
   } else if (action === "open-collections") {
     openCollections();
   } else if (action === "open-collection") {
@@ -3407,9 +3859,9 @@ document.addEventListener("click", async (event) => {
     downloadExport(content, exportFilename(work, record, EXPORT_EXT[format]), MIME_TYPES[format]);
     notify("已下载文件");
   } else if (action === "export-all-share") {
-    if (!state.records.length) { notify("还没有可导出的记录"); return; }
+    if (!state.records.length && !state.collections.length) { notify("还没有可导出的内容"); return; }
     const entries = await buildAllExportEntries();
-    const content = exportAllMarkdown(entries);
+    const content = exportAllMarkdown(entries, buildCollectionsExport(state.collections, state.works, isWorkWatched));
     try {
       const result = await deliverExport({ content, filename: exportAllFilename("md"), mimeType: MIME_TYPES.markdown, shareTitle: "电影印记 · 全部记录" });
       if (result.method === "cancelled") return;
@@ -3418,9 +3870,13 @@ document.addEventListener("click", async (event) => {
       notify(`分享失败：${error.message}`);
     }
   } else if (action === "export-all-download") {
-    if (!state.records.length) { notify("还没有可导出的记录"); return; }
+    if (!state.records.length && !state.collections.length) { notify("还没有可导出的内容"); return; }
     const entries = await buildAllExportEntries();
-    downloadExport(exportAllJSON(entries), exportAllFilename("json"), MIME_TYPES.json);
+    downloadExport(
+      exportAllJSON(entries, buildCollectionsExport(state.collections, state.works, isWorkWatched)),
+      exportAllFilename("json"),
+      MIME_TYPES.json
+    );
     notify("已下载全部记录的 JSON 备份");
   }
 });
@@ -3435,6 +3891,10 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("input", (event) => {
+  if (event.target.id === "work-search-input") {
+    handleWorkSearchInput(event.target.value);
+    return;
+  }
   if (event.target.id === "composer-input") {
     saveDraft(event.target.value);
     updateSeriesHint(event.target.value);
@@ -3490,6 +3950,17 @@ document.addEventListener("error", (event) => {
 }, true);
 
 document.addEventListener("change", async (event) => {
+  if (event.target.id === "shelf-watch-status") {
+    // R6：书架观看状态。切到「想看」时排序下拉会被收起来，但 state.shelfFilter.sort
+    // 保持原值不动——切回「已看」应该回到用户原来选的排序，而不是被重置。
+    state.shelfFilter.watchStatus = event.target.value;
+    render();
+    return;
+  } else if (event.target.id === "shelf-sort") {
+    state.shelfFilter.sort = event.target.value;
+    render();
+    return;
+  }
   if (event.target.matches("[data-testid='recommendation-note']")) {
     await updateRecord((record) => { record.recommendationNote = event.target.value.trim(); });
     announce("推荐说明已保存");
@@ -3626,11 +4097,47 @@ document.addEventListener("submit", async (event) => {
     return;
   }
 
+  if (event.target.id === "work-search-add-form") {
+    event.preventDefault();
+    await addSelectedCandidateToCollection(String(new FormData(event.target).get("reason") || ""));
+    return;
+  }
+
+  if (event.target.id === "collection-edit-form") {
+    event.preventDefault();
+    const data = new FormData(event.target);
+    const title = String(data.get("title") || "").trim();
+    if (!title) return;
+    await updateCurrentCollection((collection) => ({
+      ...collection,
+      title,
+      description: String(data.get("description") || "").trim(),
+      updated_at: new Date().toISOString()
+    }));
+    state.overlay = null;
+    render();
+    announce("已更新片单信息");
+    return;
+  }
+
+  if (event.target.id === "entry-reason-form") {
+    event.preventDefault();
+    const reason = String(new FormData(event.target).get("reason") || "").trim();
+    const workId = state.editingEntryWorkId;
+    await updateCurrentCollection((collection) => updateCollectionEntryReason(collection, workId, reason));
+    state.overlay = null;
+    state.editingEntryWorkId = null;
+    render();
+    announce(reason ? "已保存想看的理由" : "已清空想看的理由");
+    return;
+  }
+
   if (event.target.id === "collection-create-form") {
     event.preventDefault();
-    const title = String(new FormData(event.target).get("title") || "").trim();
+    const data = new FormData(event.target);
+    const title = String(data.get("title") || "").trim();
     if (!title) return;
-    const collection = createCollection({ title });
+    const collection = createCollection({ title, description: String(data.get("description") || "") });
     await persistCollection(collection);
     render();
     announce(`已新建片单《${title}》`);

@@ -1,6 +1,7 @@
-const CACHE = "movie-imprint-shell-v36";
+const CACHE = "movie-imprint-shell-v39";
 // R3：这个缓存原名 WALLPAPER_CACHE，是 C2 为「每日壁纸」建立的图片缓存策略。
-// 壁纸功能已在 R3 移除，但同一个 /api/bangumi/image 端点现在被海报复用，
+// 壁纸功能已在 R3 移除，但同一个 /api/bangumi/image 端点现在被海报复用（R6 起
+// 还包括 /api/tmdb/image），
 // 缓存策略本身原样保留，只是改个名字反映它现在缓存的是海报。
 const POSTER_CACHE = "movie-imprint-posters-v1";
 const POSTER_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
@@ -38,7 +39,10 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET" || new URL(event.request.url).origin !== self.location.origin) return;
   const path = new URL(event.request.url).pathname;
-  if (path === "/api/bangumi/image") {
+  // R6：海报现在有两个来源端点（Bangumi 与 TMDB），两者共用同一套离线缓存策略。
+  // 缓存键是完整 Request（含查询参数），两个端点的参数形态不同（subjectId vs path），
+  // 天然不会互相覆盖。
+  if (path === "/api/bangumi/image" || path === "/api/tmdb/image") {
     event.respondWith(caches.open(POSTER_CACHE).then(async (cache) => {
       const cached = await cache.match(event.request);
       const cachedAt = Number(cached?.headers.get(POSTER_CACHED_AT) || 0);

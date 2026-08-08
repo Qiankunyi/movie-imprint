@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { recordCard, emptyHomeStateMarkup } from "../src/record-card.js";
 
-const buildPosterUrl = (subjectId) => `https://img.example.com/${subjectId}`;
+// R6：海报 URL 构造函数改成接收整个 work（多数据源），不再只接收 bangumi subjectId
+const buildPosterUrl = (work) => (work?.poster ? `https://img.example.com/${work.poster.subject_id ?? work.poster.path}` : "");
 
 function cinemaRecord(overrides = {}) {
   return {
@@ -16,7 +17,7 @@ function cinemaRecord(overrides = {}) {
     work: {
       title: "剧场版：测试",
       identity_status: "matched",
-      poster_subject_id: 123,
+      poster: { source: "bangumi", subject_id: 123 },
       ...overrides.work
     },
     event: {
@@ -97,7 +98,7 @@ test("影院卡且 watch_index >= 2 → 增强描边与制式勋章照常显示�
 
 test("无海报 → 渲染占位块而非破图", () => {
   const { record, event } = cinemaRecord();
-  const work = { title: "本地作品", identity_status: "local_only", poster_subject_id: null };
+  const work = { title: "本地作品", identity_status: "local_only", poster: null };
   const html = recordCard(record, { work, event, buildPosterUrl });
   assert.doesNotMatch(html, /<img/);
   assert.match(html, /record-poster-fallback/);
@@ -155,7 +156,7 @@ test("仅保存原文 → 状态标签叠在海报上，不在文字区里", () 
 
 test("待确认作品 → 状态标签同样叠在海报上，不在文字区里", () => {
   const { record, event } = cinemaRecord();
-  const work = { title: "本地作品", identity_status: "local_only", poster_subject_id: null, match: { status: "needs_confirmation" } };
+  const work = { title: "本地作品", identity_status: "local_only", poster: null, match: { status: "needs_confirmation" } };
   const html = recordCard(record, { work, event, buildPosterUrl });
   assert.match(html, /待确认作品/);
   const bodyMatch = html.match(/<div class="record-card-body">([\s\S]*?)<\/button>/);

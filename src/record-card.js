@@ -74,8 +74,9 @@ function posterStatusRibbon(record, work) {
 function posterMarkup(work, record, { buildPosterUrl } = {}) {
   const title = work?.title || "";
   const initial = escapeHtml((title.trim() || "?").charAt(0));
-  const hasPoster = Boolean(work?.identity_status === "matched" && work?.poster_subject_id && typeof buildPosterUrl === "function");
-  const src = hasPoster ? buildPosterUrl(work.poster_subject_id) : "";
+  // R6：海报引用改成 work.poster（多源），URL 由调用方注入的 buildPosterUrl(work) 决定
+  const src = typeof buildPosterUrl === "function" ? (buildPosterUrl(work) || "") : "";
+  const hasPoster = Boolean(src);
   return `<div class="record-poster" data-testid="record-poster">
     ${hasPoster
       ? `<img class="record-poster-img" src="${escapeHtml(src)}" alt="" loading="lazy" />`
@@ -101,7 +102,13 @@ export function badgeChipMarkup(badge) {
 function draftCardMarkup(record, { buildPosterUrl } = {}) {
   const ctx = record.captureContext;
   const title = ctx?.workTitle?.trim();
-  const posterWork = title ? { title, identity_status: ctx.subjectId ? "matched" : "local_only", poster_subject_id: ctx.subjectId || null } : null;
+  const posterWork = title
+    ? {
+        title,
+        identity_status: ctx.subjectId ? "matched" : "local_only",
+        poster: ctx.subjectId ? { source: "bangumi", subject_id: Number(ctx.subjectId) || null } : null
+      }
+    : null;
   return `<article class="record-card draft-card" data-testid="draft-card">
     <button class="record-card-button" type="button" data-action="resume-draft" data-testid="resume-draft">
       ${posterWork ? posterMarkup(posterWork, null, { buildPosterUrl }) : ""}

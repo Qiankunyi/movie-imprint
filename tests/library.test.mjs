@@ -8,6 +8,10 @@ import {
   addWorkToSeries,
   buildTagline,
   collectionWorks,
+  collectionWorkEntries,
+  findCollectionEntry,
+  updateCollectionEntryReason,
+  moveCollectionEntry,
   collectionsForWork,
   createCollection,
   createSeries,
@@ -196,17 +200,93 @@ test("createCollection：同名片单允许共存（id 带时间戳）", () => {
 });
 
 test("片单增删：同一部作品可属于多个片单，重复加入无效", () => {
-  let a = addWorkToCollection(createCollection({ title: "甲" }, NOW), "w1", NOW);
-  a = addWorkToCollection(a, "w1", NOW);
-  const b = addWorkToCollection(createCollection({ title: "乙" }, NOW), "w1", NOW);
-  assert.deepEqual(a.work_ids, ["w1"]);
+  let a = addWorkToCollection(createCollection({ title: "甲" }, NOW), "w1", {}, NOW);
+  a = addWorkToCollection(a, "w1", {}, NOW);
+  const b = addWorkToCollection(createCollection({ title: "乙" }, NOW), "w1", {}, NOW);
+  assert.deepEqual(a.entries.map((e) => e.work_id), ["w1"]);
   assert.deepEqual(collectionsForWork([a, b], "w1").map((c) => c.title), ["甲", "乙"]);
-  assert.deepEqual(removeWorkFromCollection(a, "w1", NOW).work_ids, []);
+  assert.deepEqual(removeWorkFromCollection(a, "w1", NOW).entries, []);
 });
 
 test("collectionWorks：按加入顺序返回，查不到的跳过", () => {
   let collection = createCollection({ title: "甲" }, NOW);
-  for (const id of ["w2", "gone", "w1"]) collection = addWorkToCollection(collection, id, NOW);
+  for (const id of ["w2", "gone", "w1"]) collection = addWorkToCollection(collection, id, {}, NOW);
   const works = [{ id: "w1", title: "一" }, { id: "w2", title: "二" }];
   assert.deepEqual(collectionWorks(collection, works).map((w) => w.title), ["二", "一"]);
+});
+
+// ─── R6：片单条目的语境（reason / added_at / source_work_id） ─────────────────
+
+test("R6 §4：reason 属于 Watchlist Entry 而不是 Work —— 同一部作品在两个片单里可以有完全不同的理由", () => {
+  const keaton = addWorkToCollection(
+    createCollection({ title: "Michael Keaton 补片" }, NOW),
+    "work_birdman",
+    { reason: "重看《蜘蛛侠：英雄归来》后觉得他的秃鹫非常不错" },
+    NOW
+  );
+  const tens = addWorkToCollection(
+    createCollection({ title: "2010 年代补片" }, NOW),
+    "work_birdman",
+    { reason: "补 2010 年代的奥斯卡最佳影片" },
+    NOW
+  );
+
+  assert.equal(findCollectionEntry(keaton, "work_birdman").reason, "重看《蜘蛛侠：英雄归来》后觉得他的秃鹫非常不错");
+  assert.equal(findCollectionEntry(tens, "work_birdman").reason, "补 2010 年代的奥斯卡最佳影片");
+});
+
+test("R6：entry 记录 added_at 与 source_work_id（Discovery Context 预留字段）", () => {
+  const c = addWorkToCollection(
+    createCollection({ title: "甲" }, NOW),
+    "work_birdman",
+    { reason: "因为 Michael Keaton", sourceWorkId: "work_homecoming" },
+    "2026-08-08T00:00:00.000Z"
+  );
+  const entry = findCollectionEntry(c, "work_birdman");
+  assert.equal(entry.added_at, "2026-08-08T00:00:00.000Z");
+  assert.equal(entry.source_work_id, "work_homecoming", "从哪部作品发现的，本阶段只存不展示");
+});
+
+test("R6：重复加入不覆盖已有 reason，但可以为原本没有 reason 的条目补写", () => {
+  let c = addWorkToCollection(createCollection({ title: "甲" }, NOW), "w1", { reason: "原本的理由" }, NOW);
+  c = addWorkToCollection(c, "w1", { reason: "后来的理由" }, NOW);
+  assert.equal(findCollectionEntry(c, "w1").reason, "原本的理由", "已有理由不被覆盖");
+
+  let d = addWorkToCollection(createCollection({ title: "乙" }, NOW), "w1", {}, NOW);
+  d = addWorkToCollection(d, "w1", { reason: "补写的理由" }, NOW);
+  assert.equal(findCollectionEntry(d, "w1").reason, "补写的理由", "原本没理由则补上");
+  assert.equal(d.entries.length, 1, "补写理由不得产生第二条 entry");
+});
+
+test("R6 §5：片单条目里不存「是否已看」——updateCollectionEntryReason 只能改理由", () => {
+  const c = addWorkToCollection(createCollection({ title: "甲" }, NOW), "w1", { reason: "旧理由" }, NOW);
+  const after = updateCollectionEntryReason(c, "w1", "新理由", NOW);
+  const entry = findCollectionEntry(after, "w1");
+  assert.equal(entry.reason, "新理由");
+  assert.ok(!("watched" in entry), "已看状态必须由 Work 是否存在观影记录派生，不得存进条目");
+  assert.ok(!("is_watched" in entry));
+});
+
+test("R6：moveCollectionEntry 调整顺序，越界原样返回", () => {
+  let c = createCollection({ title: "甲" }, NOW);
+  for (const id of ["a", "b", "c"]) c = addWorkToCollection(c, id, {}, NOW);
+  assert.deepEqual(moveCollectionEntry(c, "c", 0, NOW).entries.map((e) => e.work_id), ["c", "a", "b"]);
+  assert.deepEqual(moveCollectionEntry(c, "a", 2, NOW).entries.map((e) => e.work_id), ["b", "c", "a"]);
+  assert.equal(moveCollectionEntry(c, "a", -1, NOW), c, "越界原样返回");
+  assert.equal(moveCollectionEntry(c, "a", 3, NOW), c);
+  assert.equal(moveCollectionEntry(c, "不存在", 0, NOW), c);
+});
+
+test("R6：collectionWorkEntries 通过 merged_from 回查——合并过的作品不会从片单里消失", () => {
+  const c = addWorkToCollection(createCollection({ title: "甲" }, NOW), "work_old", { reason: "理由还在" }, NOW);
+  const works = [{ id: "work_new", title: "你的名字。", merged_from: ["work_old"] }];
+  const pairs = collectionWorkEntries(c, works);
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].work.id, "work_new");
+  assert.equal(pairs[0].entry.reason, "理由还在");
+});
+
+test("R6：片单不含 work_ids 镜像字段（避免增删排序维护两份数据）", () => {
+  const c = addWorkToCollection(createCollection({ title: "甲" }, NOW), "w1", {}, NOW);
+  assert.ok(!("work_ids" in c), "entries 是唯一权威数据");
 });

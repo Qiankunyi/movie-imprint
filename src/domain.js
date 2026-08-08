@@ -24,26 +24,93 @@ export function normalizeTitle(title) {
   return value;
 }
 
-function slugifyTitle(value) {
-  const base = String(value || "").trim();
-  if (!base) return `untitled_${Date.now().toString(36)}`;
-  const encoded = encodeURIComponent(base)
-    .replace(/%/g, "")
-    .replace(/[!'()*]/g, "")
-    .toLowerCase();
-  return encoded.slice(0, 80) || `untitled_${Date.now().toString(36)}`;
+/**
+ * R6：生成 Work 的**永久内部 ID**。
+ *
+ * 红线（R6 §8）：internal Work ID ≠ Bangumi ID ≠ TMDB ID。
+ * 外部数据源的标识一律只进 external_refs，绝不进主键——否则「匹配到某个源」
+ * 就会变成「主键变更」，进而必须级联重写 records / viewingEvents / collections
+ * 并物理删除旧行。R1～R5 期间这条链路已经出过两次线上 bug（书架幽灵重复条目），
+ * 加入 TMDB 后组合数还会翻倍，所以 R6 直接把这个可能性从根上去掉。
+ *
+ * Work 一旦创建，id 在任何情况下都不再变更：本地创建、匹配 Bangumi、再关联
+ * TMDB、再加别的源，全部只改 external_refs。
+ *
+ * @returns {string}
+ */
+export function workIdFor() {
+  return createId("work");
+}
+
+// ─── R6：外部标识（external_refs） ────────────────────────────────────────────
+
+export const EXTERNAL_SOURCES = ["bangumi", "tmdb", "imdb", "wikidata"];
+
+const EXTERNAL_URL_BUILDERS = {
+  bangumi: (id) => `https://bangumi.tv/subject/${id}`,
+  tmdb: (id) => `https://www.themoviedb.org/movie/${id}`,
+  imdb: (id) => `https://www.imdb.com/title/${id}/`,
+  wikidata: (id) => `https://www.wikidata.org/wiki/${id}`
+};
+
+/**
+ * 按 source 增量写入外部标识，**绝不整体覆盖**。
+ *
+ * R1～R5 的 promoteWorkToMatched 是 `external_refs: [{...}]` 直接赋值的，
+ * 一个 Work 同时有 bangumi 和 tmdb 引用时，后写的会把先写的静默抹掉。
+ * R6 起统一走这个 upsert。
+ *
+ * @param {object[]} refs 现有 external_refs
+ * @param {{ source: string, id: string|number, url?: string }} ref
+ * @returns {object[]} 新数组，不修改入参
+ */
+export function upsertExternalRef(refs, { source, id, url } = {}) {
+  const list = Array.isArray(refs) ? refs : [];
+  if (!source || id === undefined || id === null || id === "") return [...list];
+  const value = String(id);
+  const next = {
+    source,
+    id: value,
+    url: url || EXTERNAL_URL_BUILDERS[source]?.(value) || null
+  };
+  const rest = list.filter((item) => item && item.source !== source);
+  return [...rest, next];
 }
 
 /**
- * 计算 Work 的稳定 ID。
- * @param {{ subjectId?: string|number|null, title?: string }} params
- * @returns {string}
+ * 取这部作品的海报引用。R6 之前海报只认 Bangumi（work.poster_subject_id），
+ * 现在统一走 work.poster，由调用方按 source 决定用哪个图片代理端点。
+ * @param {object} work
+ * @returns {{ source: string, subject_id?: number, path?: string }|null}
  */
-export function workIdFor({ subjectId, title } = {}) {
-  if (subjectId !== undefined && subjectId !== null && subjectId !== "") {
-    return `work_bgm_${subjectId}`;
-  }
-  return `work_local_${slugifyTitle(normalizeTitle(title))}`;
+export function workPosterRef(work) {
+  const poster = work?.poster;
+  if (!poster || !poster.source) return null;
+  if (poster.source === "bangumi") return poster.subject_id ? poster : null;
+  if (poster.source === "tmdb") return poster.path ? poster : null;
+  return null;
+}
+
+/** 取某个源的外部 id（没有则 null）。 */
+export function externalRefId(work, source) {
+  const ref = (work?.external_refs || []).find((item) => item?.source === source);
+  return ref ? String(ref.id) : null;
+}
+
+/**
+ * 按「源 + 外部 id」查已有 Work。这是 R6 去重的第一道闸：相同 bangumi_id 或相同
+ * tmdb_id 绝不允许产生第二个 Work（R6 §9）。
+ * @param {object[]} works
+ * @param {string} source
+ * @param {string|number} id
+ * @returns {object|undefined}
+ */
+export function findWorkByExternalRef(works, source, id) {
+  if (!source || id === undefined || id === null || id === "") return undefined;
+  const value = String(id);
+  return (Array.isArray(works) ? works : []).find(
+    (work) => externalRefId(work, source) === value
+  );
 }
 
 // ─── Work 实体 ────────────────────────────────────────────────────────────────
@@ -53,12 +120,11 @@ export function createLocalWork(record) {
   const aliases = [record.title, inputHints.workTitle]
     .filter(Boolean)
     .filter((value, index, values) => values.indexOf(value) === index);
-  const workId = record.workId || `work_${record.id}`;
+  const workId = record.workId || record.id || workIdFor();
   const firstRecordedAt = record.createdAt || record.first_recorded_at || new Date().toISOString();
 
   return {
     id: workId,
-    work_id: workId,
     title: inputHints.workTitle || record.title,
     original_title: null,
     work_type: "unspecified",
@@ -68,12 +134,19 @@ export function createLocalWork(record) {
     // jp/cn/other 三个旧字段保留成空值，只为兼容还没迁移的历史数据。
     release_dates: { jp: null, cn: null, other: [], entries: [] },
     external_refs: [],
+    // R6：preferred source（哪个源的数据更适合这部作品），不是作品身份
+    primary_source: null,
+    // R6：海报引用。取代 R5 的 poster_subject_id（只认 Bangumi），支持多源
+    poster: null,
+    runtime_minutes: null,
+    genres: [],
     // R5：Bangumi 关联条目锚点（只存 id，不猜关系类型，关系标签由用户手动连线）
     related_refs: [],
     tagline: null,
     identity_status: "local_only",
-    poster_subject_id: null,
     merged_from: [],
+    // R6 §10：这是「作品第一次进入我的记忆系统的时间」，**不是首次观看时间**。
+    // 观影后建卡与观影前从片单建卡都写它；后续加入别的片单、后续真正观看都不改它。
     first_recorded_at: firstRecordedAt,
     match: {
       status: "idle",
@@ -85,25 +158,33 @@ export function createLocalWork(record) {
 }
 
 /**
- * 按 RESTRUCTURE_PLAN §3.1 的查重顺序解析／创建 Work。
- * 1. subjectId 命中 external_refs 或 id
+ * 解析／创建 Work（R6：查重扩展到多数据源）。
+ *
+ * 查重顺序：
+ * 1. **任一外部标识命中**（bangumi / tmdb / imdb / wikidata）——同一个外部 id
+ *    绝不允许产生第二个 Work（R6 §9）
  * 2. aliases 精确匹配（双向）
  * 3. normalizeTitle(title) 与已有 work 的 normalizeTitle(title) 或 normalizeTitle(alias) 相等
- * 4. 都不命中 → 新建
+ * 4. 都不命中 → 新建（永久内部 ID）
+ *
+ * `externalRefs` 是 R6 新增的入参，取代原来只能传 Bangumi 的 `subjectId`；
+ * `subjectId` 作为便捷写法保留（等价于 `{ bangumi: subjectId }`），因为捕获流程
+ * 的 captureContext 里存的就是它。
+ *
  * @param {object[]} works
- * @param {{ title: string, subjectId?: string|number|null, aliases?: string[] }} params
+ * @param {{ title: string, subjectId?: string|number|null, aliases?: string[],
+ *          externalRefs?: Record<string, string|number|null> }} params
  * @returns {{ work: object, isNew: boolean }}
  */
-export function resolveWork(works, { title, subjectId, aliases = [] } = {}) {
+export function resolveWork(works, { title, subjectId, aliases = [], externalRefs = {} } = {}) {
   const list = Array.isArray(works) ? works : [];
-  const sid = subjectId !== undefined && subjectId !== null && subjectId !== "" ? String(subjectId) : null;
 
-  if (sid) {
-    const byId = list.find((work) =>
-      work.id === `work_bgm_${sid}` ||
-      (work.external_refs || []).some((ref) => ref.source === "bangumi" && String(ref.id) === sid)
-    );
-    if (byId) return { work: byId, isNew: false };
+  const refs = { ...externalRefs };
+  if (subjectId !== undefined && subjectId !== null && subjectId !== "") refs.bangumi = subjectId;
+
+  for (const source of EXTERNAL_SOURCES) {
+    const hit = findWorkByExternalRef(list, source, refs[source]);
+    if (hit) return { work: hit, isNew: false };
   }
 
   const candidateNames = [title, ...aliases].filter(Boolean);
@@ -124,26 +205,39 @@ export function resolveWork(works, { title, subjectId, aliases = [] } = {}) {
     if (byTitle) return { work: byTitle, isNew: false };
   }
 
-  const id = workIdFor({ subjectId: sid, title });
+  const id = workIdFor();
   const work = createLocalWork({ id, workId: id, title, inputHints: { workTitle: title } });
   work.aliases = [...new Set([title, ...aliases, ...work.aliases].filter(Boolean))];
-  if (sid) {
+
+  for (const source of EXTERNAL_SOURCES) {
+    const value = refs[source];
+    if (value === undefined || value === null || value === "") continue;
+    work.external_refs = upsertExternalRef(work.external_refs, { source, id: value });
     work.identity_status = "matched";
-    work.external_refs = [{ source: "bangumi", id: sid, url: `https://bangumi.tv/subject/${sid}` }];
-    work.poster_subject_id = Number(sid) || null;
+    work.primary_source ||= source;
   }
+  if (refs.bangumi) work.poster = { source: "bangumi", subject_id: Number(refs.bangumi) || null };
+
   return { work, isNew: true };
 }
 
 /**
  * local work 匹配到 Bangumi 后升格为已匹配 work。
+ *
+ * R6 的关键变化：**不再改变 work.id，也不再写 merged_from**。
+ * 匹配一个外部源只是给这个 Work 增加一条 external_ref，作品身份自始至终没变过，
+ * 所以既不需要新 id，也不存在「旧 id 需要被 merged_from 记住」这回事。
+ * 由此，R1～R5 里那条「升格 → id 变更 → 级联重写 records/viewingEvents → 删旧行」
+ * 的高危链路在 R6 彻底消失（app.js confirmWorkMatch 的合并逻辑改由
+ * 「external ref 撞上另一个 Work」触发，那才是真正的重复作品）。
+ *
  * @param {object} work
  * @param {string|number} subjectId
- * @param {{ title?: string, originalTitle?: string|null, type?: string, releaseDate?: string|null }} bangumiData
+ * @param {{ title?: string, originalTitle?: string|null, type?: string,
+ *          releaseDate?: string|null, summary?: string|null, relatedRefs?: object[] }} bangumiData
  */
 export function promoteWorkToMatched(work, subjectId, bangumiData = {}) {
   const sid = String(subjectId);
-  const newId = `work_bgm_${sid}`;
   const aliases = [...new Set([
     ...(work.aliases || []),
     work.title,
@@ -171,15 +265,9 @@ export function promoteWorkToMatched(work, subjectId, bangumiData = {}) {
       ? "live_action_film"
       : (work.work_type || "unspecified");
 
-  const mergedFrom = [...new Set([
-    ...(work.merged_from || []),
-    ...(work.id !== newId ? [work.id] : [])
-  ])];
-
   return {
     ...work,
-    id: newId,
-    work_id: newId,
+    // id 不变 —— 这是 R6 的红线
     title: bangumiData.title || work.title,
     original_title: bangumiData.originalTitle ?? work.original_title ?? null,
     work_type: workType,
@@ -195,10 +283,15 @@ export function promoteWorkToMatched(work, subjectId, bangumiData = {}) {
     summary: bangumiData.summary || work.summary || null,
     tagline: work.tagline
       || (bangumiData.summary ? buildTagline(taglineFromSummary(bangumiData.summary), "bangumi") : null),
-    poster_subject_id: Number(subjectId) || work.poster_subject_id || null,
-    external_refs: [{ source: "bangumi", id: sid, url: `https://bangumi.tv/subject/${sid}` }],
+    // R6：海报走多源引用。已经有 TMDB 海报时不覆盖——Bangumi 的封面是竖版小图，
+    // 已经拿到 TMDB 海报的作品没必要降级。
+    poster: work.poster?.source === "tmdb"
+      ? work.poster
+      : { source: "bangumi", subject_id: Number(subjectId) || null },
+    // R6：增量 upsert，不整体覆盖——否则已经存在的 tmdb / imdb 引用会被抹掉
+    external_refs: upsertExternalRef(work.external_refs, { source: "bangumi", id: sid }),
+    primary_source: work.primary_source || "bangumi",
     identity_status: "matched",
-    merged_from: mergedFrom,
     match: {
       status: "confirmed",
       query: work.match?.query || null,
@@ -243,12 +336,29 @@ export function mergeWorks(primary, duplicates = []) {
     }
   }
 
+  // R6：外部标识取并集。合并的前提就是「这几条其实是同一部作品」，所以两边各自
+  // 持有的 bangumi / tmdb / imdb 引用都应该保留在合并结果里——这正是跨源重复
+  // （先 Bangumi 导入、后 TMDB 搜到）被用户确认后应该达到的状态。
+  // 同一个 source 冲突时以 base（已匹配方）为准：upsert 按顺序覆盖，base 最后写。
+  let externalRefs = [];
+  for (const work of [...allSources.filter((item) => item !== base), base]) {
+    for (const ref of work.external_refs || []) {
+      externalRefs = upsertExternalRef(externalRefs, ref);
+    }
+  }
+
   return {
     ...base,
     aliases,
     merged_from: mergedFrom,
     first_recorded_at: firstRecordedAt,
     release_dates: releaseDates,
+    external_refs: externalRefs,
+    // 海报优先用 base 的；base 没有才从其余副本里捡一个
+    poster: base.poster || allSources.map((work) => work.poster).find(Boolean) || null,
+    primary_source: base.primary_source || allSources.map((work) => work.primary_source).find(Boolean) || null,
+    runtime_minutes: base.runtime_minutes ?? allSources.map((work) => work.runtime_minutes).find((value) => value != null) ?? null,
+    genres: base.genres?.length ? base.genres : (allSources.map((work) => work.genres).find((list) => list?.length) || []),
     // 一句话简介与关联锚点：以主体（已匹配方）为准，主体没有才从其余副本里捡一个
     tagline: base.tagline || allSources.map((work) => work.tagline).find(Boolean) || null,
     related_refs: base.related_refs?.length
@@ -256,6 +366,64 @@ export function mergeWorks(primary, duplicates = []) {
       : (allSources.map((work) => work.related_refs).find((refs) => refs?.length) || []),
     release_year: base.release_year ?? allSources.map((work) => work.release_year).find((year) => year != null) ?? null
   };
+}
+
+// ─── R6：从统一搜索候选创建 Work（观影前路径） ────────────────────────────────
+
+/**
+ * 从一条外部搜索候选直接创建 Work，**不产生任何 Record / ViewingEvent**。
+ *
+ * 这是 R6 打通「观影前 → 观影后」的关键新入口：在此之前，全项目唯一的 Work
+ * 落库函数是 db.putRecordWithWork(record, work)，Work 与 Record 在同一个事务里
+ * 强绑定写入，因此「App 里的作品」等价于「已经看过的作品」。有了这个函数，
+ * 片单可以先建 Work、日后再补 ViewingEvent，而 Work.id 全程不变。
+ *
+ * @param {{ source: string, sourceId: string|number, title: string, originalTitle?: string|null,
+ *          year?: number|null, workType?: string|null, posterRef?: object|null,
+ *          summary?: string|null, externalIds?: Record<string, string|number|null>,
+ *          runtimeMinutes?: number|null, genres?: string[], aliases?: string[] }} candidate
+ * @param {string} [now] ISO 时间戳，同时作为 first_recorded_at
+ * @returns {object}
+ */
+export function createWorkFromCandidate(candidate = {}, now = new Date().toISOString()) {
+  const id = workIdFor();
+  const title = candidate.title || "未命名作品";
+  const work = createLocalWork({
+    id,
+    workId: id,
+    title,
+    createdAt: now,
+    inputHints: { workTitle: title }
+  });
+
+  work.aliases = [...new Set([
+    title,
+    candidate.originalTitle,
+    ...(candidate.aliases || [])
+  ].filter(Boolean))];
+  work.original_title = candidate.originalTitle || null;
+  work.release_year = candidate.year ?? null;
+  work.summary = candidate.summary || null;
+  work.runtime_minutes = candidate.runtimeMinutes ?? null;
+  work.genres = Array.isArray(candidate.genres) ? candidate.genres : [];
+  // R6 §12：类型判断不了就留 unspecified，由用户在作品页认领。
+  // 绝不因为 TMDB 的 media_type === "movie" 就判成真人电影。
+  work.work_type = candidate.workType || "unspecified";
+
+  const ids = { ...(candidate.externalIds || {}) };
+  if (candidate.source && candidate.sourceId) ids[candidate.source] = candidate.sourceId;
+  for (const source of EXTERNAL_SOURCES) {
+    const value = ids[source];
+    if (value === undefined || value === null || value === "") continue;
+    work.external_refs = upsertExternalRef(work.external_refs, { source, id: value });
+  }
+  if (work.external_refs.length) work.identity_status = "matched";
+
+  work.primary_source = candidate.source || work.external_refs[0]?.source || null;
+  work.poster = candidate.posterRef || null;
+  work.first_recorded_at = now;
+
+  return work;
 }
 
 /**

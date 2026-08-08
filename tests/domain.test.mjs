@@ -19,7 +19,10 @@ import {
   sortRecordsByViewingDate,
   recommendationLabel,
   resolveWork,
-  workIdFor
+  workIdFor,
+  upsertExternalRef,
+  findWorkByExternalRef,
+  createWorkFromCandidate
 } from "../src/domain.js";
 
 test("五项态度都有可快速回忆的评判标准", () => {
@@ -109,7 +112,6 @@ test("每条本地记录先获得稳定作品身份且保留匹配别名", () =>
   assert.doesNotThrow(() => new Date(first_recorded_at).toISOString());
   assert.deepEqual(rest, {
     id: "work_record_123",
-    work_id: "work_record_123",
     title: "大雄与动物行星",
     original_title: null,
     work_type: "unspecified",
@@ -117,10 +119,13 @@ test("每条本地记录先获得稳定作品身份且保留匹配别名", () =>
     release_year: null,
     release_dates: { jp: null, cn: null, other: [], entries: [] },
     external_refs: [],
+    primary_source: null,
+    poster: null,
+    runtime_minutes: null,
+    genres: [],
     related_refs: [],
     tagline: null,
     identity_status: "local_only",
-    poster_subject_id: null,
     merged_from: [],
     match: { status: "idle", query: null, candidates: [], message: null }
   });
@@ -169,19 +174,20 @@ test("normalizeTitle 归一化全角半角、【制式】前缀与多余空格",
 
 // ─── R1：workIdFor ────────────────────────────────────────────────────────────
 
-test("workIdFor 有 subjectId 时用 bangumi 前缀，否则用本地 slug", () => {
-  assert.equal(workIdFor({ subjectId: 1309, title: "随便" }), "work_bgm_1309");
-  const local = workIdFor({ subjectId: null, title: "劇場版まどか" });
-  assert.match(local, /^work_local_/);
-  // 同一标题两次调用产生同一个 id（幂等，供 resolveWork 复用）
-  assert.equal(local, workIdFor({ subjectId: null, title: "劇場版まどか" }));
+test("R6：workIdFor 永远生成 App 自己的内部 ID，不含任何外部数据源信息", () => {
+  const a = workIdFor();
+  const b = workIdFor();
+  assert.match(a, /^work_/);
+  assert.notEqual(a, b, "每次调用都应产生新的唯一 ID");
+  // 红线：外部标识绝不能出现在主键里
+  assert.ok(!/bgm|bangumi|tmdb|imdb/.test(a), "内部 ID 不得包含外部数据源标识");
 });
 
 // ─── R1：resolveWork ──────────────────────────────────────────────────────────
 
-test("resolveWork：subjectId 命中已有 work", () => {
+test("resolveWork：subjectId 命中已有 work（只看 external_refs，不看 id 长相）", () => {
   const works = [{
-    id: "work_bgm_1309",
+    id: "work_abc123",
     title: "哆啦A梦：大雄与动物行星",
     aliases: [],
     external_refs: [{ source: "bangumi", id: "1309" }],
@@ -189,7 +195,37 @@ test("resolveWork：subjectId 命中已有 work", () => {
   }];
   const { work, isNew } = resolveWork(works, { title: "随便叫什么", subjectId: 1309 });
   assert.equal(isNew, false);
-  assert.equal(work.id, "work_bgm_1309");
+  assert.equal(work.id, "work_abc123");
+});
+
+test("R6：resolveWork 用 tmdb_id 命中已有 work（相同 tmdb_id 不得重复建 Work）", () => {
+  const works = [{
+    id: "work_abc123",
+    title: "鸟人",
+    aliases: [],
+    external_refs: [{ source: "tmdb", id: "194662" }],
+    identity_status: "matched"
+  }];
+  const { work, isNew } = resolveWork(works, {
+    title: "Birdman",
+    externalRefs: { tmdb: 194662 }
+  });
+  assert.equal(isNew, false, "标题完全不同，但 tmdb_id 相同就必须命中同一个 Work");
+  assert.equal(work.id, "work_abc123");
+});
+
+test("R6：resolveWork 新建时把外部标识写进 external_refs，而不是写进 id", () => {
+  const { work, isNew } = resolveWork([], {
+    title: "Birdman",
+    externalRefs: { tmdb: 194662, imdb: "tt2562232" }
+  });
+  assert.equal(isNew, true);
+  assert.match(work.id, /^work_/);
+  assert.ok(!work.id.includes("194662"), "外部 id 不得进入主键");
+  assert.equal(work.external_refs.find((r) => r.source === "tmdb").id, "194662");
+  assert.equal(work.external_refs.find((r) => r.source === "imdb").id, "tt2562232");
+  assert.equal(work.identity_status, "matched");
+  assert.equal(work.primary_source, "tmdb");
 });
 
 test("resolveWork：aliases 双向精确匹配命中", () => {
@@ -224,7 +260,7 @@ test("resolveWork：全不命中则新建，且同一标题连续三次 resolve 
 
 // ─── R1：promoteWorkToMatched ─────────────────────────────────────────────────
 
-test("promoteWorkToMatched：id 变更、merged_from 记录、aliases 合并，上映日按未标注地区落库", () => {
+test("R6：promoteWorkToMatched 不再变更 id、不再写 merged_from，aliases 合并，上映日按未标注地区落库", () => {
   const local = createLocalWork({
     id: "record_1",
     workId: "work_local_abc",
@@ -237,8 +273,13 @@ test("promoteWorkToMatched：id 变更、merged_from 记录、aliases 合并，�
     type: "anime",
     releaseDate: "2012-10-06"
   });
-  assert.equal(promoted.id, "work_bgm_1309");
-  assert.deepEqual(promoted.merged_from, ["work_local_abc"]);
+  // R6 红线：匹配外部数据源只是新增一条 external_ref，作品身份从未改变
+  assert.equal(promoted.id, local.id, "匹配 Bangumi 不得改变 Work.id");
+  assert.deepEqual(promoted.merged_from, [], "id 没变，就不存在需要被记住的旧 id");
+  assert.deepEqual(promoted.external_refs, [
+    { source: "bangumi", id: "1309", url: "https://bangumi.tv/subject/1309" }
+  ]);
+  assert.deepEqual(promoted.poster, { source: "bangumi", subject_id: 1309 });
   assert.ok(promoted.aliases.includes("劇場版まどか"));
   assert.ok(promoted.aliases.includes("魔法少女まどか☆マギカ"));
   assert.equal(promoted.work_type, "animation_film");
@@ -435,4 +476,128 @@ test("sortRecordsByViewingDate：只有日期没有时刻时用 viewed_on", () =
   const records = [{ id: "a", createdAt: "2020-01-01" }, { id: "b", createdAt: "2020-01-01" }];
   const events = new Map([["a", { viewed_on: "2026-03-01" }], ["b", { viewed_on: "2026-09-01" }]]);
   assert.deepEqual(sortRecordsByViewingDate(records, events).map((r) => r.id), ["b", "a"]);
+});
+
+// ─── R6：external_refs upsert / 跨源共存 ──────────────────────────────────────
+
+test("R6：upsertExternalRef 按 source 增量写入，不整体覆盖", () => {
+  let refs = [];
+  refs = upsertExternalRef(refs, { source: "bangumi", id: 1309 });
+  refs = upsertExternalRef(refs, { source: "tmdb", id: "194662" });
+  assert.equal(refs.length, 2, "两个不同的源应共存");
+
+  // 同一个源再写一次是更新，不是追加
+  refs = upsertExternalRef(refs, { source: "tmdb", id: "999" });
+  assert.equal(refs.length, 2);
+  assert.equal(refs.find((r) => r.source === "tmdb").id, "999");
+  assert.equal(refs.find((r) => r.source === "bangumi").id, "1309", "更新 tmdb 不得抹掉 bangumi");
+
+  // url 缺省时按源自动补
+  assert.equal(refs.find((r) => r.source === "bangumi").url, "https://bangumi.tv/subject/1309");
+});
+
+test("R6：先有 TMDB 的 Work 再匹配 Bangumi，两条 external_ref 必须共存", () => {
+  const tmdbWork = createWorkFromCandidate({
+    source: "tmdb",
+    sourceId: "194662",
+    title: "鸟人",
+    originalTitle: "Birdman",
+    posterRef: { source: "tmdb", path: "/x.jpg" }
+  });
+  const promoted = promoteWorkToMatched(tmdbWork, 1309, { title: "バードマン", type: "real" });
+
+  assert.equal(promoted.id, tmdbWork.id, "id 全程不变");
+  assert.equal(promoted.external_refs.length, 2);
+  assert.equal(promoted.external_refs.find((r) => r.source === "tmdb").id, "194662");
+  assert.equal(promoted.external_refs.find((r) => r.source === "bangumi").id, "1309");
+  assert.equal(promoted.primary_source, "tmdb", "已有 primary_source 不被后来的匹配改写");
+  assert.equal(promoted.poster.source, "tmdb", "已有 TMDB 海报不降级成 Bangumi 封面");
+});
+
+test("R6：findWorkByExternalRef 按源精确查找，不跨源误命中", () => {
+  const works = [
+    { id: "w1", external_refs: [{ source: "bangumi", id: "100" }] },
+    { id: "w2", external_refs: [{ source: "tmdb", id: "100" }] }
+  ];
+  assert.equal(findWorkByExternalRef(works, "bangumi", 100).id, "w1");
+  assert.equal(findWorkByExternalRef(works, "tmdb", "100").id, "w2");
+  assert.equal(findWorkByExternalRef(works, "imdb", "100"), undefined);
+  assert.equal(findWorkByExternalRef(works, "bangumi", null), undefined);
+});
+
+// ─── R6：createWorkFromCandidate（观影前路径） ────────────────────────────────
+
+test("R6：createWorkFromCandidate 创建的 Work 没有任何 Record / ViewingEvent 依赖", () => {
+  const work = createWorkFromCandidate({
+    source: "tmdb",
+    sourceId: "194662",
+    title: "鸟人",
+    originalTitle: "Birdman",
+    year: 2014,
+    posterRef: { source: "tmdb", path: "/x.jpg" },
+    externalIds: { imdb: "tt2562232" },
+    runtimeMinutes: 119
+  }, "2026-08-08T00:00:00.000Z");
+
+  assert.match(work.id, /^work_/);
+  assert.equal(work.title, "鸟人");
+  assert.ok(work.aliases.includes("Birdman"), "原名应进别名，供日后观影时标题匹配命中");
+  assert.equal(work.release_year, 2014);
+  assert.equal(work.runtime_minutes, 119);
+  assert.deepEqual(work.poster, { source: "tmdb", path: "/x.jpg" });
+  assert.equal(work.identity_status, "matched");
+  assert.equal(work.primary_source, "tmdb");
+  // R6 §10：first_recorded_at = 第一次进入记忆系统的时间，不是首次观看时间
+  assert.equal(work.first_recorded_at, "2026-08-08T00:00:00.000Z");
+});
+
+test("R6 §12：TMDB 候选判断不出类型时留 unspecified，绝不默认真人电影", () => {
+  const unknown = createWorkFromCandidate({ source: "tmdb", sourceId: "1", title: "某动画电影" });
+  assert.equal(unknown.work_type, "unspecified", "宁可未分类，也不能把动画电影错标成真人电影");
+
+  const known = createWorkFromCandidate({ source: "tmdb", sourceId: "2", title: "某片", workType: "animation_film" });
+  assert.equal(known.work_type, "animation_film", "能可靠判断时应采用");
+});
+
+test("R6：观影前建 Work → 观影后捕获流程必须命中同一个 Work（§14 核心用例）", () => {
+  // 8/8：因为 Michael Keaton，把 Birdman 从 TMDB 加进片单
+  const birdman = createWorkFromCandidate({
+    source: "tmdb",
+    sourceId: "194662",
+    title: "鸟人",
+    originalTitle: "Birdman"
+  }, "2026-08-08T00:00:00.000Z");
+  const works = [birdman];
+
+  // 9/5：真正看了，捕获流程里用户写的标题是原名
+  const viaOriginalTitle = resolveWork(works, { title: "Birdman" });
+  assert.equal(viaOriginalTitle.isNew, false, "别名命中，不得产生第二个 Work");
+  assert.equal(viaOriginalTitle.work.id, birdman.id);
+
+  // 另一条路径：捕获流程匹配到了 TMDB 同一条目
+  const viaTmdbId = resolveWork(works, { title: "完全不同的译名", externalRefs: { tmdb: "194662" } });
+  assert.equal(viaTmdbId.isNew, false);
+  assert.equal(viaTmdbId.work.id, birdman.id);
+
+  // first_recorded_at 是「进入记忆系统的时间」，不因为后来真的看了而改变
+  assert.equal(viaTmdbId.work.first_recorded_at, "2026-08-08T00:00:00.000Z");
+});
+
+test("R6：mergeWorks 合并跨源重复作品时，两边的 external_refs 取并集", () => {
+  const bgm = {
+    id: "w_bgm", title: "你的名字。", aliases: [], identity_status: "matched",
+    first_recorded_at: "2026-01-01T00:00:00.000Z", merged_from: [],
+    external_refs: [{ source: "bangumi", id: "150775" }],
+    release_dates: { entries: [] }
+  };
+  const tmdb = {
+    id: "w_tmdb", title: "君の名は。", aliases: [], identity_status: "matched",
+    first_recorded_at: "2026-02-01T00:00:00.000Z", merged_from: [],
+    external_refs: [{ source: "tmdb", id: "372058" }, { source: "imdb", id: "tt5311514" }],
+    release_dates: { entries: [] }
+  };
+  const merged = mergeWorks(bgm, [tmdb]);
+  assert.equal(merged.external_refs.length, 3, "bangumi + tmdb + imdb 全部保留");
+  assert.deepEqual(merged.merged_from, ["w_tmdb"]);
+  assert.equal(merged.first_recorded_at, "2026-01-01T00:00:00.000Z", "取最早");
 });

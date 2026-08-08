@@ -148,19 +148,89 @@ export function exportTXT(record, work, viewingEvents = []) {
 /**
  * @param {{record: object, work: object|null, viewingEvents: object[]}[]} entries
  */
-export function exportAllJSON(entries = []) {
+/**
+ * R6：把片单整理成可导出的结构。
+ *
+ * 为什么片单必须进导出（R6 §14）：本项目的核心命题是"长期可保存的个人记忆资产"，
+ * 而片单条目的 reason 恰恰是**发现过程**的记录——"因为重看《英雄归来》对
+ * Michael Keaton 感兴趣，所以想看《鸟人》"。在此之前全量导出以 Record 为遍历
+ * 起点，没有观影记录的作品和它们的加入理由完全不会出现在任何导出物里，
+ * 只存在于 IndexedDB / D1，这与产品定位相悖。
+ *
+ * 未观看的作品即使没有任何 Viewing Record，也属于用户可导出的长期数据资产。
+ *
+ * @param {object[]} collections
+ * @param {object[]} works
+ * @param {(workId: string) => boolean} isWatched Work 是否已有观影记录（由调用方注入，
+ *   因为"已看"是从 Record / ViewingEvent 派生的，export.js 不该自己查库）
+ */
+export function buildCollectionsExport(collections = [], works = [], isWatched = () => false) {
+  const findWork = (workId) =>
+    works.find((work) => work.id === workId)
+    || works.find((work) => (work.merged_from || []).includes(workId))
+    || null;
+
+  return collections.map((collection) => ({
+    title: collection.title,
+    description: collection.description || "",
+    created_at: collection.created_at || null,
+    updated_at: collection.updated_at || null,
+    entries: (collection.entries || []).map((entry) => {
+      const work = findWork(entry.work_id);
+      const bangumiRef = work?.external_refs?.find((ref) => ref.source === "bangumi") || null;
+      const tmdbRef = work?.external_refs?.find((ref) => ref.source === "tmdb") || null;
+      const imdbRef = work?.external_refs?.find((ref) => ref.source === "imdb") || null;
+      return {
+        title: work?.title || null,
+        original_title: work?.original_title || null,
+        release_year: work?.release_year ?? null,
+        // 已看/未看是派生的，导出时算一次快照——条目里从来没存过这个字段
+        watched: isWatched(entry.work_id),
+        added_at: entry.added_at || null,
+        reason: entry.reason || "",
+        // §17 Discovery Context：从哪部作品发现的。本阶段不做关系图，但数据要留住
+        discovered_from: entry.source_work_id ? (findWork(entry.source_work_id)?.title || null) : null,
+        bangumi_id: bangumiRef?.id || null,
+        tmdb_id: tmdbRef?.id || null,
+        imdb_id: imdbRef?.id || null
+      };
+    })
+  }));
+}
+
+export function exportAllJSON(entries = [], collections = []) {
   return JSON.stringify({
-    schema_version: "movie-imprint-export-all-0.1",
+    schema_version: "movie-imprint-export-all-0.2",
     exported_at: new Date().toISOString(),
     count: entries.length,
-    records: entries.map(({ record, work, viewingEvents }) => buildExportPayload(record, work, viewingEvents))
+    records: entries.map(({ record, work, viewingEvents }) => buildExportPayload(record, work, viewingEvents)),
+    collections
   }, null, 2);
 }
 
-export function exportAllMarkdown(entries = []) {
-  return entries
+/** 片单的 Markdown 段落。没有片单时返回空串，不留一个空标题。 */
+export function exportCollectionsMarkdown(collections = []) {
+  if (!collections.length) return "";
+  const blocks = collections.map((collection) => {
+    const lines = [`## ${collection.title}`];
+    if (collection.description) lines.push("", collection.description);
+    for (const entry of collection.entries) {
+      const year = entry.release_year ? `（${entry.release_year}）` : "";
+      lines.push("", `### ${entry.title || "未命名作品"}${year} · ${entry.watched ? "已看" : "未看"}`);
+      if (entry.reason) lines.push("", entry.reason);
+      if (entry.discovered_from) lines.push("", `> 从《${entry.discovered_from}》发现`);
+    }
+    return lines.join("\n");
+  });
+  return [`# 片单`, ...blocks].join("\n\n");
+}
+
+export function exportAllMarkdown(entries = [], collections = []) {
+  const records = entries
     .map(({ record, work, viewingEvents }) => exportMarkdown(record, work, viewingEvents))
     .join("\n\n---\n\n");
+  const collectionsMd = exportCollectionsMarkdown(collections);
+  return [records, collectionsMd].filter(Boolean).join("\n\n---\n\n");
 }
 
 // ─── 3. 文件名 ───────────────────────────────────────────────────────────────

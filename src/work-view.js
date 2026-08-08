@@ -190,28 +190,75 @@ export function buildWorkView(work, records, viewingEvents) {
 /**
  * 把全量 ViewingEvent 按作品聚合成书架每格需要的摘要。同一部作品可能横跨
  * canonical id 与若干个 merged_from 里的旧 id，这里一并合并计入。
+ *
+ * R6：书架的定位从「已观看作品列表」改成 **App 中所有 Work 的统一总库**。
+ * Work 现在有两条产生路径——观影后写感想建卡，以及观影前从片单搜索建卡——
+ * 两种都属于书架，区别只体现在观看状态筛选上。因此这里多派生两个字段：
+ *
+ * - `isWatched`：存在 ViewingEvent **或** 存在 Record。两者取或而不是只看 Event，
+ *   是因为「补充记录」这类 record 本来就不产生 ViewingEvent，只看 Event 会把
+ *   确实看过的作品误判成没看过。
+ * - `inCollection`：至少属于一个片单。「想看」= 没看过 **且** 在某个片单里。
+ *
+ * R6 §10：`lastWatchedAt` 在没有观影事件时回落到 `first_recorded_at`，但
+ * `first_recorded_at` 的语义是「作品第一次进入我的记忆系统的时间」，**不是首次
+ * 观看时间** —— 片单加入建的 Work 也有它。所以「最近观看」排序只在已看状态下
+ * 有意义，调用方需要在「想看」状态下改用 `first` 排序（见 sortShelfEntries）。
+ *
  * @param {object[]} works
  * @param {object[]} viewingEvents
- * @returns {{ work: object, watchCount: number, lastWatchedAt: string|null, hasEvents: boolean }[]}
+ * @param {{ records?: object[], collections?: object[] }} [context]
+ * @returns {{ work: object, watchCount: number, lastWatchedAt: string|null, hasEvents: boolean,
+ *   isWatched: boolean, inCollection: boolean }[]}
  */
-export function summarizeWorksForShelf(works, viewingEvents) {
+export function summarizeWorksForShelf(works, viewingEvents, { records = [], collections = [] } = {}) {
   const list = Array.isArray(works) ? works : [];
   const events = Array.isArray(viewingEvents) ? viewingEvents : [];
+
   const eventsByWork = new Map();
   for (const event of events) {
     if (!event?.work_id) continue;
     if (!eventsByWork.has(event.work_id)) eventsByWork.set(event.work_id, []);
     eventsByWork.get(event.work_id).push(event);
   }
+
+  const recordCountByWork = new Map();
+  for (const record of Array.isArray(records) ? records : []) {
+    const id = record?.work_id || record?.workId;
+    if (!id) continue;
+    recordCountByWork.set(id, (recordCountByWork.get(id) || 0) + 1);
+  }
+
+  const collectedWorkIds = new Set();
+  for (const collection of Array.isArray(collections) ? collections : []) {
+    for (const entry of collection?.entries || []) {
+      if (entry?.work_id) collectedWorkIds.add(entry.work_id);
+    }
+  }
+
   return list.map((work) => {
     const ids = [work.id, ...(work.merged_from || [])];
     const ownEvents = ids.flatMap((id) => eventsByWork.get(id) || []);
     const dates = ownEvents.map((event) => event.screening_at || event.viewed_on).filter(Boolean).sort();
     const lastWatchedAt = dates.length ? dates[dates.length - 1] : (work.first_recorded_at || null);
     const hasEvents = ownEvents.some((event) => (event.viewing_context?.event_types || []).length > 0);
-    return { work, watchCount: ownEvents.length, lastWatchedAt, hasEvents };
+    const recordCount = ids.reduce((sum, id) => sum + (recordCountByWork.get(id) || 0), 0);
+    return {
+      work,
+      watchCount: ownEvents.length,
+      lastWatchedAt,
+      hasEvents,
+      isWatched: ownEvents.length > 0 || recordCount > 0,
+      inCollection: ids.some((id) => collectedWorkIds.has(id))
+    };
   });
 }
+
+/**
+ * R6：观看状态筛选的三个取值。默认「已看」——书架虽然是总库，但日常使用时
+ * 用户想看到的仍然是自己的观影收藏。
+ */
+export const SHELF_WATCH_STATUSES = ["watched", "want", "all"];
 
 /**
  * 书架筛选：按 work_type（含"未分类"）与"特别场次"（原"有活动场次"）。
@@ -222,13 +269,27 @@ export function summarizeWorksForShelf(works, viewingEvents) {
  * "还没确定类型"这两种情况混在一个"未分类" chip 里更符合直觉，不需要在筛选栏
  * 区分成两个几乎总是重叠的格子。work_type 本身仍保留 R1 冻结的五个取值，
  * 没有丢失信息，只是筛选 UI 把两者合并显示。
- * @param {{ work: object, hasEvents: boolean }[]} entries
- * @param {{ workType?: string, eventsOnly?: boolean }} [filter]
+ * R6 新增 `watchStatus` 维度（与 workType 正交）：
+ * - `watched`（默认）：有观影记录的作品
+ * - `want`：没有观影记录，且至少在一个片单里 —— 这就是「补片清单」的总览
+ * - `all`：全部 Work
+ *
+ * 注意 `want` 要求 `inCollection`：一个既没看过、又不在任何片单里的 Work 不属于
+ * 「想看」，它只是数据库里的一条孤立记录（例如匹配过程中的中间产物），只在
+ * 「全部」里出现。
+ *
+ * `eventsOnly`（特别场次）在 `want` 状态下必然筛不出任何东西——没有观影事件就
+ * 不可能有舞台挨拶/应援上映。调用方应在该状态下隐藏这个按钮，这里也直接短路。
+ *
+ * @param {{ work: object, hasEvents: boolean, isWatched: boolean, inCollection: boolean }[]} entries
+ * @param {{ workType?: string, eventsOnly?: boolean, watchStatus?: "watched"|"want"|"all" }} [filter]
  */
-export function filterShelfEntries(entries, { workType = "all", eventsOnly = false } = {}) {
+export function filterShelfEntries(entries, { workType = "all", eventsOnly = false, watchStatus = "all" } = {}) {
   const list = Array.isArray(entries) ? entries : [];
   return list.filter((entry) => {
-    if (eventsOnly && !entry.hasEvents) return false;
+    if (watchStatus === "watched" && !entry.isWatched) return false;
+    if (watchStatus === "want" && (entry.isWatched || !entry.inCollection)) return false;
+    if (eventsOnly && watchStatus !== "want" && !entry.hasEvents) return false;
     if (workType === "all") return true;
     const type = entry.work.work_type || "unspecified";
     if (workType === "unspecified") return type === "unspecified" || type === "other";
@@ -238,12 +299,22 @@ export function filterShelfEntries(entries, { workType = "all", eventsOnly = fal
 
 /**
  * 书架排序：最近观看（默认）/ 观看次数 / 首次记录时间。
+ *
+ * R6 §9/§10：「想看」状态下**不发明新的排序体系**（最近加入、标题排序之类目前
+ * 没有实际使用价值——真正有意义的是「为什么想看」，那由片单和 entry.reason
+ * 承担，不是书架的职责）。最近观看／最多观看在没有观影记录时全都退化成同一个
+ * 顺序，唯一仍然成立的是「首次记录」：它表示**作品第一次进入我的记忆系统的
+ * 时间**，因片单加入而建卡同样是一次首次记录。所以这里对 `want` 状态直接强制
+ * 用 `first`，调用方不需要（也不应该）另外维护一套排序状态。
+ *
  * @param {{ work: object, watchCount: number, lastWatchedAt: string|null }[]} entries
  * @param {"recent"|"count"|"first"} [sort]
+ * @param {{ watchStatus?: string }} [options]
  */
-export function sortShelfEntries(entries, sort = "recent") {
+export function sortShelfEntries(entries, sort = "recent", { watchStatus = "all" } = {}) {
   const list = [...(Array.isArray(entries) ? entries : [])];
-  if (sort === "count") return list.sort((a, b) => b.watchCount - a.watchCount);
-  if (sort === "first") return list.sort((a, b) => (a.work.first_recorded_at || "").localeCompare(b.work.first_recorded_at || ""));
+  const effective = watchStatus === "want" ? "first" : sort;
+  if (effective === "count") return list.sort((a, b) => b.watchCount - a.watchCount);
+  if (effective === "first") return list.sort((a, b) => (a.work.first_recorded_at || "").localeCompare(b.work.first_recorded_at || ""));
   return list.sort((a, b) => (b.lastWatchedAt || "").localeCompare(a.lastWatchedAt || ""));
 }

@@ -293,35 +293,142 @@ export function collectionIdFor(title, now = Date.now()) {
 /**
  * 片单标题允许重复（"2026 年度私选"这种名字用户可能真的会建两个），所以 id 里带
  * 时间戳，不像系列那样按标题去重。
+ *
+ * R6：片单条目从「一串 work_id」升级为 entries 对象数组。
+ *
+ * 原因（R6 §4）：片单不只是「一堆电影 ID」，它同时承担「我当时为什么想看这部电影」
+ * 的备忘录功能。而 reason 属于 **Watchlist Entry 而不是 Work** —— 同一部《鸟人》
+ * 出现在「Michael Keaton 补片」和「2010 年代补片」两个片单里，理由完全不同。
+ *
+ * entries 是唯一权威数据，**没有 work_ids 镜像**：双写会让此后所有增删排序都要
+ * 维护两份数据，是确定的技术债。
+ *
+ * entry 结构：
+ *   work_id         指向 Work（Work 可能还没有任何 ViewingEvent）
+ *   added_at        加入这个片单的时间（不是 Work 首次进入数据库的时间）
+ *   reason          为什么想看（可空）
+ *   source_work_id  从哪部作品发现的（R6 §17 Discovery Context 预留，本阶段只存不展示）
  */
 export function createCollection({ title, description = "" } = {}, now = new Date().toISOString()) {
   return {
     id: collectionIdFor(title, new Date(now).getTime() || Date.now()),
     title: String(title || "").trim(),
     description: String(description || "").trim(),
-    work_ids: [],
+    entries: [],
     created_at: now,
     updated_at: now
   };
 }
 
-export function addWorkToCollection(collection, workId, now = new Date().toISOString()) {
+/** 片单条目工厂。 */
+export function createCollectionEntry({ workId, reason = "", sourceWorkId = null } = {}, now = new Date().toISOString()) {
+  return {
+    work_id: workId,
+    added_at: now,
+    reason: String(reason || "").trim(),
+    source_work_id: sourceWorkId || null
+  };
+}
+
+export function collectionEntries(collection) {
+  return Array.isArray(collection?.entries) ? collection.entries : [];
+}
+
+export function findCollectionEntry(collection, workId) {
+  return collectionEntries(collection).find((entry) => entry.work_id === workId) || null;
+}
+
+export function collectionHasWork(collection, workId) {
+  return collectionEntries(collection).some((entry) => entry.work_id === workId);
+}
+
+/**
+ * 加入片单。已经在里面则原样返回（幂等），但如果这次带了 reason 而原条目没有，
+ * 补写 reason —— 用户在「加入片单」面板里补一句理由不应该被静默丢弃。
+ */
+export function addWorkToCollection(collection, workId, { reason = "", sourceWorkId = null } = {}, now = new Date().toISOString()) {
   if (!collection || !workId) return collection;
-  if ((collection.work_ids || []).includes(workId)) return collection;
-  return { ...collection, work_ids: [...(collection.work_ids || []), workId], updated_at: now };
+  const entries = collectionEntries(collection);
+  const existing = entries.find((entry) => entry.work_id === workId);
+  if (existing) {
+    const nextReason = String(reason || "").trim();
+    if (!nextReason || existing.reason) return collection;
+    return {
+      ...collection,
+      entries: entries.map((entry) => (entry.work_id === workId ? { ...entry, reason: nextReason } : entry)),
+      updated_at: now
+    };
+  }
+  return {
+    ...collection,
+    entries: [...entries, createCollectionEntry({ workId, reason, sourceWorkId }, now)],
+    updated_at: now
+  };
 }
 
 export function removeWorkFromCollection(collection, workId, now = new Date().toISOString()) {
   if (!collection) return collection;
-  return { ...collection, work_ids: (collection.work_ids || []).filter((id) => id !== workId), updated_at: now };
+  return {
+    ...collection,
+    entries: collectionEntries(collection).filter((entry) => entry.work_id !== workId),
+    updated_at: now
+  };
+}
+
+/**
+ * 改写某个条目的 reason。
+ * R6 §5 红线：条目里**不存**「是否已看」，看完电影也不删除条目——片单本身是
+ * 用户过去兴趣与发现过程的记录。所以这里能改的只有 reason，没有 watched 之类的字段。
+ */
+export function updateCollectionEntryReason(collection, workId, reason, now = new Date().toISOString()) {
+  if (!collection) return collection;
+  return {
+    ...collection,
+    entries: collectionEntries(collection).map((entry) =>
+      entry.work_id === workId ? { ...entry, reason: String(reason || "").trim() } : entry
+    ),
+    updated_at: now
+  };
+}
+
+/** 调整条目顺序（照搬系列成员的 moveWorkInSeries 语义：越界即原样返回）。 */
+export function moveCollectionEntry(collection, workId, targetIndex, now = new Date().toISOString()) {
+  const entries = collectionEntries(collection);
+  const index = entries.findIndex((entry) => entry.work_id === workId);
+  if (index === -1 || targetIndex < 0 || targetIndex >= entries.length || targetIndex === index) return collection;
+  const next = [...entries];
+  const [moved] = next.splice(index, 1);
+  next.splice(targetIndex, 0, moved);
+  return { ...collection, entries: next, updated_at: now };
 }
 
 export function collectionsForWork(collections, workId) {
-  return (Array.isArray(collections) ? collections : []).filter((item) => (item.work_ids || []).includes(workId));
+  return (Array.isArray(collections) ? collections : []).filter((item) => collectionHasWork(item, workId));
 }
 
-/** 片单里的作品，按加入顺序取出（查不到的跳过）。 */
+/**
+ * 片单里的作品，按加入顺序取出（查不到的跳过），每条附带自己的 entry。
+ *
+ * 用 findWorkById 而不是裸 Map 查表：如果两个跨源重复的 Work 后来被用户确认合并，
+ * 片单 entry 里存的可能是被合并掉的那个旧 id，findWorkById 会通过 merged_from
+ * 回查到合并后的主体，条目不会凭空消失。
+ *
+ * @param {object} collection
+ * @param {object[]} works
+ * @returns {{ work: object, entry: object }[]}
+ */
+export function collectionWorkEntries(collection, works) {
+  const list = Array.isArray(works) ? works : [];
+  return collectionEntries(collection)
+    .map((entry) => {
+      const work = list.find((item) => item.id === entry.work_id)
+        || list.find((item) => (item.merged_from || []).includes(entry.work_id));
+      return work ? { work, entry } : null;
+    })
+    .filter(Boolean);
+}
+
+/** 只要作品、不要 entry 的便捷写法。 */
 export function collectionWorks(collection, works) {
-  const byId = new Map((Array.isArray(works) ? works : []).map((work) => [work.id, work]));
-  return (collection?.work_ids || []).map((id) => byId.get(id)).filter(Boolean);
+  return collectionWorkEntries(collection, works).map(({ work }) => work);
 }

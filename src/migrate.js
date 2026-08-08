@@ -89,7 +89,10 @@ function ensureWorkFields(work) {
     release_dates: normalizeReleaseDates(work.release_dates),
     related_refs: work.related_refs || [],
     tagline: work.tagline ?? null,
-    poster_subject_id: work.poster_subject_id ?? null,
+    poster: work.poster ?? null,
+    primary_source: work.primary_source ?? null,
+    runtime_minutes: work.runtime_minutes ?? null,
+    genres: work.genres || [],
     merged_from: work.merged_from || [],
     first_recorded_at: work.first_recorded_at || new Date(0).toISOString()
   };

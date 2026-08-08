@@ -15,5 +15,14 @@ AI_PROVIDER=gemini
 BANGUMI_ACCESS_TOKEN=
 BANGUMI_USER_AGENT=qiankunyi/movie-imprint/0.1
 
+# 可选：TMDB API（第二数据源，负责真人电影 / 欧美电影 / 广义电影搜索）
+# 不是 Bangumi 的替代——Bangumi 继续负责日本动画、动画电影、TV Anime / OVA / ONA。
+# 两个二选一即可：TMDB_ACCESS_TOKEN 是 v4 read access token（走 Authorization 头，推荐），
+# TMDB_API_KEY 是 v3 key（走查询参数）。两个都留空时 TMDB 搜索返回空候选，
+# 统一搜索面板照常只展示 Bangumi 与本地结果，不会报错。
+TMDB_ACCESS_TOKEN=
+TMDB_API_KEY=
+TMDB_LANGUAGE=zh-CN
+
 # 可选：访问密码保护（留空则不需要密码）
 ACCESS_PASSWORD=

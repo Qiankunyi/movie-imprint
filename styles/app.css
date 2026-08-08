@@ -3937,3 +3937,219 @@ svg {
 .settings-note.inline {
   margin: 0;
 }
+
+/* ─── R6：书架第二排的观看状态 / 排序下拉 ─────────────────────────────────────
+   第二排原本是三个排序 chip + 特别场次共四个，再加观看状态就会挤到第三排——
+   手机上放不下（严格两行是硬约束）。改成两个原生 <select>，横向空间立刻够用，
+   "特别场次"作为独立筛选功能仍然是一个独立按钮，不被降级成排序菜单里的一项。
+   用原生 select 还有一个好处：手机上直接调起系统 picker，不引入新的浮层，
+   不和既有的手势层/渲染缓存打架。 */
+.shelf-select {
+  min-height: 36px;
+  padding: 0 clamp(18px, 5vw, 24px) 0 clamp(6px, 2.4vw, 12px);
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--ink);
+  white-space: nowrap;
+  border: 1px solid var(--outline-soft);
+  border-radius: 999px;
+  background: var(--surface-container);
+  font: var(--type-meta);
+  font-size: clamp(11px, 3.1vw, 12px);
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right clamp(8px, 2.4vw, 12px) center, right clamp(4px, 1.6vw, 8px) center;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+
+.shelf-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ─── R6：片单详情页的条目列表 ────────────────────────────────────────────────
+   R5 时片单详情只有一个作品网格（和书架同款方格），加入动作还只能从作品页发起。
+   R6 把片单变成"观影前的补片备忘录"，每条要同时显示加入理由与已看/未看，
+   方格塞不下，改成列表行。 */
+.collection-summary {
+  margin: var(--space-1) 0 var(--space-3);
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.collection-add-button {
+  width: 100%;
+  margin-bottom: var(--space-4);
+}
+
+.collection-entries {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.collection-entry {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-md, 12px);
+  background: var(--surface-container);
+}
+
+.collection-entry-main {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  color: inherit;
+}
+
+.collection-entry-poster {
+  flex: 0 0 auto;
+  width: 48px;
+}
+
+.collection-entry-poster .shelf-poster {
+  width: 48px;
+}
+
+.collection-entry-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.collection-entry-title {
+  color: var(--ink);
+  font: var(--type-body);
+  font-weight: 600;
+}
+
+.collection-entry-title small {
+  color: var(--ink-soft);
+  font-weight: 400;
+}
+
+/* 已看/未看是从「Work 是否存在观影记录」派生出来的，不是条目上存的字段——
+   所以同一部作品在多个片单里永远同时翻转，不会出现三个片单三种状态。 */
+.collection-entry-status {
+  align-self: flex-start;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font: var(--type-meta);
+  font-size: 11px;
+}
+
+.collection-entry.watched .collection-entry-status {
+  color: var(--accent-strong);
+  background: var(--accent-container);
+}
+
+.collection-entry.unwatched .collection-entry-status {
+  color: var(--ink-soft);
+  background: var(--surface-variant, transparent);
+  border: 1px dashed var(--outline-soft);
+}
+
+.collection-entry-reason {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+  white-space: pre-wrap;
+}
+
+.collection-entry-reason.empty {
+  font-style: italic;
+  opacity: 0.6;
+}
+
+.collection-entry-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+  justify-content: center;
+}
+
+.collection-entry-actions .icon-button:disabled {
+  opacity: 0.3;
+}
+
+/* ─── R6：统一作品搜索面板 ────────────────────────────────────────────────────
+   搜索结果分组呈现（本地已有 / 外部数据源），但对用户是同一个「搜索作品」，
+   不要求先理解 Bangumi 和 TMDB 的区别、也不需要选数据源。 */
+.work-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 46vh;
+  overflow-y: auto;
+  margin-top: var(--space-3);
+}
+
+.work-search-group-title {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.work-search-item {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: var(--space-2);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-md, 12px);
+  background: var(--surface-container);
+  text-align: left;
+  color: inherit;
+  width: 100%;
+}
+
+.work-search-item.selected {
+  border-color: var(--accent);
+  background: var(--accent-container);
+}
+
+.work-search-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.work-search-item-title {
+  font: var(--type-body);
+  font-weight: 600;
+}
+
+.work-search-item-meta {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.work-search-state {
+  padding: var(--space-4) 0;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+  text-align: center;
+}
+
+.work-search-item-poster {
+  flex: 0 0 auto;
+  width: 40px;
+  border-radius: 4px;
+  object-fit: cover;
+}

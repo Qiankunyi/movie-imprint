@@ -6,6 +6,8 @@ import {
   deliverExport,
   downloadExport,
   exportAllFilename,
+  buildCollectionsExport,
+  exportCollectionsMarkdown,
   exportAllJSON,
   exportAllMarkdown,
   exportFilename,
@@ -331,4 +333,90 @@ test("copyExportText 使用 Clipboard API 复制文本", async () => {
 
 test("copyExportText 在剪贴板不可用时抛出错误", async () => {
   await assert.rejects(() => copyExportText("x", { navigator: {} }));
+});
+
+// ─── R6 §14：片单纳入全量导出 ────────────────────────────────────────────────
+
+const R6_WORKS = [
+  {
+    id: "work_birdman", title: "鸟人", original_title: "Birdman", release_year: 2014,
+    merged_from: [], external_refs: [{ source: "tmdb", id: "194662" }, { source: "imdb", id: "tt2562232" }]
+  },
+  {
+    id: "work_homecoming", title: "蜘蛛侠：英雄归来", merged_from: [], external_refs: []
+  },
+  {
+    id: "work_merged", title: "你的名字。", release_year: 2016,
+    merged_from: ["work_old_bgm"], external_refs: [{ source: "bangumi", id: "150775" }]
+  }
+];
+
+const R6_COLLECTIONS = [
+  {
+    id: "c1", title: "Michael Keaton 补片", description: "重看《英雄归来》之后想补的",
+    created_at: "2026-08-08T00:00:00.000Z", updated_at: "2026-08-08T00:00:00.000Z",
+    entries: [
+      {
+        work_id: "work_birdman", added_at: "2026-08-08T00:00:00.000Z",
+        reason: "重看《蜘蛛侠：英雄归来》后觉得他的秃鹫非常不错", source_work_id: "work_homecoming"
+      },
+      { work_id: "work_old_bgm", added_at: "2026-08-09T00:00:00.000Z", reason: "", source_work_id: null }
+    ]
+  }
+];
+
+test("R6：未观看作品的加入理由必须进导出——它是「发现过程」的记录", () => {
+  const collections = buildCollectionsExport(R6_COLLECTIONS, R6_WORKS, () => false);
+  const entry = collections[0].entries[0];
+
+  assert.equal(collections[0].title, "Michael Keaton 补片");
+  assert.equal(collections[0].description, "重看《英雄归来》之后想补的");
+  assert.equal(entry.title, "鸟人");
+  assert.equal(entry.reason, "重看《蜘蛛侠：英雄归来》后觉得他的秃鹫非常不错");
+  assert.equal(entry.added_at, "2026-08-08T00:00:00.000Z");
+  assert.equal(entry.watched, false);
+  // §17：从哪部作品发现的，本阶段不做关系图但数据要留住
+  assert.equal(entry.discovered_from, "蜘蛛侠：英雄归来");
+  // 外部标识一并带出，导出的 JSON 到别处也能重新对上号
+  assert.equal(entry.tmdb_id, "194662");
+  assert.equal(entry.imdb_id, "tt2562232");
+  assert.equal(entry.bangumi_id, null);
+});
+
+test("R6：已看状态是导出时现算的快照，条目里从来没存过这个字段", () => {
+  const watched = buildCollectionsExport(R6_COLLECTIONS, R6_WORKS, (id) => id === "work_birdman");
+  assert.equal(watched[0].entries[0].watched, true);
+  const unwatched = buildCollectionsExport(R6_COLLECTIONS, R6_WORKS, () => false);
+  assert.equal(unwatched[0].entries[0].watched, false);
+  // 原始数据完全没被改动
+  assert.ok(!("watched" in R6_COLLECTIONS[0].entries[0]));
+});
+
+test("R6：条目指向被合并掉的旧 work id 时，通过 merged_from 回查得到作品信息", () => {
+  const collections = buildCollectionsExport(R6_COLLECTIONS, R6_WORKS, () => false);
+  const entry = collections[0].entries[1];
+  assert.equal(entry.title, "你的名字。", "合并过的作品不应在导出里变成空条目");
+  assert.equal(entry.bangumi_id, "150775");
+});
+
+test("R6：exportAllJSON 带上片单，且 schema 版本号跟着升", () => {
+  const payload = JSON.parse(exportAllJSON([], buildCollectionsExport(R6_COLLECTIONS, R6_WORKS, () => false)));
+  assert.equal(payload.schema_version, "movie-imprint-export-all-0.2");
+  assert.equal(payload.collections.length, 1);
+  assert.equal(payload.collections[0].entries[0].reason, "重看《蜘蛛侠：英雄归来》后觉得他的秃鹫非常不错");
+});
+
+test("R6：exportAllMarkdown 里片单成段，已看/未看与理由都在", () => {
+  const md = exportAllMarkdown([], buildCollectionsExport(R6_COLLECTIONS, R6_WORKS, () => false));
+  assert.match(md, /# 片单/);
+  assert.match(md, /## Michael Keaton 补片/);
+  assert.match(md, /### 鸟人（2014） · 未看/);
+  assert.match(md, /秃鹫非常不错/);
+  assert.match(md, /> 从《蜘蛛侠：英雄归来》发现/);
+});
+
+test("R6：没有片单时不留一个空的「# 片单」标题", () => {
+  assert.equal(exportCollectionsMarkdown([]), "");
+  const md = exportAllMarkdown([], []);
+  assert.doesNotMatch(md, /# 片单/);
 });

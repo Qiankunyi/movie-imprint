@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  applyBangumiCandidateToWork,
   buildBangumiImageRequest,
   buildBangumiSearchRequest,
   buildWorkSearchQuery,
@@ -24,34 +23,9 @@ test("图片代理只接受正式条目 ID 与 Bangumi 图片主机", () => {
   assert.equal(isAllowedBangumiImageUrl("https://lain.bgm.tv.evil.example/cover.jpg"), false);
 });
 
-test("确认候选只更新稳定 Work 并保存 Bangumi 外部身份", () => {
-  const result = applyBangumiCandidateToWork({
-    id: "work_1",
-    work_id: "work_1",
-    title: "哆啦A梦/大雄与动物行星",
-    aliases: ["哆啦A梦/大雄与动物行星", "大雄与动物行星"],
-    external_refs: [],
-    identity_status: "local_only",
-    match: { status: "needs_confirmation", query: "哆啦A梦 大雄与动物行星", candidates: [] }
-  }, {
-    subjectId: 1309,
-    title: "哆啦A梦：大雄与动物行星",
-    originalTitle: "ドラえもん のび太とアニマル惑星",
-    type: "anime",
-    releaseDate: "1990-03-10",
-    url: "https://bgm.tv/subject/1309"
-  });
-  assert.equal(result.title, "哆啦A梦：大雄与动物行星");
-  assert.equal(result.work_type, "animation_movie");
-  assert.equal(result.release_year, 1990);
-  assert.equal(result.identity_status, "matched");
-  assert.deepEqual(result.external_refs, [{ source: "bangumi", id: "1309", url: "https://bangumi.tv/subject/1309" }]);
-  assert.equal(result.match.status, "confirmed");
-});
-
-test("Bangumi 搜索只请求动画与真人条目且最多三个候选", () => {
+test("R6：Bangumi 搜索请求动画与真人条目，候选上限 10（片单搜索场景 3 条不够用）", () => {
   const request = buildBangumiSearchRequest("哆啦A梦：大雄与动物行星");
-  assert.equal(request.url, "https://api.bgm.tv/v0/search/subjects?limit=3&offset=0");
+  assert.equal(request.url, "https://api.bgm.tv/v0/search/subjects?limit=10&offset=0");
   assert.deepEqual(request.body.filter, { type: [2, 6], nsfw: false });
 
   const candidates = normalizeBangumiSubjects({ data: [
@@ -60,7 +34,8 @@ test("Bangumi 搜索只请求动画与真人条目且最多三个候选", () => 
     { id: 3, name: "C", name_cn: "丙", type: 2 },
     { id: 4, name: "D", name_cn: "丁", type: 2 }
   ] });
-  assert.equal(candidates.length, 3);
+  // name_cn 为空且 name 也拿不到标题的条目会被丢弃，其余全部保留
+  assert.equal(candidates.length, 4);
   assert.deepEqual(candidates[0], {
     subjectId: 1,
     title: "甲",

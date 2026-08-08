@@ -348,7 +348,7 @@ async function runOfflinePosterPath(browser) {
         work_type: "animation_movie",
         aliases: [],
         release_year: 1990,
-        poster_subject_id: 449,
+        poster: { source: "bangumi", subject_id: 449 },
         external_refs: [{ source: "bangumi", id: "449", url: "https://bgm.tv/subject/449" }],
         identity_status: "matched",
         match: { status: "confirmed", candidates: [] },
