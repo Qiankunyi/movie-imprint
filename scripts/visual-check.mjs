@@ -43,7 +43,15 @@ async function ensureVisible(locator, viewport, label) {
 async function openCapture(page, workTitle, { location = "home" } = {}) {
   if (!(await page.getByTestId("add-record").count())) await page.getByTestId("fab-toggle").click();
   await page.getByTestId("add-record").click();
-  await page.getByTestId("skip-to-scene").click();
+  await page.getByTestId("capture-entry").waitFor();
+  const entryText = (await page.getByTestId("capture-entry").innerText()) || "";
+  if (!entryText.includes("观影信息")) {
+    throw new Error("开始记录没有先进入统一的观影信息步骤");
+  }
+  for (const choice of ["粘贴票务信息", "手动填写", "直接跳过"]) {
+    if (!entryText.includes(choice)) throw new Error(`观影信息步骤缺少“${choice}”入口`);
+  }
+  await page.getByTestId("manual-viewing-info").click();
   await page.getByTestId(location === "cinema" ? "location-cinema" : "location-home").click();
   if (location === "cinema") {
     await page.getByTestId("scene-cinema-name-input").fill("测试电影院");
@@ -373,6 +381,16 @@ async function runFunctionalPath(browser) {
   await ensureVisible(page.getByTestId("finish-record"), viewport, "记录完成按钮");
   if (!(await input.evaluate((element) => element === document.activeElement))) throw new Error("真实文本输入没有获得焦点");
 
+  await page.reload();
+  // 草稿恢复会把流程状态置为 capture:compose。此时点“开始记录”也必须重启到
+  // 观影信息，而不能第一次直达感想、关闭后第二次才出现票务入口。
+  await page.getByTestId("fab-toggle").click();
+  await page.getByTestId("add-record").click();
+  await page.getByTestId("capture-entry").waitFor();
+  if (!((await page.getByTestId("capture-entry").innerText()) || "").includes("观影信息")) {
+    throw new Error("草稿恢复后首次开始记录绕过了观影信息步骤");
+  }
+  // 重新加载恢复原草稿上下文，再继续原有的草稿恢复回归路径。
   await page.reload();
   await page.getByRole("button", { name: /未完成的记录/ }).click();
   await page.getByTestId("composer-input").waitFor();

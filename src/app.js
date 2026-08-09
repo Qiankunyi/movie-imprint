@@ -100,12 +100,13 @@ import {
   updateBonusNote,
   tentativeViewingRelation,
   buildManualViewingEvent,
+  createViewingCaptureContext,
   captureWorkTitle,
   finalizeCaptureRecord,
   toggleEventSelection,
   selectAllEvents,
   selectedPendingEvents
-} from "./capture.js?v=2";
+} from "./capture.js?v=3";
 import {
   ATTITUDES,
   ATTITUDE_DESCRIPTIONS,
@@ -615,14 +616,13 @@ function fabActionsFor() {
     ];
   }
   if (state.view === "work") {
-    // R6：还没看过的作品（从片单加进来的）不提供「补充记录」——那个动作的前提是
-    // 已经看过。换成直接开始记录这次观看。
+    // “记录这次观看”永远表示新增一次 ViewingEvent，不能因为作品已经看过就悄悄
+    // 变成直达感想的“补充记录”。补充记录是另一种明确的动作，继续单独保留。
     const workWatched = state.currentWorkId ? isWorkWatched(state.currentWorkId) : true;
     return [
       themeItem,
-      workWatched
-        ? { action: "open-supplement", icon: "edit", label: "补充记录", testId: "open-supplement-fab" }
-        : { action: "open-work-capture", icon: "edit", label: "记录这次观看", testId: "work-start-record-fab" },
+      { action: "start-viewing-capture", icon: "ticket", label: "记录这次观看", testId: "work-start-record-fab" },
+      ...(workWatched ? [{ action: "open-supplement", icon: "edit", label: "补充旧感想", testId: "open-supplement-fab" }] : []),
       { action: "refresh-work-metadata", icon: "match", label: "刷新作品资料", testId: "refresh-work-metadata" },
       { action: "open-delete-work", icon: "trash", label: "删除这部作品", testId: "open-delete-work" },
       { action: "close-work", icon: "back", label: "返回私人影库", testId: "work-back" }
@@ -651,7 +651,7 @@ function fabActionsFor() {
       { action: "open-collections", icon: "back", label: "返回候场片单", testId: "collection-back" }
     ];
   }
-  return [themeItem, searchItem, { action: "open-capture", icon: "edit", label: "开始记录", testId: "add-record" }];
+  return [themeItem, searchItem, { action: "start-viewing-capture", icon: "edit", label: "开始记录", testId: "add-record" }];
 }
 
 /**
@@ -1581,6 +1581,7 @@ function captureContextBar(ctx) {
     ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo" }).format(new Date(firstEvent.viewed_on))
     : "";
   const parts = [`《${ctx.workTitle?.trim() || "未命名作品"}》`];
+  if (ctx.source === "skipped") parts.push("未填写观影信息");
   if (dateStr) parts.push(dateStr);
   if (ctx.locationType === "home") {
     parts.push("在家观看");
@@ -1966,23 +1967,35 @@ function eventTypeTagsRow(selected, key) {
 }
 
 /**
- * R2 Step 1 · 场景识别层。替换旧的「点＋直接进 composer」。
- * 剪贴板命中时才出现横幅（不展示原文）；大面积粘贴区；「没有票，直接写」次要入口。
+ * 统一的观影信息 Step 1。所有“记录这次观看”入口都先到这里，用户可以粘贴票务、
+ * 手动填写，或明确跳过观影信息后再写感想。
  * W13 的截图 OCR 在这里预留位置，本窗口不实现、也不显示占位按钮。
  */
 function captureEntryOverlay() {
+  const ctx = state.captureContext || {};
+  const canSkip = Boolean(ctx.lockedWork || ctx.workTitle?.trim());
   return `<div class="overlay" data-testid="capture-entry">
     <button class="overlay-backdrop" type="button" data-action="close-capture" aria-label="收起"></button>
     <section class="bottom-sheet capture-entry" role="dialog" aria-modal="true" aria-labelledby="capture-entry-title">
       <div class="sheet-handle" aria-hidden="true"></div>
-      <h2 id="capture-entry-title" class="sr-only">这次看的是什么</h2>
+      <span class="sheet-kicker">记录这次观看</span>
+      <h2 id="capture-entry-title">观影信息</h2>
+      <p class="capture-entry-hint">先补充这次观看的信息，也可以直接跳过；下一步再写感想。</p>
+      ${ctx.lockedWork
+        ? `<div class="capture-entry-work" data-testid="capture-entry-work-locked"><span>作品</span><b>《${escapeHtml(ctx.workTitle || "未命名作品")}》</b></div>`
+        : `<label class="capture-entry-title-field"><span>作品</span><input type="text" id="capture-entry-work-title-input" data-testid="capture-entry-work-title-input" value="${escapeHtml(ctx.workTitle || "")}" placeholder="输入作品名；粘贴票务时可留空" /></label>`}
       ${state.clipboardTicketDetected ? `<button type="button" class="clipboard-hint-banner" data-action="use-clipboard-ticket" data-testid="clipboard-ticket-banner">
         <span>检测到票务信息 · 一键使用</span>${icon("chevron")}
       </button>` : ""}
       <label class="capture-paste-area" for="capture-paste-input">
-        <textarea id="capture-paste-input" data-testid="capture-paste-input" placeholder="粘贴票务信息" rows="4"></textarea>
+        <span>粘贴票务信息</span>
+        <textarea id="capture-paste-input" data-testid="capture-paste-input" placeholder="粘贴票务邮件或订单文本，会自动识别" rows="4"></textarea>
       </label>
-      <button type="button" class="capture-skip-link" data-action="skip-to-scene" data-testid="skip-to-scene">没有票，直接写 →</button>
+      <div class="capture-entry-actions">
+        <button type="button" class="sheet-done" data-action="manual-viewing-info" data-testid="manual-viewing-info">手动填写</button>
+        <button type="button" class="capture-skip-link" data-action="skip-viewing-info" data-testid="skip-viewing-info" ${canSkip ? "" : "disabled"}>直接跳过 →</button>
+      </div>
+      ${canSkip ? "" : `<small class="capture-entry-requirement">直接跳过前请先填写作品名</small>`}
     </section>
   </div>`;
 }
@@ -2558,6 +2571,7 @@ function entryMenuOverlay(collection) {
       <div class="sheet-handle" aria-hidden="true"></div>
       <div class="sheet-title-row"><div><span class="sheet-kicker">${escapeHtml(collection.title)}</span><h2 id="entry-menu-title">《${escapeHtml(work?.title || "")}》</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
       <div class="settings-actions">
+        <button type="button" data-action="start-viewing-capture" data-work-id="${escapeHtml(workId)}" data-testid="menu-start-viewing"><span><b>记录这次观看</b><small>先填写观影信息，再写感想</small></span>${icon("edit")}</button>
         <button type="button" data-action="edit-entry-reason" data-work-id="${escapeHtml(workId)}" data-testid="menu-edit-reason"><span><b>编辑想看的理由</b><small>只属于这个片单</small></span>${icon("edit")}</button>
         <button type="button" data-action="move-entry-up" data-work-id="${escapeHtml(workId)}" ${index === 0 ? "disabled" : ""}><span><b>上移</b></span>↑</button>
         <button type="button" data-action="move-entry-down" data-work-id="${escapeHtml(workId)}" ${index === entries.length - 1 ? "disabled" : ""}><span><b>下移</b></span>↓</button>
@@ -4416,24 +4430,21 @@ async function updateCurrentWorkType(workType) {
  * 仍然走完整的 Step 1（可以粘贴票务，拿到影院/座位/时间/票价），只是票务里解析出的
  * 片名会被忽略——锁定的 Work 优先级更高。
  */
-function openWorkCapture(workId) {
-  const work = findWorkById(state.works, workId);
-  if (!work) return;
+function startViewingCapture(workId = null) {
+  const work = workId ? findWorkById(state.works, workId) : null;
+  if (workId && !work) return;
   state.returnScrollY = scrollY;
-  state.captureContext = {
-    source: "manual",
-    lockedWork: true,          // ← 这一个标记贯穿整条流程
-    workId: work.id,
-    workTitle: work.title,
-    subjectId: externalRefId(work, "bangumi") || null
-  };
+  state.captureContext = createViewingCaptureContext({
+    work,
+    subjectId: work ? (externalRefId(work, "bangumi") || null) : null
+  });
   state.captureTagsExpanded = new Set();
   state.clipboardTicketDetected = false;
   pendingClipboardText = null;
   applyCaptureTransition("open-capture");
   render();
   void peekClipboardForTicket();
-  void refreshCaptureHistoryFlag();
+  if (work) void refreshCaptureHistoryFlag();
 }
 
 function openSupplementCompose(workId) {
@@ -4730,18 +4741,9 @@ document.addEventListener("click", async (event) => {
     await db.put("meta", state.aiPreference);
     render();
     announce(`已选择${trigger.textContent.trim()}作为整理服务`);
-  } else if (action === "open-work-capture") {
-    openWorkCapture(state.currentWorkId);
-  } else if (action === "open-capture") {
-    // R2 Step 1：点＋不再直接进 composer，先认场景。
-    state.returnScrollY = scrollY;
-    state.captureContext = null;
-    state.captureTagsExpanded = new Set();
-    state.clipboardTicketDetected = false;
-    pendingClipboardText = null;
-    applyCaptureTransition("open-capture");
-    render();
-    void peekClipboardForTicket();
+  } else if (action === "start-viewing-capture") {
+    const workId = trigger.dataset.workId || (state.view === "work" ? state.currentWorkId : null);
+    startViewingCapture(workId);
   } else if (action === "resume-draft") {
     // 继续写：captureContext 已在 loadState() 时从草稿里恢复，直接回到 Step 3。
     state.returnScrollY = scrollY;
@@ -4757,34 +4759,29 @@ document.addEventListener("click", async (event) => {
     render();
   } else if (action === "use-clipboard-ticket") {
     handleCapturePaste(pendingClipboardText || "");
-  } else if (action === "skip-to-scene") {
-    // 「没有票，直接写」会重建 captureContext。从作品页进来时必须把锁定的 Work
-    // 一并带过去——否则走这条分支就会退回"请输入作品名"，正是要修的那个问题。
-    const locked = state.captureContext?.lockedWork ? state.captureContext : null;
-    state.captureContext = {
-      source: "manual",
-      lockedWork: !!locked,
-      workId: locked?.workId || null,
-      locationType: null,
-      workTitle: locked?.workTitle || "",
-      cinemaName: null,
-      format: null,
-      eventTypes: [],
-      bonusNote: null,
-      subjectId: locked?.subjectId ?? null,
-      workMatch: { status: "idle", candidates: [], sources: null },
-      selectedCandidate: null,
-      hasHistory: false,
-      existingHistoryCount: 0,
-      relationOverride: null,
-      relationLocked: false
-    };
+  } else if (action === "manual-viewing-info") {
+    if (!state.captureContext) return;
+    state.captureContext.source = "manual";
     state.captureTagsExpanded = new Set();
-    if (locked) void refreshCaptureHistoryFlag();
-    applyCaptureTransition("skip");
+    if (state.captureContext.workTitle?.trim()) void refreshCaptureHistoryFlag();
+    applyCaptureTransition("manual");
     render();
+  } else if (action === "skip-viewing-info") {
+    const ctx = state.captureContext;
+    if (!ctx || (!ctx.lockedWork && !ctx.workTitle?.trim())) return;
+    ctx.source = "skipped";
+    ctx.pendingEvents = [];
+    applyCaptureTransition("skip");
+    await saveDraft(state.draft?.text || "", true);
+    render();
+    focusComposer();
   } else if (action === "repaste-ticket-capture") {
-    state.captureContext = null;
+    const previous = state.captureContext;
+    const work = previous?.lockedWork && previous.workId ? findWorkById(state.works, previous.workId) : null;
+    state.captureContext = createViewingCaptureContext({
+      work,
+      subjectId: work ? (externalRefId(work, "bangumi") || null) : null
+    });
     state.captureTagsExpanded = new Set();
     applyCaptureTransition("repaste");
     render();
@@ -5320,6 +5317,13 @@ document.addEventListener("input", (event) => {
     if (finish) finish.disabled = !event.target.value.trim();
   } else if (event.target.matches("[data-testid='recommendation-note']")) {
     updateRecord((record) => { record.recommendationNote = event.target.value; });
+  } else if (event.target.id === "capture-entry-work-title-input") {
+    if (!state.captureContext) return;
+    state.captureContext.workTitle = event.target.value;
+    const skipButton = document.querySelector("[data-testid='skip-viewing-info']");
+    if (skipButton) skipButton.disabled = !event.target.value.trim();
+    const requirement = document.querySelector(".capture-entry-requirement");
+    if (requirement) requirement.hidden = Boolean(event.target.value.trim());
   } else if (event.target.id === "scene-work-title-input" || event.target.id === "capture-manual-title-input") {
     // R2：作品标题输入是"受控但不整页重渲染"——保留光标，只手动同步按钮可用态与防抖匹配。
     if (!state.captureContext) return;

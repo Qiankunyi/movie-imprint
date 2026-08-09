@@ -2464,6 +2464,49 @@ svg {
   padding-bottom: calc(var(--space-6) + env(safe-area-inset-bottom));
 }
 
+.capture-entry h2,
+.capture-entry-hint {
+  margin: 0;
+}
+
+.capture-entry-hint,
+.capture-entry-requirement {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+  line-height: 1.5;
+}
+
+.capture-entry-title-field,
+.capture-entry-work {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.capture-entry-title-field span,
+.capture-entry-work span,
+.capture-paste-area > span {
+  color: var(--ink-soft);
+  font: var(--type-label);
+}
+
+.capture-entry-title-field input,
+.capture-entry-work {
+  min-height: var(--touch);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-card);
+  background: var(--surface-low);
+  color: var(--ink);
+  box-sizing: border-box;
+}
+
+.capture-entry-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+}
+
 .clipboard-hint-banner {
   display: flex;
   min-height: var(--touch);
@@ -2486,7 +2529,8 @@ svg {
 }
 
 .capture-paste-area {
-  display: block;
+  display: grid;
+  gap: var(--space-2);
 }
 
 .capture-paste-area textarea {
@@ -2520,6 +2564,10 @@ svg {
   color: var(--ink-soft);
   background: transparent;
   font: var(--type-label);
+}
+
+.capture-skip-link:disabled {
+  opacity: 0.45;
 }
 
 /* Step 2A：票务确认卡 */

@@ -22,18 +22,24 @@ import { parseDraft, createRawOnlyRecord } from "./domain.js";
  *
  * @param {string} state 当前状态
  * @param {string} action 触发的动作
- * @param {{ source?: "ticket_paste" | "manual" | null }} [context] 仅 compose 的 edit-context 转移需要，
+ * @param {{ source?: "ticket_paste" | "manual" | "skipped" | null }} [context] 仅 compose 的 edit-context 转移需要，
  *   用于决定回到 ticket-confirm 还是 scene-choice
  * @returns {string}
  */
 export function captureTransition(state, action, context = {}) {
+  // “开始记录”是一个重启动作，不是只在 idle 下才生效的普通转移。
+  // 应用恢复了 Step 3 草稿、或旧浮层留下了 capture:compose 状态时，用户仍然可能
+  // 从首页／片单／作品页发起一条新的观影记录。此时必须无条件回到观影信息 Step 1。
+  if (action === "open-capture") return "capture:entry";
+
   switch (state) {
     case "idle":
-      return action === "open-capture" ? "capture:entry" : state;
+      return state;
 
     case "capture:entry":
       if (action === "paste-ticket" || action === "use-clipboard") return "capture:ticket-confirm";
-      if (action === "skip") return "capture:scene-choice";
+      if (action === "manual") return "capture:scene-choice";
+      if (action === "skip") return "capture:compose";
       if (action === "close") return "idle";
       return state;
 
@@ -50,6 +56,7 @@ export function captureTransition(state, action, context = {}) {
 
     case "capture:compose":
       if (action === "edit-context") {
+        if (context.source === "skipped") return "capture:entry";
         return context.source === "manual" ? "capture:scene-choice" : "capture:ticket-confirm";
       }
       if (action === "finish" || action === "close") return "idle";
@@ -58,6 +65,34 @@ export function captureTransition(state, action, context = {}) {
     default:
       return state;
   }
+}
+
+/**
+ * 所有“记录这次观看”入口共用的初始上下文。
+ * 传入 work 时锁定到已有作品；不传时由票务或后续手填补全作品身份。
+ * @param {{ work?: object|null, subjectId?: string|number|null }} [input]
+ */
+export function createViewingCaptureContext({ work = null, subjectId = null } = {}) {
+  const lockedWork = Boolean(work?.id);
+  return {
+    source: null,
+    lockedWork,
+    workId: lockedWork ? work.id : null,
+    workTitle: lockedWork ? (work.title || "") : "",
+    subjectId: lockedWork ? subjectId : null,
+    locationType: null,
+    cinemaName: null,
+    format: null,
+    eventTypes: [],
+    bonusNote: null,
+    workMatch: { status: "idle", candidates: [], sources: null },
+    selectedCandidate: null,
+    hasHistory: false,
+    existingHistoryCount: 0,
+    relationOverride: null,
+    relationLocked: false,
+    pendingEvents: []
+  };
 }
 
 // ─── 活动标签 / 特典备注 ─────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import {
   flipViewingRelation,
   tentativeViewingRelation,
   buildManualViewingEvent,
+  createViewingCaptureContext,
   captureWorkTitle,
   finalizeCaptureRecord,
   toggleEventSelection,
@@ -25,6 +26,12 @@ describe("captureTransition 状态机", () => {
     assert.equal(captureTransition("idle", "open-capture"), "capture:entry");
   });
 
+  it("open-capture 从任意旧流程状态都强制重启到观影信息", () => {
+    for (const current of ["capture:entry", "capture:ticket-confirm", "capture:scene-choice", "capture:compose"]) {
+      assert.equal(captureTransition(current, "open-capture"), "capture:entry", current);
+    }
+  });
+
   it("idle 上无关动作原样返回", () => {
     assert.equal(captureTransition("idle", "confirm"), "idle");
   });
@@ -37,8 +44,12 @@ describe("captureTransition 状态机", () => {
     assert.equal(captureTransition("capture:entry", "use-clipboard"), "capture:ticket-confirm");
   });
 
-  it("capture:entry --skip--> capture:scene-choice", () => {
-    assert.equal(captureTransition("capture:entry", "skip"), "capture:scene-choice");
+  it("capture:entry --manual--> capture:scene-choice", () => {
+    assert.equal(captureTransition("capture:entry", "manual"), "capture:scene-choice");
+  });
+
+  it("capture:entry --skip--> capture:compose", () => {
+    assert.equal(captureTransition("capture:entry", "skip"), "capture:compose");
   });
 
   it("capture:entry --close--> idle", () => {
@@ -76,6 +87,7 @@ describe("captureTransition 状态机", () => {
   it("capture:compose --edit-context--> 依据 context.source 回到 ticket-confirm 或 scene-choice", () => {
     assert.equal(captureTransition("capture:compose", "edit-context", { source: "ticket_paste" }), "capture:ticket-confirm");
     assert.equal(captureTransition("capture:compose", "edit-context", { source: "manual" }), "capture:scene-choice");
+    assert.equal(captureTransition("capture:compose", "edit-context", { source: "skipped" }), "capture:entry");
   });
 
   it("未定义的转移原样返回当前状态，不抛错", () => {
@@ -84,9 +96,30 @@ describe("captureTransition 状态机", () => {
   });
 });
 
+describe("createViewingCaptureContext 统一入口上下文", () => {
+  it("首页等未知作品入口从空上下文开始", () => {
+    const context = createViewingCaptureContext();
+    assert.equal(context.lockedWork, false);
+    assert.equal(context.workId, null);
+    assert.equal(context.workTitle, "");
+    assert.deepEqual(context.pendingEvents, []);
+  });
+
+  it("片单或作品页入口锁定同一个已有 Work", () => {
+    const context = createViewingCaptureContext({
+      work: { id: "work_birdman", title: "Birdman" },
+      subjectId: 265865
+    });
+    assert.equal(context.lockedWork, true);
+    assert.equal(context.workId, "work_birdman");
+    assert.equal(context.workTitle, "Birdman");
+    assert.equal(context.subjectId, 265865);
+  });
+});
+
 // ─── 跳过分支：手填场景 ──────────────────────────────────────────────────────
 
-describe("buildManualViewingEvent（跳过 → 场景二选一）", () => {
+describe("buildManualViewingEvent（手动填写观影信息）", () => {
   it("在家／线上", () => {
     const event = buildManualViewingEvent({ locationType: "home" });
     assert.equal(event.location_type, "home");
@@ -433,28 +466,13 @@ describe("R6 补丁 7：lockedWork 的行为契约", () => {
     assert.equal(canConfirm({ lockedWork: false, workTitle: "" }, "cinema"), false);
   });
 
-  it("「没有票，直接写」重建上下文时必须保留锁", () => {
-    // 复现 src/app.js skip-to-scene 分支的语义
-    const rebuild = (prev) => {
-      const locked = prev?.lockedWork ? prev : null;
-      return {
-        source: "manual",
-        lockedWork: !!locked,
-        workId: locked?.workId || null,
-        workTitle: locked?.workTitle || "",
-        subjectId: locked?.subjectId ?? null
-      };
-    };
-    const after = rebuild(lockedCtx());
+  it("直接跳过观影信息时仍保留锁定作品", () => {
+    const after = createViewingCaptureContext({ work: { id: "work_birdman", title: "鸟人" } });
+    after.source = "skipped";
     assert.equal(after.lockedWork, true);
     assert.equal(after.workId, "work_birdman");
-    assert.equal(after.workTitle, "鸟人", "重建后仍要带着作品名，不能退回空输入框");
-
-    // 全局入口进来的（没有锁）照旧是空的，要求用户填
-    const fresh = rebuild({ source: "manual" });
-    assert.equal(fresh.lockedWork, false);
-    assert.equal(fresh.workId, null);
-    assert.equal(fresh.workTitle, "");
+    assert.equal(after.workTitle, "鸟人");
+    assert.deepEqual(after.pendingEvents, [], "跳过不会伪造 ViewingEvent");
   });
 
   it("票务粘贴时，锁定的作品名优先于票面片名", () => {
