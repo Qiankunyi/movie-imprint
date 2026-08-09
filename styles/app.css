@@ -5333,3 +5333,51 @@ svg {
 .reflection-archive .impression {
   white-space: pre-wrap;
 }
+
+/* 详情页只承担“读已经留下来的内容”。原始感想用一张安静的信笺承载，和上方的
+   结构化卡片拉开层级；编辑入口仍保留为低调的铅笔动作。 */
+.reflection-archive {
+  position: relative;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--line));
+  background:
+    radial-gradient(circle at 92% 10%, color-mix(in srgb, var(--accent-container) 55%, transparent) 0 72px, transparent 73px),
+    color-mix(in srgb, var(--surface) 94%, var(--accent-container));
+  box-shadow: 0 10px 28px rgb(19 38 42 / 7%);
+}
+
+.reflection-letter {
+  position: relative;
+  margin-top: 14px;
+  padding: 14px 18px 16px 22px;
+  border: 1px solid color-mix(in srgb, var(--outline-soft) 72%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--outline-soft));
+  border-radius: 4px 12px 12px 4px;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent calc(2em - 1px),
+      color-mix(in srgb, var(--outline-soft) 34%, transparent) calc(2em - 1px),
+      color-mix(in srgb, var(--outline-soft) 34%, transparent) 2em
+    ),
+    color-mix(in srgb, var(--surface-high) 88%, transparent);
+}
+
+.reflection-letter .impression {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  line-height: 2;
+  letter-spacing: 0.015em;
+}
+
+.analysis-draft-sheet .analysis-draft,
+.work-match-sheet .work-match-panel {
+  margin-top: 16px;
+}
+
+.analysis-draft-sheet .analysis-draft {
+  max-height: min(68vh, 680px);
+  overflow-y: auto;
+}

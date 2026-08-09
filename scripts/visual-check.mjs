@@ -81,6 +81,11 @@ async function openSettings(page) {
   await page.getByTestId("sidebar-settings").click();
 }
 
+async function openDetailFabAction(page, testId) {
+  if (!(await page.getByTestId(testId).count())) await page.getByTestId("fab-toggle").click();
+  await page.getByTestId(testId).click();
+}
+
 async function mockBangumi(page) {
   await page.route("**/public/assets/sidebar-stills/manifest.js*", async (route) => {
     await route.fulfill({
@@ -426,8 +431,10 @@ async function runFunctionalPath(browser) {
   await page.getByTestId("finish-record").click();
   await page.getByTestId("interview-invite").waitFor();
   await page.getByRole("button", { name: "直接生成电影印记", exact: true }).click();
+  await openDetailFabAction(page, "detail-ai-draft");
   await page.getByTestId("analysis-draft").waitFor();
   await page.getByRole("button", { name: "确认这次电影印记", exact: true }).click();
+  await openDetailFabAction(page, "detail-work-match");
   await page.getByTestId("work-match-panel").waitFor();
   const summerCandidate = page.locator("[data-action='confirm-work-match']").filter({ hasText: "夏日列车" }).first();
   await summerCandidate.waitFor();
@@ -437,6 +444,7 @@ async function runFunctionalPath(browser) {
   await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("请选择正确条目"));
   await page.getByRole("button", { name: "保留当前匹配", exact: true }).click();
   await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("作品条目"));
+  await page.getByTestId("work-match-sheet").getByRole("button", { name: "关闭", exact: true }).click();
   const linkedWork = await page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
       const request = indexedDB.open("movie-imprint-local", 4);
@@ -495,6 +503,25 @@ async function runFunctionalPath(browser) {
   if (!((await page.getByTestId("viewing-events").innerText()) || "").includes("测试电影院")) {
     throw new Error("无票务 + 电影院观看没有保存为影院场次");
   }
+  await page.reload();
+  await page.getByTestId("viewing-events").waitFor();
+  if (!((await page.locator(".detail-date").innerText()) || "").includes("2017年9月10日")) {
+    throw new Error("刷新感想详情后真实观影日期丢失");
+  }
+  if (!((await page.getByTestId("viewing-events").innerText()) || "").includes("测试电影院")) {
+    throw new Error("刷新感想详情后正式观影场次丢失");
+  }
+  const detailSectionOrder = await page.locator(".detail-content").evaluate((root) => {
+    const selectors = [".viewing-events-section", ".memory-heading", "[data-testid='interview-archive']", ".reflection-archive"];
+    return selectors.map((selector) => [...root.children].findIndex((child) => child.matches(selector)));
+  });
+  if (detailSectionOrder.some((index) => index < 0) || detailSectionOrder.some((index, i) => i > 0 && index <= detailSectionOrder[i - 1])) {
+    throw new Error(`详情内容顺序没有收敛为观影场次→正式卡片→自我采访→原始感想：${detailSectionOrder.join(",")}`);
+  }
+  if (!(await page.locator(".reflection-letter").count())) throw new Error("原始感想没有使用独立信笺式阅读容器");
+  if (await page.locator(".detail-content > .judgement-summary, .detail-content > .work-match-panel, .detail-content > .analysis-draft").count()) {
+    throw new Error("后台操作入口仍混在感想详情正文里");
+  }
   await page.getByTestId("edit-record-viewing-info").click();
   await page.getByTestId("history-viewed-on").fill("2018-10-11");
   await page.getByTestId("history-location-home").check();
@@ -524,7 +551,7 @@ async function runFunctionalPath(browser) {
   if (await page.getByTestId("analysis-draft").count()) throw new Error("AI 草稿确认后仍停留在待确认区");
   if (!(await page.getByRole("button", { name: "取消核心", exact: true }).count())) throw new Error("AI 草稿没有经过用户明确确认进入正式记录");
 
-  await page.getByTestId("attitude-summary").click();
+  await openDetailFabAction(page, "detail-attitude");
   const recommendationChoices = page.locator(".recommend-choice");
   if (await recommendationChoices.count()) throw new Error("尚未选择态度时不应提前开放推荐判断");
   await page.getByRole("button", { name: "无感", exact: true }).click();
@@ -561,11 +588,8 @@ async function runFunctionalPath(browser) {
     throw new Error("记忆卡片仍残留横向分页/滑动提示控件");
   }
   await page.getByRole("heading", { name: "雨停后的旋律" }).waitFor();
-  const summary = await page.getByTestId("attitude-summary").innerText();
-  if (!summary.includes("喜欢") || !summary.includes("看对象") || !summary.includes("喜欢同类题材的人")) {
-    throw new Error("态度、推荐或快捷条件刷新恢复失败");
-  }
-  await page.getByTestId("attitude-summary").click();
+  if (!((await page.locator(".attitude-badge").innerText()) || "").includes("喜欢")) throw new Error("个人态度刷新恢复失败");
+  await openDetailFabAction(page, "detail-attitude");
   if ((await page.getByTestId("recommendation-note").inputValue()) !== "喜欢安静青春片的人") throw new Error("推荐自定义补充刷新恢复失败");
   if ((await page.getByRole("button", { name: "✓ 喜欢同类题材的人", exact: true }).getAttribute("aria-pressed")) !== "true") throw new Error("推荐快捷条件选中状态刷新恢复失败");
   if ((await page.getByRole("button", { name: "✓ 喜欢安静画面的人", exact: true }).getAttribute("aria-pressed")) !== "true") throw new Error("AI 推荐条件没有经过用户确认并持久化");
@@ -579,7 +603,7 @@ async function runFunctionalPath(browser) {
   if (!latestAttitudeLabel?.includes("喜欢")) throw new Error(`作品页没有显示最新个人态度图标：${latestAttitudeLabel}`);
   await page.locator("[data-testid^='work-impression-']").first().click();
   await page.getByTestId("detail").waitFor();
-  await page.getByRole("button", { name: "重新整理", exact: true }).click();
+  await openDetailFabAction(page, "detail-ai-draft");
   await page.getByTestId("analysis-draft").waitFor();
   await page.getByRole("button", { name: "把建议加入正式记录", exact: true }).waitFor();
   await page.getByRole("button", { name: "用这次结果替换正式卡片", exact: true }).waitFor();
@@ -613,14 +637,16 @@ async function runFunctionalPath(browser) {
   await page.getByTestId("interview-invite").waitFor();
   await page.getByRole("button", { name: "稍后再说", exact: true }).click();
   if (await page.getByRole("heading", { name: "哆啦A梦/大雄与云之王国", exact: true }).count()) throw new Error("斜线系列速记被错误显示为本地作品标题");
+  await openDetailFabAction(page, "detail-work-match");
   const doraemonCandidate = page.locator("[data-action='confirm-work-match']").filter({ hasText: "大雄与云之王国" }).first();
   await doraemonCandidate.waitFor();
   await doraemonCandidate.click();
   await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("作品条目"));
+  await page.getByTestId("work-match-sheet").getByRole("button", { name: "关闭", exact: true }).click();
   const canonicalTitle = page.locator(".detail-title-row h1");
   if ((await canonicalTitle.innerText()) !== "《哆啦A梦：大雄与云之王国》") throw new Error("成品标题没有采用 Bangumi 标准中文名");
   if ((await canonicalTitle.locator("a").getAttribute("href")) !== "https://bangumi.tv/subject/451") throw new Error("成品标题没有链接到正式 Bangumi 条目");
-  await page.getByRole("button", { name: "重新整理", exact: true }).click();
+  await openDetailFabAction(page, "detail-ai-draft");
   await page.getByTestId("analysis-draft").waitFor();
   await page.getByRole("button", { name: "删除建议", exact: true }).waitFor();
   await page.getByRole("button", { name: "删除建议", exact: true }).click();
@@ -735,12 +761,15 @@ async function captureVariants(browser) {
       await page.getByTestId("finish-record").click();
       await page.getByTestId("interview-invite").waitFor();
       await page.getByRole("button", { name: "直接生成电影印记", exact: true }).click();
+      await openDetailFabAction(page, "detail-ai-draft");
       await page.getByTestId("analysis-draft").waitFor();
-      await page.locator("[data-action='confirm-work-match']").filter({ hasText: "夏日列车" }).first().waitFor();
       await page.screenshot({ path: join(output, "detail.png") });
       await page.getByRole("button", { name: "确认这次电影印记", exact: true }).click();
+      await openDetailFabAction(page, "detail-work-match");
+      await page.locator("[data-action='confirm-work-match']").filter({ hasText: "夏日列车" }).first().waitFor();
       await page.locator("[data-action='confirm-work-match']").filter({ hasText: "夏日列车" }).first().click();
       await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("作品条目"));
+      await page.getByTestId("work-match-sheet").getByRole("button", { name: "关闭", exact: true }).click();
       await returnToTimeline(page);
       // R3：壁纸移除后，首页鉴赏履历卡（含制式/活动徽章、金属描边）替代了原来的壁纸截图。
       await page.locator(".record-card.cinema").first().waitFor();
@@ -752,7 +781,7 @@ async function captureVariants(browser) {
       await page.getByRole("button", { name: "关闭", exact: true }).click();
       await page.locator(".record-card", { hasText: "夏日列车" }).click();
       await page.getByTestId("detail").waitFor();
-      await page.getByTestId("attitude-summary").click();
+      await openDetailFabAction(page, "detail-attitude");
       await page.getByRole("button", { name: "喜欢", exact: true }).click();
       await page.getByRole("button", { name: "看对象", exact: true }).click();
       await page.getByRole("button", { name: "喜欢同类题材的人", exact: true }).click();

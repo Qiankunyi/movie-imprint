@@ -528,6 +528,9 @@ async function loadState() {
   if (targetId && state.records.some((record) => record.id === targetId)) {
     state.view = "detail";
     state.activeRecordId = targetId;
+    // 刷新详情页不会触发 openRecord()。必须在首次 render 前主动恢复正式观影事件，
+    // 否则首屏会把空的 state.viewingEvents 当成“观影信息待确认”。
+    await hydrateRecordViewingEvents(targetId, { renderAfter: false });
   }
 }
 
@@ -623,8 +626,15 @@ function fabActionsFor() {
   const searchItem = { action: "search-placeholder", icon: "search", label: "搜索", disabled: true };
 
   if (state.view === "detail") {
+    const record = currentRecord();
+    const work = currentWork(record);
+    const matchStatus = work?.match?.status || "idle";
+    const aiBusy = record?.cardSuggestionStatus === "running" || record?.analysis_status === "running";
     return [
       themeItem,
+      { action: "open-work-match", icon: "match", label: matchStatus === "needs_confirmation" ? "确认作品匹配" : work?.identity_status === "matched" ? "修改作品匹配" : "查找正式作品", testId: "detail-work-match" },
+      ...(record?.status === "confirmed" ? [{ action: "open-attitude", icon: ATTITUDE_ICON_NAMES[record.attitude] || "sentiment_neutral", label: "个人态度与推荐", testId: "detail-attitude" }] : []),
+      { action: record?.activeAnalysisDraft ? "open-analysis-draft" : "request-ai-cards", icon: "star", label: record?.activeAnalysisDraft ? "查看 AI 整理草稿" : aiBusy ? "AI 整理中…" : "AI 整理草稿", disabled: aiBusy && !record?.activeAnalysisDraft, testId: "detail-ai-draft" },
       { action: "open-record-menu", icon: "more", label: "更多操作", testId: "open-record-menu" },
       { action: "open-export", icon: "export", label: "导出这条记录" },
       { action: "close-detail", icon: "back", label: state.detailReturnView === "work" ? "返回作品页" : "返回观影轨迹", testId: "detail-back" }
@@ -1438,6 +1448,17 @@ function analysisDraftMarkup(record) {
   </section>`;
 }
 
+function analysisDraftOverlay(record) {
+  return `<div class="overlay" data-testid="analysis-draft-sheet">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭 AI 整理草稿"></button>
+    <section class="bottom-sheet analysis-draft-sheet" role="dialog" aria-modal="true" aria-labelledby="analysis-draft-sheet-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">后台整理</span><h2 id="analysis-draft-sheet-title">AI 整理草稿</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      ${analysisDraftMarkup(record)}
+    </section>
+  </div>`;
+}
+
 function interviewArchiveMarkup(record) {
   const interview = record.self_interview;
   const answered = answeredInterviewItems(interview);
@@ -1458,18 +1479,6 @@ function normalizedRecommendationDetails(record) {
 
 function recommendationPresetValues(recommendation) {
   return (RECOMMENDATION_PRESETS[recommendation] || []).flatMap((group) => group.options);
-}
-
-function recommendationSummary(record) {
-  if (!record.recommendation) return "还没有判断推荐";
-  if (!isRecommendationAllowed(record.attitude, record.recommendation)) return "推荐需要重新确认";
-  const details = normalizedRecommendationDetails(record);
-  const detail = record.recommendation === "yes"
-    ? details.reasons[0] || details.audiences[0]
-    : record.recommendation === "depends"
-      ? details.audiences[0] || details.reasons[0]
-      : details.noReasons[0] || details.issueTypes[0];
-  return `${recommendationLabel(record.recommendation)}${detail ? ` · ${detail}` : record.recommendationNote ? ` · ${record.recommendationNote}` : ""}`;
 }
 
 function workTypeLabel(type) {
@@ -1521,6 +1530,19 @@ function workMatchPanel(record) {
   </section>`;
 }
 
+function workMatchOverlay(record) {
+  const work = currentWork(record);
+  return `<div class="overlay" data-testid="work-match-sheet">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭作品匹配"></button>
+    <section class="bottom-sheet work-match-sheet" role="dialog" aria-modal="true" aria-labelledby="work-match-sheet-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work?.title || record.title || "")}》</span><h2 id="work-match-sheet-title">查找正式作品</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <p class="settings-note">用于关联正式作品条目、海报和基础资料，不会改动你的观影信息与感想。</p>
+      ${workMatchPanel(record)}
+    </section>
+  </div>`;
+}
+
 function viewingEventsSection(events) {
   if (!events || events.length === 0) return "";
   const dtFmt = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo" });
@@ -1567,7 +1589,6 @@ function renderDetail() {
   const record = currentRecord();
   if (!record) return renderHome();
   const work = currentWork(record);
-  const recommendation = recommendationSummary(record);
   const title = work?.title || record.title;
   const bangumiReference = work?.external_refs?.find((reference) => reference.source === "bangumi");
   const titleMarkup = bangumiReference
@@ -1583,18 +1604,13 @@ function renderDetail() {
     <article class="detail-content">
       <div class="detail-date ${viewedAt ? "" : "pending"}">${escapeHtml(detailDate)}</div>
       <div class="detail-title-row"><h1>${titleMarkup}</h1><span class="attitude-badge ${record.attitude ? "selected" : "empty"}"><i aria-hidden="true"></i>${escapeHtml(attitudeLabel(record.attitude))}</span></div>
-      ${workMatchPanel(record)}
-      ${record.aiWarnings?.length ? `<details class="analysis-warnings" open><summary>整理提示</summary><ul>${record.aiWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></details>` : ""}
-      ${record.analysis_status === "running" || record.analysis_status === "failed" ? `<section class="raw-only-status" data-testid="raw-only-status"><div><b>${record.analysis_status === "running" ? "正在安静整理" : "原始资料已经保存"}</b><p>${record.analysis_status === "running" ? "可以先离开，完成后会作为独立草稿出现在这里。" : "上次没有整理完成，自由感想和采访回答都不受影响。"}</p>${record.analysis_status === "failed" && record.analysis_error ? `<small class="raw-only-error" data-testid="analysis-error">原因：${escapeHtml(record.analysis_error)}</small>` : ""}</div><div class="raw-only-actions"><button type="button" data-action="retry-local-analysis" ${record.analysis_status === "running" ? "disabled" : ""}>${record.analysis_status === "failed" ? "重新整理" : "整理中"}</button></div></section>` : ""}
-      ${record.analysis_stale ? `<section class="stale-banner" data-testid="analysis-stale"><b>源内容已更新</b><p>正式卡片保持原样。需要时可以基于最新原始资料重新整理。</p><button type="button" data-action="request-ai-cards">重新整理</button></section>` : ""}
-      ${record.status === "confirmed" ? `<button class="judgement-summary" type="button" data-action="open-attitude" data-testid="attitude-summary">
-        <span class="judgement-summary-icon" aria-hidden="true">${icon("edit")}</span><span class="judgement-summary-copy"><small>个人态度与推荐 · ${record.attitude ? "点击修改" : "点击选择"}</small><b>${escapeHtml(attitudeLabel(record.attitude))} · ${recommendation}</b></span>${icon("chevron")}
-      </button>` : ""}
-      ${analysisDraftMarkup(record)}
       ${viewingEventsSection(recordEvents)}
-      <div class="memory-heading"><h2>这次留下来的记忆</h2><div class="memory-heading-actions"><button class="text-action" type="button" data-action="request-ai-cards" data-testid="request-ai-cards" ${record.cardSuggestionStatus === "running" || record.analysis_status === "running" ? "disabled" : ""}>${record.cardSuggestionStatus === "running" || record.analysis_status === "running" ? "AI 整理中…" : "重新整理"}</button><button class="text-action add-card" type="button" data-action="add-card">＋ 添加一条记忆</button></div></div>${state.deletedCardUndo?.recordId === record.id ? `<button class="undo-card" type="button" data-action="undo-delete-card">已删除“${escapeHtml(state.deletedCardUndo.card.title || "一条记忆")}” · 撤销</button>` : ""}${record.cardSuggestionStatus === "failed" && record.cardSuggestionError ? `<p class="card-suggestion-error" data-testid="card-suggestion-error">AI 建议没有完成：${escapeHtml(record.cardSuggestionError)}</p>` : ""}${memoryCard(record)}
+      <div class="memory-heading"><h2>这次留下来的记忆</h2><div class="memory-heading-actions"><button class="text-action add-card" type="button" data-action="add-card">＋ 添加一条记忆</button></div></div>${state.deletedCardUndo?.recordId === record.id ? `<button class="undo-card" type="button" data-action="undo-delete-card">已删除“${escapeHtml(state.deletedCardUndo.card.title || "一条记忆")}” · 撤销</button>` : ""}${record.cardSuggestionStatus === "failed" && record.cardSuggestionError ? `<p class="card-suggestion-error" data-testid="card-suggestion-error">AI 建议没有完成：${escapeHtml(record.cardSuggestionError)}</p>` : ""}${memoryCard(record)}
       ${interviewArchiveMarkup(record)}
-      <section class="raw-archive reflection-archive"><div class="raw-archive-heading"><div><small>原始档案</small><h2>📝 我的原始感想</h2></div><button class="text-action" type="button" data-action="edit-impression" data-testid="edit-impression">${icon("edit")}编辑原文</button></div><p class="impression">${escapeHtml(record.rawText)}</p></section>
+      ${record.aiWarnings?.length ? `<details class="analysis-warnings"><summary>整理提示</summary><ul>${record.aiWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></details>` : ""}
+      ${record.analysis_status === "running" || record.analysis_status === "failed" ? `<section class="raw-only-status" data-testid="raw-only-status"><div><b>${record.analysis_status === "running" ? "正在安静整理" : "原始资料已经保存"}</b><p>${record.analysis_status === "running" ? "可以先离开，完成后从右下角的 AI 整理草稿进入。" : "上次没有整理完成，自由感想和采访回答都不受影响。"}</p>${record.analysis_status === "failed" && record.analysis_error ? `<small class="raw-only-error" data-testid="analysis-error">原因：${escapeHtml(record.analysis_error)}</small>` : ""}</div></section>` : ""}
+      ${record.analysis_stale ? `<section class="stale-banner" data-testid="analysis-stale"><b>源内容已更新</b><p>正式卡片保持原样。需要时可从右下角重新生成 AI 整理草稿。</p></section>` : ""}
+      <section class="raw-archive reflection-archive"><div class="raw-archive-heading"><div><small>原始手记</small><h2>我的原始感想</h2></div><button class="text-action" type="button" data-action="edit-impression" data-testid="edit-impression">${icon("edit")}编辑原文</button></div><div class="reflection-letter"><p class="impression">${escapeHtml(record.rawText)}</p></div></section>
     </article>
   </main>`;
 }
@@ -2743,6 +2759,10 @@ function render() {
       ? sidebarDrawer()
     : state.overlay === "attitude" && record
       ? attitudeOverlay(record)
+      : state.overlay === "work-match" && record
+        ? workMatchOverlay(record)
+      : state.overlay === "analysis-draft" && record?.activeAnalysisDraft
+        ? analysisDraftOverlay(record)
       : state.overlay === "card" && record
         ? cardEditorOverlay(record)
       : state.overlay === "export" && record
@@ -3533,6 +3553,36 @@ async function buildAllExportEntries() {
  * routeSnapshot/applyRoute 把"从哪来、回哪去、离开那个视图时的滚动位置"都记下来，
  * 历史记录里额外带上 from/workId，popstate 时才能正确还原返回路径。
  */
+async function hydrateRecordViewingEvents(recordId, { renderAfter = true } = {}) {
+  const record = state.records.find((r) => r.id === recordId);
+  const recordWorkId = record?.work_id || record?.workId;
+  if (!record || !recordWorkId) return [];
+
+  let events = await fetchWorkEvents(recordWorkId);
+  const linkedEvent = viewingEventsForRecord(record, events)[0];
+  // 兼容曾经被“直接跳过”保存、因此完全没有 ViewingEvent 的记录。补一张待确认卡，
+  // 但只有正式关联真的不存在时才补，刷新绝不能覆盖已经填写好的影院/日期。
+  if (record.record_kind !== "supplement" && !linkedEvent) {
+    const pending = {
+      ...buildPendingViewingEvent(),
+      work_id: recordWorkId,
+      record_id: record.id,
+      confirmed_at: new Date().toISOString(),
+      status: "confirmed"
+    };
+    await db.putViewingEvents([pending]);
+    record.viewing_event_id = pending.id;
+    await db.put("records", record);
+    events = [...events, pending];
+    await indexHomeCardData();
+  }
+  if (state.activeRecordId === recordId && state.view === "detail") {
+    state.viewingEvents = events;
+    if (renderAfter) renderPreservingScroll();
+  }
+  return events;
+}
+
 async function openRecord(recordId) {
   applyRoute(routeEnterRecord(routeSnapshot(), recordId, { scrollY }));
   state.viewingEvents = [];
@@ -3540,33 +3590,7 @@ async function openRecord(recordId) {
   history.pushState(historyPayload, "", `#record=${encodeURIComponent(recordId)}`);
   render();
   scrollTo(0, 0);
-  // 异步加载该记录关联的观影场次，加载完成后刷新详情页
-  const record = state.records.find((r) => r.id === recordId);
-  const recordWorkId = record?.work_id || record?.workId;
-  if (record && recordWorkId) {
-    let events = await fetchWorkEvents(recordWorkId);
-    const linkedEvent = events.find((event) => event.record_id === record.id || event.id === record.viewing_event_id);
-    // 兼容曾经被“直接跳过”保存、因此完全没有 ViewingEvent 的记录。打开详情时补一张
-    // 待确认卡，让用户可以补真实观看日期，而不是继续显示 createdAt 或默认在家。
-    if (record.record_kind !== "supplement" && !linkedEvent) {
-      const pending = {
-        ...buildPendingViewingEvent(),
-        work_id: recordWorkId,
-        record_id: record.id,
-        confirmed_at: new Date().toISOString(),
-        status: "confirmed"
-      };
-      await db.putViewingEvents([pending]);
-      record.viewing_event_id = pending.id;
-      await db.put("records", record);
-      events = [...events, pending];
-      await indexHomeCardData();
-    }
-    if (state.activeRecordId === recordId && state.view === "detail") {
-      state.viewingEvents = events;
-      if (events.length > 0) renderPreservingScroll();
-    }
-  }
+  await hydrateRecordViewingEvents(recordId);
 }
 
 /** 详情页返回：按 detailReturnView 回时间线或作品页，恢复对应视图当时的滚动位置。 */
@@ -5104,6 +5128,9 @@ document.addEventListener("click", async (event) => {
     await confirmWorkMatch(trigger.dataset.index);
   } else if (action === "dismiss-work-match") {
     await dismissWorkMatch();
+  } else if (action === "open-work-match") {
+    state.overlay = "work-match";
+    render();
   } else if (action === "retry-work-match") {
     await requestWorkMatch(currentRecord()?.id);
   } else if (action === "rematch-work") {
@@ -5112,12 +5139,21 @@ document.addEventListener("click", async (event) => {
     await runAiAnalysis(currentRecord()?.id);
   } else if (action === "request-ai-cards") {
     await requestAiCards(currentRecord()?.id);
+    if (state.view === "detail" && currentRecord()?.activeAnalysisDraft) {
+      state.overlay = "analysis-draft";
+      render();
+    }
+  } else if (action === "open-analysis-draft") {
+    state.overlay = "analysis-draft";
+    render();
   } else if (action === "confirm-analysis-draft") {
     await updateRecord((record) => applyActiveAnalysisDraft(record));
+    state.overlay = null;
     renderPreservingScroll();
     announce("这次电影印记已确认");
   } else if (action === "replace-with-analysis-draft") {
     await updateRecord((record) => applyActiveAnalysisDraft(record, { replaceCards: true }));
+    state.overlay = null;
     renderPreservingScroll();
     announce("正式卡片已按你的选择替换");
   } else if (action === "discard-analysis-draft") {
@@ -5125,6 +5161,7 @@ document.addEventListener("click", async (event) => {
       archiveActiveAnalysis(record, "dismissed");
       record.analysis_status = record.status === "confirmed" ? "confirmed" : "manual";
     });
+    state.overlay = null;
     renderPreservingScroll();
   } else if (action === "accept-draft-card") {
     await updateRecord((record) => {
@@ -5826,15 +5863,7 @@ window.addEventListener("popstate", (event) => {
       state.viewingEvents = [];
       render();
       scrollTo(0, 0);
-      const record = state.records.find((r) => r.id === recordId);
-      if (record?.workId) {
-        fetchWorkEvents(record.workId).then((events) => {
-          if (state.activeRecordId === recordId && state.view === "detail") {
-            state.viewingEvents = events;
-            renderPreservingScroll();
-          }
-        });
-      }
+      void hydrateRecordViewingEvents(recordId);
       return;
     }
     state.view = "home";
