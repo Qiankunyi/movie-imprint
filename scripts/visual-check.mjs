@@ -181,6 +181,128 @@ async function mockBangumi(page) {
       })
     });
   });
+  await page.route("**/api/tmdb/movie?**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        configured: true,
+        detail: {
+          tmdbId: 123,
+          title: "档案测试片",
+          backdrops: [1, 2, 3, 4].map((index) => ({
+            path: `/archivebackdrop${index}.jpg`, width: 1920, height: 1080, aspectRatio: 1.778, voteAverage: 8 - index / 10
+          }))
+        }
+      })
+    });
+  });
+  await page.route("**/api/tmdb/image?**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "image/png", body: mockPosterImage });
+  });
+  await page.route("https://images.example/**", async (route) => {
+    if (route.request().url().includes("broken")) {
+      await route.fulfill({ status: 404, contentType: "text/plain", body: "missing" });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "image/png", body: mockPosterImage });
+  });
+}
+
+async function runArchiveUiPath(browser) {
+  const viewport = { width: 412, height: 915 };
+  const context = await browser.newContext({ viewport, colorScheme: "light", serviceWorkers: "block" });
+  const page = await context.newPage();
+  await mockBangumi(page);
+  await page.goto(`${baseUrl}/?archive-ui=1`);
+  await page.evaluate(async () => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("movie-imprint-local", 4);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const works = [
+      { id: "work_archive", title: "这是一个足够长用来验证两行网格整齐的电影标题", work_type: "live_action_film", aliases: [], release_year: 2026, release_dates: { entries: [] }, external_refs: [{ source: "tmdb", id: "123" }], primary_source: "tmdb", poster: null, stills: [], genres: [], related_refs: [], tagline: { text: "一段真正属于档案正文的简介。", source: "manual", updated_at: new Date().toISOString() }, identity_status: "matched", merged_from: [], first_recorded_at: new Date().toISOString(), match: { status: "confirmed", candidates: [] } },
+      { id: "work_short", title: "短片名", work_type: "live_action_film", aliases: [], release_year: 2025, release_dates: { entries: [] }, external_refs: [], poster: null, stills: [], genres: [], related_refs: [], tagline: null, identity_status: "local_only", merged_from: [], first_recorded_at: new Date().toISOString(), match: { status: "idle", candidates: [] } }
+    ];
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction("works", "readwrite");
+      for (const work of works) transaction.objectStore("works").put(work);
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error);
+    });
+  });
+  await page.reload();
+
+  await page.getByTestId("open-sidebar").click();
+  const artBox = await page.getByTestId("sidebar-artwork").boundingBox();
+  const firstItemBox = await page.getByTestId("sidebar-home").boundingBox();
+  if (!artBox || Math.abs(artBox.width / artBox.height - 4 / 3) > 0.02) throw new Error("侧栏视觉区不是 4:3");
+  if (!firstItemBox || firstItemBox.y < 280 || firstItemBox.y > 650) throw new Error(`侧栏菜单没有下移到单手区：${JSON.stringify(firstItemBox)}`);
+  await page.getByTestId("sidebar-artwork").click();
+  await page.getByTestId("sidebar-shelf").click();
+  await page.getByTestId("shelf-watch-status").selectOption("all");
+
+  const longTitle = page.getByTestId("shelf-item-work_archive").locator(".shelf-item-title");
+  const titleStyle = await longTitle.evaluate((element) => ({
+    align: getComputedStyle(element).textAlign,
+    height: element.getBoundingClientRect().height,
+    lines: getComputedStyle(element).webkitLineClamp
+  }));
+  if (titleStyle.align !== "center" || titleStyle.height < 35 || titleStyle.lines !== "2") {
+    throw new Error(`影库长标题没有固定两行居中：${JSON.stringify(titleStyle)}`);
+  }
+  await page.getByTestId("shelf-item-work_archive").click();
+  await page.getByTestId("work").waitFor();
+  if (await page.getByTestId("work-start-record").count()) throw new Error("作品页仍有重复的底部长条记录按钮");
+  if (!await page.getByTestId("add-first-still").isVisible()) throw new Error("剧照空状态没有显示");
+
+  await page.getByTestId("add-first-still").click();
+  await page.getByTestId("tmdb-still-0").waitFor();
+  if (await page.locator(".tmdb-still-candidate").count() !== 4) throw new Error("TMDB 候选没有完整展示");
+  const urls = [
+    "https://images.example/one.jpg",
+    "https://images.example/broken.jpg",
+    "https://images.example/three.jpg",
+    "https://images.example/four.jpg"
+  ];
+  for (const [index, url] of urls.entries()) {
+    await page.getByTestId("still-url-input").fill(url);
+    await page.locator("#still-url-form").getByRole("button", { name: "添加剧照", exact: true }).click();
+    await page.waitForFunction((count) => document.querySelectorAll(".still-manager-row").length === count, index + 1);
+  }
+  if (!await page.getByTestId("still-url-input").isDisabled()) throw new Error("达到 4 张后仍可继续添加外链");
+  if (await page.locator(".tmdb-still-candidate:not(:disabled)").count()) throw new Error("达到 4 张后 TMDB 候选仍可保存");
+  await page.getByTestId("stills-editor").locator(".sheet-title-row .icon-button").click();
+
+  const track = page.getByTestId("work-stills-track");
+  if (await track.locator(".work-still").count() !== 4) throw new Error("作品页没有展示 4 张已保存剧照");
+  if (await page.locator("[data-still-dot]").count() !== 4) throw new Error("多图分页指示数量不正确");
+  await page.waitForFunction(() => document.querySelectorAll(".work-still.image-failed").length === 1);
+  await track.evaluate((element) => element.scrollTo({ left: element.clientWidth, behavior: "instant" }));
+  await page.waitForTimeout(100);
+  if (!await page.locator("[data-still-dot='1']").evaluate((dot) => dot.classList.contains("active"))) throw new Error("横向滑动后分页指示没有更新");
+
+  await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight));
+  await page.waitForTimeout(100);
+  const fabBox = await page.getByTestId("fab-toggle").boundingBox();
+  const historyBox = await page.getByTestId("work-history").boundingBox();
+  if (!fabBox || !historyBox || historyBox.y + historyBox.height > fabBox.y - 4) {
+    throw new Error(`页面滚到底时 FAB 遮挡最后内容：fab=${JSON.stringify(fabBox)} history=${JSON.stringify(historyBox)}`);
+  }
+
+  await page.getByTestId("fab-toggle").click();
+  await page.getByRole("button", { name: "深色模式", exact: true }).click();
+  if (await page.evaluate(() => document.documentElement.dataset.theme) !== "dark") throw new Error("作品档案深色主题没有生效");
+  await page.locator(".fab-scrim").click();
+  await page.waitForTimeout(200);
+
+  await page.setViewportSize({ width: 1024, height: 800 });
+  const contentWidth = await page.locator(".work-content").evaluate((element) => element.getBoundingClientRect().width);
+  if (contentWidth > 681 || await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw new Error("PC Web 作品页响应式溢出");
+  await page.locator(".work-stills-shell").hover();
+  if (!await page.locator(".work-still-arrow.next").isVisible()) throw new Error("桌面端悬停时没有剧照箭头辅助");
+  await context.close();
 }
 
 async function runFunctionalPath(browser) {
@@ -534,6 +656,7 @@ try {
   try {
     await runFunctionalPath(browser);
     await runOfflinePosterPath(browser);
+    await runArchiveUiPath(browser);
     if (!testOnly) await captureVariants(browser);
   } finally {
     await browser.close();

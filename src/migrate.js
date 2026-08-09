@@ -91,6 +91,7 @@ function ensureWorkFields(work) {
     related_refs: work.related_refs || [],
     tagline: work.tagline ?? null,
     poster: work.poster ?? null,
+    stills: Array.isArray(work.stills) ? work.stills.slice(0, 4) : [],
     primary_source: work.primary_source ?? null,
     runtime_minutes: work.runtime_minutes ?? null,
     genres: work.genres || [],

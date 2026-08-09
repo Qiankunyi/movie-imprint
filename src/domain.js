@@ -140,6 +140,8 @@ export function createLocalWork(record) {
     primary_source: null,
     // R6：海报引用。取代 R5 的 poster_subject_id（只认 Bangumi），支持多源
     poster: null,
+    // 用户主动保存的横向剧照；数组顺序即展示顺序，首张为主图，最多 4 张。
+    stills: [],
     runtime_minutes: null,
     genres: [],
     // R5：Bangumi 关联条目锚点（只存 id，不猜关系类型，关系标签由用户手动连线）
@@ -380,6 +382,8 @@ export function applyCandidateToWork(work, candidate = {}, { overwritePoster = f
       || (candidate.summary ? buildTagline(taglineFromSummary(candidate.summary), candidate.source || "external") : null),
     // 平时不覆盖已有海报；「刷新作品资料」时才允许用新规则重挑的那张顶上
     poster: overwritePoster ? (candidate.posterRef || work.poster || null) : (work.poster || candidate.posterRef || null),
+    // 刷新外部资料永远不替用户改动个人剧照收藏。
+    stills: work.stills || [],
     runtime_minutes: work.runtime_minutes ?? candidate.runtimeMinutes ?? null,
     genres: work.genres?.length ? work.genres : (candidate.genres || []),
     external_refs: externalRefs,
@@ -450,6 +454,8 @@ export function mergeWorks(primary, duplicates = []) {
     external_refs: externalRefs,
     // 海报优先用 base 的；base 没有才从其余副本里捡一个
     poster: base.poster || allSources.map((work) => work.poster).find(Boolean) || null,
+    // 合并时以主体的个人排序为先，再补其余副本里的剧照；UI/迁移层会限制为 4 张。
+    stills: base.stills?.length ? base.stills : (allSources.map((work) => work.stills).find((list) => list?.length) || []),
     primary_source: base.primary_source || allSources.map((work) => work.primary_source).find(Boolean) || null,
     runtime_minutes: base.runtime_minutes ?? allSources.map((work) => work.runtime_minutes).find((value) => value != null) ?? null,
     genres: base.genres?.length ? base.genres : (allSources.map((work) => work.genres).find((list) => list?.length) || []),

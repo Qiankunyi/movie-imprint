@@ -1,5 +1,15 @@
 import { db, clearAllData, migrateLocalToCloud } from "./db.js?v=14";
 import { interpretTmdbStatus } from "./tmdb.js?v=2";
+import {
+  MAX_WORK_STILLS,
+  addWorkStill,
+  createExternalStill,
+  createTmdbStill,
+  moveWorkStill,
+  normalizeWorkStills,
+  removeWorkStill,
+  setPrimaryWorkStill
+} from "./stills.js?v=1";
 import { parseTicketText, draftViewingEvent } from "./ticket.js";
 import { buildWorkSearchQuery } from "./bangumi.js?v=13";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
@@ -217,6 +227,13 @@ function posterUrlFor(work) {
   return "";
 }
 
+function stillUrlFor(still, size = "w1280") {
+  if (still?.source === "tmdb" && still.path) {
+    return withImageToken(`/api/tmdb/image?path=${encodeURIComponent(still.path)}&size=${encodeURIComponent(size)}`);
+  }
+  return still?.source === "external" ? String(still.url || "") : "";
+}
+
 const state = {
   // R4：view 扩展为四值 —— home（时间线）/ shelf（作品书架）/ work（作品页）/ detail（感想详情）。
   // 返回路径 detail ← work ← shelf ← home，具体转移规则在 src/routing.js（纯函数，见 tests/routing.test.mjs）。
@@ -292,9 +309,11 @@ const state = {
   taglineBusy: false,         // R5：AI 概括一句话简介进行中
   taglineSummary: "",         // R5：当前作品抓回来的完整简介原文（AI 概括的输入）
   taglineSummaryState: "idle", // "idle" | "loading" | "ready" | "missing"
+  stillCandidates: { workId: null, status: "idle", items: [], error: null },
   fabOpen: false,             // R5 补丁 4：右下角 FAB 二级菜单是否展开
   fabClosing: false,          // R5 补丁 6：正在播收起动画（播完才从 DOM 移除）
-  sidebarSkipEntryAnimation: false // 由手势提交时渲染的抽屉不播入场动画（见 finishSidebarGesture）
+  sidebarSkipEntryAnimation: false, // 由手势提交时渲染的抽屉不播入场动画（见 finishSidebarGesture）
+  sidebarArtworkIndex: Math.floor(Math.random() * 4)
 };
 
 let toastTimer = null;
@@ -371,7 +390,9 @@ const icons = {
   // 私人影库 = 胶片格（已经收进来的作品）
   library: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14"/><path d="M3 9.5h4M3 14.5h4M17 9.5h4M17 14.5h4"/>',
   // 候场片单 = 书签（还没看、排队等着的）
-  watchlist: '<path d="M6 4h12v17l-6-4.2L6 21z"/><path d="M9.5 9.5h5"/>'
+  watchlist: '<path d="M6 4h12v17l-6-4.2L6 21z"/><path d="M9.5 9.5h5"/>',
+  photo: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m5 17 4.5-4.5 3 3 2-2 4.5 3.5"/>',
+  star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/>'
 };
 
 // 单条记录导出：文件扩展名与 MIME 类型映射
@@ -671,6 +692,38 @@ function fabMenu() {
   </div>`;
 }
 
+const SIDEBAR_ART_POSITIONS = [
+  // 原图是 2×2 的竖幅拼图；16.67% / 83.33% 会在 4:3 窗口里取每幅画的垂直中央，
+  // 配合 background-size: 200% auto 保持原比例，不把人物横向拉伸。
+  ["0%", "16.6667%"], ["100%", "16.6667%"], ["0%", "83.3333%"], ["100%", "83.3333%"]
+];
+
+/**
+ * 默认从设计稿拼图中展示四幅 AI 插画之一。未来纪念日逻辑只需在打开抽屉前设置
+ * window.movieImprintSidebarArtworkOverride = { tmdbPath } 或 { url, alt } 即可覆盖；
+ * 抽屉本身不承担日期规则，避免为低频场景新造一套系统。
+ */
+function sidebarArtworkMarkup() {
+  const override = window.movieImprintSidebarArtworkOverride;
+  const overrideStill = override?.tmdbPath
+    ? createTmdbStill(override.tmdbPath)
+    : override?.url
+      ? createExternalStill(override.url)
+      : null;
+  if (overrideStill) {
+    return `<div class="sidebar-artwork override" data-testid="sidebar-artwork">
+      <img class="sidebar-artwork-img resilient-image" src="${escapeHtml(stillUrlFor(overrideStill))}" alt="${escapeHtml(override?.alt || "今日电影记忆")}" referrerpolicy="no-referrer" />
+      <span class="image-fallback">${icon("photo")}<small>图片暂不可用</small></span>
+    </div>`;
+  }
+
+  const index = Math.max(0, Math.min(3, state.sidebarArtworkIndex));
+  const [x, y] = SIDEBAR_ART_POSITIONS[index];
+  return `<button type="button" class="sidebar-artwork" data-action="cycle-sidebar-artwork" aria-label="切换侧栏插画" data-testid="sidebar-artwork" style="--art-x:${x};--art-y:${y}">
+    <span class="sidebar-artwork-dots" aria-hidden="true">${SIDEBAR_ART_POSITIONS.map((_, i) => `<i class="${i === index ? "active" : ""}"></i>`).join("")}</span>
+  </button>`;
+}
+
 /**
  * R4 · 侧边栏抽屉：时间线 / 作品书架 / 偏好设置 + 统计行。
  * 只挂在首页顶栏（与 R4_WORK_SHELF.md 描述一致）；从左侧滑入，点遮罩或右滑关闭。
@@ -682,6 +735,7 @@ function sidebarDrawer() {
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭菜单"></button>
     <nav class="sidebar-drawer" aria-label="主菜单" data-testid="sidebar-drawer">
       <div class="sidebar-brand"><span class="brand-mark" aria-hidden="true"></span><h2>电影印记</h2></div>
+      ${sidebarArtworkMarkup()}
       <button type="button" class="sidebar-item ${state.view === "home" ? "active" : ""}" data-action="go-home" data-testid="sidebar-home">
         <span class="sidebar-item-icon" aria-hidden="true">${icon("timeline")}</span><span>观影轨迹</span>
       </button>
@@ -941,9 +995,11 @@ function releaseDateRow(work) {
       ${unknown ? `<span class="release-chip-hint">待认领</span>` : ""}
     </button>`;
   }).join("");
-  return `<div class="work-release-row" data-testid="work-release-row">
-    ${chips}
-    <button type="button" class="release-chip add" data-action="edit-release-dates" data-testid="edit-release-dates">＋ 上映日</button>
+  return `<div class="work-relation-row work-release-row" data-testid="work-release-row">
+    <span class="work-relation-label">上映</span>
+    <span class="work-relation-values">${chips}
+      <button type="button" class="metadata-edit-action" data-action="edit-release-dates" data-testid="edit-release-dates">${chips ? "编辑" : "添加"}</button>
+    </span>
   </div>`;
 }
 
@@ -952,12 +1008,13 @@ function taglineRow(work) {
   const tagline = work.tagline;
   if (!tagline?.text) {
     return `<button type="button" class="work-tagline empty" data-action="edit-tagline" data-testid="edit-tagline">
-      <span class="work-tagline-placeholder">＋ 一句话简介</span>
+      <span class="work-tagline-placeholder">${icon("edit")}<span>添加一句话简介</span></span>
     </button>`;
   }
+  const sourceLabel = taglineSourceLabel(tagline.source);
   return `<button type="button" class="work-tagline" data-action="edit-tagline" data-testid="edit-tagline">
     <span class="work-tagline-text">${escapeHtml(tagline.text)}</span>
-    <span class="work-tagline-source">${escapeHtml(taglineSourceLabel(tagline.source))}</span>
+    <span class="work-tagline-source">${sourceLabel ? `${escapeHtml(sourceLabel)} · ` : ""}<span class="work-tagline-edit">编辑</span></span>
   </button>`;
 }
 
@@ -973,8 +1030,8 @@ function seriesRow(work) {
     ? `<button type="button" class="collection-chip" data-action="open-series" data-series-id="${escapeHtml(series.id)}" data-testid="open-series">
         ${escapeHtml(series.title)}${index >= 0 ? `<span class="work-relation-index">第 ${index + 1} 部</span>` : ""}
       </button>
-      <button type="button" class="collection-chip add" data-action="edit-series" data-testid="edit-series">改</button>`
-    : `<button type="button" class="collection-chip add" data-action="edit-series" data-testid="edit-series">＋ 归入一个系列</button>`;
+      <button type="button" class="metadata-edit-action" data-action="edit-series" data-testid="edit-series">编辑</button>`
+    : `<button type="button" class="metadata-edit-action" data-action="edit-series" data-testid="edit-series">添加系列</button>`;
   return `<div class="work-relation-row" data-testid="work-series-row">
     <span class="work-relation-label">系列</span>
     <span class="work-relation-values">${value}</span>
@@ -987,8 +1044,42 @@ function collectionsRow(work) {
   const chips = mine.map((collection) => `<button type="button" class="collection-chip" data-action="open-collection" data-collection-id="${escapeHtml(collection.id)}" data-testid="work-collection-${escapeHtml(collection.id)}">${escapeHtml(collection.title)}</button>`).join("");
   return `<div class="work-relation-row" data-testid="work-collections-row">
     <span class="work-relation-label">片单</span>
-    <span class="work-relation-values">${chips}<button type="button" class="collection-chip add" data-action="edit-collections" data-testid="edit-collections">＋ 加入片单</button></span>
+    <span class="work-relation-values">${chips}<button type="button" class="metadata-edit-action" data-action="edit-collections" data-testid="edit-collections">${chips ? "管理" : "添加片单"}</button></span>
   </div>`;
+}
+
+function workStillsMarkup(work) {
+  const stills = normalizeWorkStills(work.stills);
+  const heading = `<div class="work-section-heading">
+    <div><h2 class="work-section-title">私人剧照</h2>${stills.length ? `<span class="work-section-count">${stills.length} / ${MAX_WORK_STILLS}</span>` : ""}</div>
+    ${stills.length ? `<button type="button" class="section-edit-action" data-action="edit-stills" data-testid="edit-stills">管理</button>` : ""}
+  </div>`;
+
+  if (!stills.length) {
+    return `<section class="work-section work-stills-section empty" data-testid="work-stills">
+      ${heading}
+      <button type="button" class="work-stills-empty" data-action="edit-stills" data-testid="add-first-still">
+        <span class="work-stills-empty-icon">${icon("photo")}</span>
+        <span><b>留下一张属于你的画面</b><small>最多 4 张，可从 TMDB 挑选或添加图片链接</small></span>
+      </button>
+    </section>`;
+  }
+
+  const slides = stills.map((still, index) => `<figure class="work-still" data-still-index="${index}">
+    <img class="work-still-img resilient-image" src="${escapeHtml(stillUrlFor(still))}" alt="《${escapeHtml(work.title || "")}》保存的剧照 ${index + 1}" loading="${index ? "lazy" : "eager"}" referrerpolicy="no-referrer" />
+    <span class="image-fallback">${icon("photo")}<small>这张图片暂时无法显示</small></span>
+    ${index === 0 ? `<figcaption><span>${icon("star")}</span>主展示图</figcaption>` : ""}
+  </figure>`).join("");
+  const dots = stills.length > 1 ? `<div class="work-still-pagination" aria-label="剧照分页">${stills.map((_, index) => `<span class="${index === 0 ? "active" : ""}" data-still-dot="${index}" aria-current="${index === 0 ? "true" : "false"}"></span>`).join("")}</div>` : "";
+
+  return `<section class="work-section work-stills-section" data-testid="work-stills">
+    ${heading}
+    <div class="work-stills-shell">
+      <div class="work-stills-track" data-testid="work-stills-track">${slides}</div>
+      ${stills.length > 1 ? `<button type="button" class="work-still-arrow previous" data-action="scroll-stills" data-direction="previous" aria-label="上一张剧照">‹</button><button type="button" class="work-still-arrow next" data-action="scroll-stills" data-direction="next" aria-label="下一张剧照">›</button>` : ""}
+    </div>
+    ${dots}
+  </section>`;
 }
 
 /**
@@ -1096,6 +1187,7 @@ function renderWork() {
         ${seriesRow(work)}
         ${collectionsRow(work)}
       </section>
+      ${workStillsMarkup(work)}
       <section class="work-section" data-testid="work-history">
         <h2 class="work-section-title">观影履历</h2>
         ${view.history.length
@@ -1108,9 +1200,6 @@ function renderWork() {
       </section>
       ${attitudeTimelineMarkup(view.attitudeTimeline)}
       ${impressionsListMarkup(view.impressions)}
-      ${watched
-        ? `<button type="button" class="sheet-done work-supplement-button" data-action="open-supplement" data-testid="open-supplement">＋ 补充记录</button>`
-        : `<button type="button" class="sheet-done work-supplement-button" data-action="open-work-capture" data-testid="work-start-record">＋ 记录这次观看</button>`}
     </article>
   </main>`;
 }
@@ -2279,6 +2368,67 @@ function collectionsEditorOverlay(work) {
   </div>`;
 }
 
+function stillsEditorOverlay(work) {
+  const stills = normalizeWorkStills(work.stills);
+  const full = stills.length >= MAX_WORK_STILLS;
+  const savedTmdbPaths = new Set(stills.filter((item) => item.source === "tmdb").map((item) => item.path));
+  const candidates = state.stillCandidates.workId === work.id ? state.stillCandidates : { status: "idle", items: [], error: null };
+  const tmdbId = externalRefId(work, "tmdb");
+
+  const storedRows = stills.map((still, index) => `<li class="still-manager-row" data-testid="still-manager-${escapeHtml(still.id)}">
+    <div class="still-manager-preview">
+      <img class="still-manager-thumb resilient-image" src="${escapeHtml(stillUrlFor(still, "w500"))}" alt="" loading="lazy" referrerpolicy="no-referrer" />
+      <span class="image-fallback">${icon("photo")}</span>
+    </div>
+    <div class="still-manager-copy"><b>${index === 0 ? "主展示图" : `第 ${index + 1} 张`}</b><small>${still.source === "tmdb" ? "来自 TMDB" : "外链图片"}</small></div>
+    <div class="still-manager-actions">
+      ${index > 0 ? `<button type="button" data-action="set-primary-still" data-still-id="${escapeHtml(still.id)}" aria-label="设为主展示图">${icon("star")}</button>` : ""}
+      <button type="button" data-action="move-still" data-direction="up" data-still-id="${escapeHtml(still.id)}" aria-label="前移" ${index === 0 ? "disabled" : ""}>↑</button>
+      <button type="button" data-action="move-still" data-direction="down" data-still-id="${escapeHtml(still.id)}" aria-label="后移" ${index === stills.length - 1 ? "disabled" : ""}>↓</button>
+      <button type="button" class="danger" data-action="remove-still" data-still-id="${escapeHtml(still.id)}" aria-label="删除剧照">${icon("trash")}</button>
+    </div>
+  </li>`).join("");
+
+  let tmdbBlock;
+  if (!tmdbId) {
+    tmdbBlock = `<p class="stills-source-state">这部作品还没有关联 TMDB 条目，仍可使用上方的图片链接。</p>`;
+  } else if (candidates.status === "loading" || candidates.status === "idle") {
+    tmdbBlock = `<p class="stills-source-state">正在读取 TMDB 候选剧照…</p>`;
+  } else if (candidates.status === "error") {
+    tmdbBlock = `<p class="stills-source-state error">${escapeHtml(candidates.error || "暂时拿不到候选剧照")}</p><button type="button" class="text-action" data-action="reload-tmdb-stills">重试</button>`;
+  } else if (!candidates.items.length) {
+    tmdbBlock = `<p class="stills-source-state">TMDB 暂无可用的横向剧照。</p>`;
+  } else {
+    tmdbBlock = `<div class="tmdb-still-candidates">${candidates.items.map((candidate, index) => {
+      const saved = savedTmdbPaths.has(candidate.path);
+      return `<button type="button" class="tmdb-still-candidate ${saved ? "saved" : ""}" data-action="add-tmdb-still" data-path="${escapeHtml(candidate.path)}" ${saved || full ? "disabled" : ""} data-testid="tmdb-still-${index}">
+        <span class="tmdb-still-preview"><img class="tmdb-still-img resilient-image" src="${escapeHtml(stillUrlFor({ source: "tmdb", path: candidate.path }, "w500"))}" alt="候选剧照 ${index + 1}" loading="lazy" /><span class="image-fallback">${icon("photo")}<small>无法预览</small></span></span>
+        <span>${saved ? "已保存" : full ? "已满 4 张" : "保存这张"}</span>
+      </button>`;
+    }).join("")}</div>`;
+  }
+
+  return `<div class="overlay" data-testid="stills-editor">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet stills-editor" role="dialog" aria-modal="true" aria-labelledby="stills-editor-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="stills-editor-title">私人剧照</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <p class="settings-note">只留下真正想记住的画面。最多 4 张，第一张会作为作品页主展示图，不会自动轮播。</p>
+      <div class="stills-capacity"><span>已保存 ${stills.length} / ${MAX_WORK_STILLS}</span><i><b style="width:${stills.length / MAX_WORK_STILLS * 100}%"></b></i></div>
+      ${storedRows ? `<ol class="still-manager-list">${storedRows}</ol>` : ""}
+      <form id="still-url-form" class="still-url-form">
+        <label><span>添加图片链接</span><input type="url" name="url" inputmode="url" placeholder="https://example.com/still.jpg" ${full ? "disabled" : ""} data-testid="still-url-input" required /></label>
+        <button class="sheet-done" type="submit" ${full ? "disabled" : ""}>添加剧照</button>
+      </form>
+      ${full ? `<p class="stills-limit-note">已经选满 4 张。删除或替换一张后才能继续添加。</p>` : ""}
+      <section class="tmdb-stills-source" aria-labelledby="tmdb-stills-title">
+        <div class="stills-source-heading"><h3 id="tmdb-stills-title">从 TMDB 选择</h3>${tmdbId ? `<span>候选不会自动保存</span>` : ""}</div>
+        ${tmdbBlock}
+      </section>
+    </section>
+  </div>`;
+}
+
 /**
  * R6 §10：统一作品搜索面板。
  *
@@ -2556,6 +2706,8 @@ function render() {
         ? seriesEditorOverlay(currentWorkForOverlay)
       : state.overlay === "collections" && currentWorkForOverlay
         ? collectionsEditorOverlay(currentWorkForOverlay)
+      : state.overlay === "stills" && currentWorkForOverlay
+        ? stillsEditorOverlay(currentWorkForOverlay)
       : state.overlay === "collection-editor" && currentCollectionForOverlay
         ? collectionEditorOverlay(currentCollectionForOverlay)
       : state.overlay === "entry-reason" && currentCollectionForOverlay
@@ -3546,6 +3698,31 @@ async function updateCurrentWork(mutate) {
   return updated;
 }
 
+async function loadTmdbStillCandidates({ force = false } = {}) {
+  const work = findWorkById(state.works, state.currentWorkId);
+  if (!work) return;
+  const tmdbId = externalRefId(work, "tmdb");
+  if (!tmdbId) return;
+  if (!force && state.stillCandidates.workId === work.id && state.stillCandidates.status === "ready") return;
+
+  state.stillCandidates = { workId: work.id, status: "loading", items: [], error: null };
+  render();
+  try {
+    const response = await apiFetch(`/api/tmdb/movie?id=${encodeURIComponent(tmdbId)}`, { headers: { accept: "application/json" } });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.detail) throw new Error(payload?.message || "暂时拿不到候选剧照");
+    state.stillCandidates = {
+      workId: work.id,
+      status: "ready",
+      items: Array.isArray(payload.detail.backdrops) ? payload.detail.backdrops : [],
+      error: null
+    };
+  } catch (error) {
+    state.stillCandidates = { workId: work.id, status: "error", items: [], error: String(error.message || "暂时拿不到候选剧照") };
+  }
+  if (state.overlay === "stills" && state.currentWorkId === work.id) render();
+}
+
 /** 同上，作用于系列页当前系列。 */
 async function updateCurrentSeries(mutate) {
   const series = state.series.find((item) => item.id === state.currentSeriesId);
@@ -4293,6 +4470,30 @@ function openSupplementCompose(workId) {
   focusComposer();
 }
 
+// 外部图片与 TMDB 代理都可能暂时失败。统一切到档案式占位，避免浏览器破图图标。
+document.addEventListener("error", (event) => {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement) || !image.classList.contains("resilient-image")) return;
+  image.hidden = true;
+  image.closest(".work-still, .still-manager-preview, .tmdb-still-preview, .sidebar-artwork")?.classList.add("image-failed");
+}, true);
+
+let stillScrollFrame = null;
+document.addEventListener("scroll", (event) => {
+  const track = event.target;
+  if (!(track instanceof HTMLElement) || !track.classList.contains("work-stills-track")) return;
+  cancelAnimationFrame(stillScrollFrame);
+  stillScrollFrame = requestAnimationFrame(() => {
+    const count = track.querySelectorAll(".work-still").length;
+    const index = Math.max(0, Math.min(count - 1, Math.round(track.scrollLeft / Math.max(1, track.clientWidth))));
+    track.closest(".work-stills-section")?.querySelectorAll("[data-still-dot]").forEach((dot, dotIndex) => {
+      const active = dotIndex === index;
+      dot.classList.toggle("active", active);
+      dot.setAttribute("aria-current", String(active));
+    });
+  });
+}, true);
+
 document.addEventListener("click", async (event) => {
   const trigger = event.target.closest("[data-action]");
   if (!trigger) return;
@@ -4317,7 +4518,11 @@ document.addEventListener("click", async (event) => {
     state.overlay = "settings";
     render();
   } else if (action === "open-sidebar") {
+    state.sidebarArtworkIndex = Math.floor(Math.random() * SIDEBAR_ART_POSITIONS.length);
     state.overlay = "sidebar";
+    render();
+  } else if (action === "cycle-sidebar-artwork") {
+    state.sidebarArtworkIndex = (state.sidebarArtworkIndex + 1) % SIDEBAR_ART_POSITIONS.length;
     render();
   } else if (action === "open-shelf") {
     openShelf();
@@ -4384,6 +4589,33 @@ document.addEventListener("click", async (event) => {
   } else if (action === "edit-collections") {
     state.overlay = "collections";
     render();
+  } else if (action === "edit-stills") {
+    state.overlay = "stills";
+    render();
+    void loadTmdbStillCandidates();
+  } else if (action === "reload-tmdb-stills") {
+    void loadTmdbStillCandidates({ force: true });
+  } else if (action === "add-tmdb-still") {
+    const still = createTmdbStill(trigger.dataset.path);
+    const current = findWorkById(state.works, state.currentWorkId);
+    if (!still || normalizeWorkStills(current?.stills).length >= MAX_WORK_STILLS) return;
+    await updateCurrentWork((work) => ({ ...work, stills: addWorkStill(work.stills, still) }));
+    render();
+    showToast("已保存这张剧照");
+  } else if (action === "remove-still") {
+    await updateCurrentWork((work) => ({ ...work, stills: removeWorkStill(work.stills, trigger.dataset.stillId) }));
+    render();
+    showToast("已移除这张剧照");
+  } else if (action === "move-still") {
+    await updateCurrentWork((work) => ({ ...work, stills: moveWorkStill(work.stills, trigger.dataset.stillId, trigger.dataset.direction) }));
+    render();
+  } else if (action === "set-primary-still") {
+    await updateCurrentWork((work) => ({ ...work, stills: setPrimaryWorkStill(work.stills, trigger.dataset.stillId) }));
+    render();
+    showToast("已设为主展示图");
+  } else if (action === "scroll-stills") {
+    const track = trigger.closest(".work-stills-shell")?.querySelector(".work-stills-track");
+    if (track) track.scrollBy({ left: (trigger.dataset.direction === "previous" ? -1 : 1) * track.clientWidth, behavior: "smooth" });
   } else if (action === "toggle-collection") {
     await toggleWorkInCollection(trigger.dataset.collectionId);
   } else if (action === "remove-from-collection") {
@@ -5286,6 +5518,31 @@ document.addEventListener("submit", async (event) => {
     return;
   }
 
+  if (event.target.id === "still-url-form") {
+    event.preventDefault();
+    const url = String(new FormData(event.target).get("url") || "").trim();
+    const still = createExternalStill(url);
+    const work = findWorkById(state.works, state.currentWorkId);
+    if (!still) {
+      showToast("请输入有效的 HTTPS 图片链接");
+      return;
+    }
+    if (normalizeWorkStills(work?.stills).length >= MAX_WORK_STILLS) {
+      showToast("每部作品最多保存 4 张剧照");
+      return;
+    }
+    const before = normalizeWorkStills(work?.stills).length;
+    const updated = await updateCurrentWork((current) => ({ ...current, stills: addWorkStill(current.stills, still) }));
+    const after = normalizeWorkStills(updated?.stills).length;
+    if (after === before) {
+      showToast("这张图片已经保存过了");
+      return;
+    }
+    render();
+    showToast("已添加剧照");
+    return;
+  }
+
   if (event.target.id === "tagline-form") {
     event.preventDefault();
     const text = String(new FormData(event.target).get("text") || "").trim();
@@ -5738,6 +5995,7 @@ document.addEventListener("touchmove", (event) => {
     // 新一次手势开始了：撤掉上一次收尾动画排的定时器，否则它会在这次拖动进行到
     // 一半时触发并清空手势层（抽屉凭空消失 → 再被下一帧重建，来回晃）
     cancelSidebarTimer();
+    state.sidebarArtworkIndex = Math.floor(Math.random() * SIDEBAR_ART_POSITIONS.length);
     gestureLayer.innerHTML = sidebarDrawer();
     const drawer = sidebarDrawerEl();
     if (!drawer) { sidebarGesture = null; clearGestureLayer(); return; }

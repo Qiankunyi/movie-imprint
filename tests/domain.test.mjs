@@ -122,6 +122,7 @@ test("每条本地记录先获得稳定作品身份且保留匹配别名", () =>
     external_refs: [],
     primary_source: null,
     poster: null,
+    stills: [],
     runtime_minutes: null,
     genres: [],
     related_refs: [],

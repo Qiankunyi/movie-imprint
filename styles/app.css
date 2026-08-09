@@ -3732,6 +3732,597 @@ svg {
   background: transparent;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   Android-first 私人电影档案 · R7
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* 影库片名固定为两行高并居中：长标题不会把同一行卡片推得参差不齐。 */
+.shelf-item {
+  text-align: center;
+}
+
+.shelf-item-title {
+  display: -webkit-box;
+  min-height: 36px;
+  overflow: hidden;
+  text-align: center;
+  white-space: normal;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 18px;
+}
+
+/* 正式简介先被读到，来源/编辑入口退到第二层；空状态只保留轻量邀请。 */
+.work-tagline {
+  gap: 5px;
+  min-height: 44px;
+  padding-top: var(--space-3);
+}
+
+.work-tagline-text {
+  font-weight: 550;
+  line-height: 1.55;
+}
+
+.work-tagline-source {
+  color: var(--ink-soft);
+  opacity: 0.78;
+}
+
+.work-tagline-edit {
+  text-decoration: underline;
+  text-decoration-color: var(--outline-soft);
+  text-underline-offset: 3px;
+}
+
+.work-tagline-placeholder {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 40px;
+  gap: 7px;
+  align-items: center;
+  color: var(--ink-soft);
+}
+
+.work-tagline-placeholder svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 档案事实靠留白分层，不再用上下两根横线包成“表单区”。 */
+.work-facts {
+  gap: var(--space-3);
+  padding: var(--space-3) 0 var(--space-5);
+  margin-bottom: 0;
+  border: 0;
+}
+
+.work-release-row {
+  display: grid;
+}
+
+.release-chip {
+  min-height: 30px;
+  padding: 2px 6px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.release-chip:hover,
+.release-chip:focus-visible {
+  background: var(--surface-high);
+}
+
+.release-chip.unclaimed {
+  padding-inline: 9px;
+}
+
+.collection-chip {
+  min-height: 30px;
+  padding: 2px 6px;
+  border-color: transparent;
+  background: transparent;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  text-underline-offset: 3px;
+}
+
+.metadata-edit-action,
+.section-edit-action {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  padding: 0 7px;
+  color: var(--ink-soft);
+  border-radius: 999px;
+  background: transparent;
+  font: var(--type-meta);
+  opacity: 0.78;
+}
+
+.metadata-edit-action:active,
+.section-edit-action:active {
+  background: var(--surface-high);
+  opacity: 1;
+}
+
+.work-relation-label {
+  padding-top: 7px;
+}
+
+.work-section-heading {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.work-section-heading > div {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.work-section-heading .work-section-title {
+  margin: 0;
+}
+
+.work-section-count {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+/* ── 有限剧照带：手机一屏一张、原生横滑、无自动播放 ─────────────────────── */
+.work-stills-section {
+  margin-top: var(--space-2);
+  margin-bottom: var(--space-6);
+}
+
+.work-stills-shell {
+  position: relative;
+}
+
+.work-stills-track {
+  display: flex;
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: var(--radius-card);
+  background: var(--surface-high);
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  overscroll-behavior-inline: contain;
+  touch-action: pan-x pan-y;
+}
+
+.work-stills-track::-webkit-scrollbar {
+  display: none;
+}
+
+.work-still {
+  position: relative;
+  width: 100%;
+  flex: 0 0 100%;
+  aspect-ratio: 16 / 9;
+  margin: 0;
+  overflow: hidden;
+  background: var(--surface-high);
+  scroll-snap-align: center;
+  scroll-snap-stop: always;
+}
+
+.work-still-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.image-fallback {
+  position: absolute;
+  inset: 0;
+  display: none;
+  gap: 7px;
+  place-content: center;
+  place-items: center;
+  color: var(--ink-soft);
+  text-align: center;
+  background: linear-gradient(145deg, var(--surface-high), var(--surface-container));
+  font: var(--type-meta);
+}
+
+.image-fallback svg {
+  width: 26px;
+  height: 26px;
+}
+
+.image-failed > .image-fallback {
+  display: grid;
+}
+
+.work-still figcaption {
+  position: absolute;
+  bottom: var(--space-3);
+  left: var(--space-3);
+  display: inline-flex;
+  min-height: 28px;
+  gap: 5px;
+  align-items: center;
+  padding: 0 9px;
+  color: #fff;
+  border-radius: 999px;
+  background: rgb(5 12 14 / 68%);
+  backdrop-filter: blur(8px);
+  font: var(--type-meta);
+}
+
+.work-still figcaption svg {
+  width: 14px;
+  height: 14px;
+}
+
+.work-still-pagination {
+  display: flex;
+  height: 24px;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+}
+
+.work-still-pagination span {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--outline);
+  opacity: 0.48;
+  transition: width var(--motion-fast) ease, opacity var(--motion-fast) ease, background var(--motion-fast) ease;
+}
+
+.work-still-pagination span.active {
+  width: 18px;
+  background: var(--accent);
+  opacity: 1;
+}
+
+.work-still-arrow {
+  position: absolute;
+  top: 50%;
+  display: none;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  color: #fff;
+  border-radius: 50%;
+  background: rgb(5 12 14 / 58%);
+  transform: translateY(-50%);
+  font-size: 27px;
+}
+
+.work-still-arrow.previous { left: var(--space-2); }
+.work-still-arrow.next { right: var(--space-2); }
+
+@media (hover: hover) and (pointer: fine) {
+  .work-stills-shell:hover .work-still-arrow,
+  .work-still-arrow:focus-visible { display: grid; }
+}
+
+.work-stills-empty {
+  display: flex;
+  width: 100%;
+  min-height: 116px;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  color: var(--ink-soft);
+  text-align: left;
+  border: 1px dashed var(--outline-soft);
+  border-radius: var(--radius-card);
+  background: linear-gradient(145deg, transparent, var(--surface-container));
+}
+
+.work-stills-empty:active {
+  background: var(--surface-high);
+}
+
+.work-stills-empty > span:last-child {
+  display: grid;
+  gap: 3px;
+}
+
+.work-stills-empty b {
+  color: var(--ink);
+  font: var(--type-label);
+}
+
+.work-stills-empty small {
+  font: var(--type-meta);
+}
+
+.work-stills-empty-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--accent-strong);
+  border-radius: 50%;
+  background: var(--accent-container);
+}
+
+.work-stills-empty-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* ── 剧照管理 bottom sheet ──────────────────────────────────────────────── */
+.stills-editor {
+  max-height: min(92dvh, 860px);
+  overflow-y: auto;
+}
+
+.stills-capacity {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-3);
+  align-items: center;
+  margin: var(--space-4) 0;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.stills-capacity i {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-high);
+}
+
+.stills-capacity b {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.still-manager-list {
+  display: grid;
+  gap: var(--space-2);
+  padding: 0;
+  margin: 0 0 var(--space-4);
+  list-style: none;
+}
+
+.still-manager-row {
+  display: grid;
+  grid-template-columns: 88px minmax(72px, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  min-height: 64px;
+}
+
+.still-manager-preview {
+  position: relative;
+  width: 88px;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-tag);
+  background: var(--surface-high);
+}
+
+.still-manager-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.still-manager-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.still-manager-copy b { color: var(--ink); font: var(--type-label); }
+.still-manager-copy small { color: var(--ink-soft); font: var(--type-meta); }
+
+.still-manager-actions {
+  display: flex;
+  align-items: center;
+}
+
+.still-manager-actions button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  color: var(--ink-soft);
+  border-radius: 50%;
+  background: transparent;
+  font: var(--type-label);
+}
+
+.still-manager-actions button:active { background: var(--surface-high); }
+.still-manager-actions button:disabled { opacity: 0.25; }
+.still-manager-actions button.danger { color: var(--danger); }
+.still-manager-actions svg { width: 17px; height: 17px; }
+
+.still-url-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: end;
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--outline-soft);
+}
+
+.still-url-form .sheet-done {
+  width: auto;
+  min-height: 48px;
+  margin: 0;
+  padding-inline: var(--space-4);
+}
+
+.stills-limit-note,
+.stills-source-state {
+  margin: 0;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.stills-source-state.error { color: var(--danger); }
+
+.tmdb-stills-source {
+  padding-top: var(--space-4);
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--outline-soft);
+}
+
+.stills-source-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.stills-source-heading h3 {
+  margin: 0;
+  color: var(--ink);
+  font: var(--type-label);
+}
+
+.stills-source-heading span {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.tmdb-still-candidates {
+  display: grid;
+  grid-auto-columns: min(76vw, 260px);
+  grid-auto-flow: column;
+  gap: var(--space-3);
+  padding-bottom: var(--space-2);
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  overscroll-behavior-inline: contain;
+}
+
+.tmdb-still-candidate {
+  display: grid;
+  gap: var(--space-2);
+  color: var(--accent-strong);
+  text-align: left;
+  background: transparent;
+  scroll-snap-align: start;
+  font: var(--type-meta);
+}
+
+.tmdb-still-candidate:disabled { color: var(--ink-soft); opacity: 0.62; }
+
+.tmdb-still-preview {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  border: 2px solid transparent;
+  border-radius: var(--radius-card);
+  background: var(--surface-high);
+}
+
+.tmdb-still-candidate:not(:disabled):active .tmdb-still-preview { border-color: var(--accent); }
+.tmdb-still-img { width: 100%; height: 100%; object-fit: cover; }
+
+/* ── 侧栏 4:3 视觉区。默认图是四幅 AI 插画拼图，以 2×2 sprite 逐格展示。 ───── */
+.sidebar-drawer {
+  padding-top: calc(env(safe-area-inset-top) + var(--space-3));
+}
+
+.sidebar-brand {
+  margin-bottom: var(--space-3);
+}
+
+.sidebar-artwork {
+  position: relative;
+  display: block;
+  width: 100%;
+  flex: 0 0 auto;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-card);
+  background-color: var(--surface-high);
+  background-image: url("/docs/design/mockups/assets/cinema-memory-hero-v1.png");
+  background-position: var(--art-x, 0%) var(--art-y, 0%);
+  background-size: 200% auto;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 8%);
+}
+
+.sidebar-artwork.override {
+  background-image: none;
+}
+
+.sidebar-artwork-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.sidebar-artwork-dots {
+  position: absolute;
+  right: 10px;
+  bottom: 9px;
+  display: flex;
+  gap: 4px;
+  padding: 5px 7px;
+  border-radius: 999px;
+  background: rgb(5 12 14 / 46%);
+  backdrop-filter: blur(6px);
+}
+
+.sidebar-artwork-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 48%);
+}
+
+.sidebar-artwork-dots i.active {
+  width: 13px;
+  border-radius: 999px;
+  background: #fff;
+}
+
+@media (max-width: 380px) {
+  .still-manager-row {
+    grid-template-columns: 72px minmax(64px, 1fr) auto;
+    gap: var(--space-2);
+  }
+
+  .still-manager-preview { width: 72px; }
+  .still-manager-actions button { width: 36px; height: 40px; }
+
+  .still-url-form {
+    grid-template-columns: 1fr;
+  }
+
+  .still-url-form .sheet-done { width: 100%; }
+}
+
+@media (min-width: 720px) {
+  .work-stills-track { border-radius: calc(var(--radius-card) + 4px); }
+  .tmdb-still-candidates { grid-auto-columns: 280px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .work-stills-track { scroll-behavior: auto; }
+}
+
 .icon-button.small {
   width: 32px;
   height: 32px;

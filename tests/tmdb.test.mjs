@@ -9,6 +9,7 @@ import {
   isAllowedTmdbImageUrl,
   isValidTmdbPosterPath,
   normalizeTmdbDetail,
+  normalizeTmdbBackdrops,
   normalizeTmdbMovies,
   pickPosterPath
 } from "../src/tmdb.js";
@@ -354,4 +355,26 @@ test("补丁9：没有 images 字段的旧响应仍然工作（向后兼容）",
     id: 1, title: "某片", poster_path: P.en, original_language: "en"
   });
   assert.equal(detail.posterPath, P.en);
+});
+
+test("横向剧照候选会排除竖图、非法路径、重复项并按评分排序", () => {
+  const candidates = normalizeTmdbBackdrops([
+    { file_path: "/widegood1.jpg", width: 1920, height: 1080, vote_average: 7.2 },
+    { file_path: "/widebest2.jpg", width: 1280, height: 720, vote_average: 8.9 },
+    { file_path: "/widegood1.jpg", width: 1920, height: 1080, vote_average: 9.9 },
+    { file_path: "/portrait3.jpg", width: 720, height: 1080, vote_average: 9.5 },
+    { file_path: "/../../bad.jpg", width: 1920, height: 1080, vote_average: 10 }
+  ]);
+  assert.deepEqual(candidates.map((item) => item.path), ["/widebest2.jpg", "/widegood1.jpg"]);
+  assert.equal(candidates[0].aspectRatio, 1.778);
+});
+
+test("详情归一化带回横向候选，但不自动选择主剧照", () => {
+  const detail = normalizeTmdbDetail({
+    id: 2,
+    title: "候选测试",
+    images: { backdrops: [{ file_path: "/backdrop8.jpg", width: 1920, height: 1080 }] }
+  });
+  assert.deepEqual(detail.backdrops.map((item) => item.path), ["/backdrop8.jpg"]);
+  assert.ok(!("still" in detail));
 });

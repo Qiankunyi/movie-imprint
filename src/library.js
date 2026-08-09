@@ -160,7 +160,8 @@ export function buildTagline(text, source, now = new Date().toISOString()) {
 }
 
 export function taglineSourceLabel(source) {
-  return { bangumi: "来自 Bangumi", ai: "AI 概括", manual: "手动填写" }[source] || "";
+  // 手动内容就是用户自己的正式档案正文，不需要再贴一个“手动填写”的编辑态标签。
+  return { bangumi: "来自 Bangumi", ai: "AI 概括", manual: "" }[source] || "";
 }
 
 // ─── 系列实体 ─────────────────────────────────────────────────────────────────

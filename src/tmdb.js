@@ -133,6 +133,33 @@ export function isValidTmdbPosterPath(value) {
   return typeof value === "string" && /^\/[A-Za-z0-9_-]{8,64}\.(jpg|jpeg|png|webp)$/i.test(value);
 }
 
+/**
+ * 供用户挑选的横向剧照候选。只保留横图、去重并按社区评分排序，最多返回 16 张；
+ * 这里只是候选池，前端仍要求用户主动选择，绝不自动写入作品档案。
+ */
+export function normalizeTmdbBackdrops(backdrops) {
+  const seen = new Set();
+  return (Array.isArray(backdrops) ? backdrops : [])
+    .filter((item) => {
+      const path = item?.file_path;
+      const width = Number(item?.width);
+      const height = Number(item?.height);
+      if (!isValidTmdbPosterPath(path) || !Number.isFinite(width) || !Number.isFinite(height) || width <= height) return false;
+      if (seen.has(path)) return false;
+      seen.add(path);
+      return true;
+    })
+    .sort((a, b) => (Number(b?.vote_average) || 0) - (Number(a?.vote_average) || 0))
+    .slice(0, 16)
+    .map((item) => ({
+      path: item.file_path,
+      width: Number(item.width),
+      height: Number(item.height),
+      aspectRatio: Number((Number(item.width) / Number(item.height)).toFixed(3)),
+      voteAverage: Number(item.vote_average) || 0
+    }));
+}
+
 export function isAllowedTmdbImageUrl(value) {
   try {
     const url = new URL(value);
@@ -229,6 +256,7 @@ export function normalizeTmdbDetail(payload) {
       originalLanguage: payload?.original_language || null,
       fallbackPath: payload?.poster_path || null
     }),
+    backdrops: normalizeTmdbBackdrops(payload?.images?.backdrops),
     summary: typeof payload?.overview === "string" && payload.overview.trim() ? payload.overview.trim() : null,
     runtimeMinutes: Number.isFinite(runtime) && runtime > 0 ? runtime : null,
     genres: (Array.isArray(payload?.genres) ? payload.genres : [])
