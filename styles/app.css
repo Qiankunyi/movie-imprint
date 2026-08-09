@@ -3362,10 +3362,16 @@ svg {
   border-radius: var(--radius-tag);
 }
 
-.work-history-conflict p,
-.work-history-review p {
+.work-history-conflict p {
   margin: 0 0 var(--space-2);
   color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.work-history-review {
+  width: 100%;
+  color: var(--ink-soft);
+  text-align: left;
   font: var(--type-meta);
 }
 
@@ -3756,9 +3762,10 @@ svg {
 
 /* 正式简介先被读到，来源/编辑入口退到第二层；空状态只保留轻量邀请。 */
 .work-tagline {
-  gap: 5px;
-  min-height: 44px;
-  padding-top: var(--space-3);
+  min-height: 48px;
+  padding: var(--space-2);
+  margin: var(--space-1) calc(-1 * var(--space-2)) 0;
+  border-radius: var(--radius-tag);
 }
 
 .work-tagline-text {
@@ -3766,34 +3773,15 @@ svg {
   line-height: 1.55;
 }
 
-.work-tagline-source {
-  color: var(--ink-soft);
-  opacity: 0.78;
-}
-
-.work-tagline-edit {
-  text-decoration: underline;
-  text-decoration-color: var(--outline-soft);
-  text-underline-offset: 3px;
-}
-
 .work-tagline-placeholder {
-  display: inline-flex;
-  width: fit-content;
-  min-height: 40px;
-  gap: 7px;
-  align-items: center;
+  display: block;
   color: var(--ink-soft);
-}
-
-.work-tagline-placeholder svg {
-  width: 16px;
-  height: 16px;
+  font: var(--type-body);
 }
 
 /* 档案事实靠留白分层，不再用上下两根横线包成“表单区”。 */
 .work-facts {
-  gap: var(--space-3);
+  gap: 2px;
   padding: var(--space-3) 0 var(--space-5);
   margin-bottom: 0;
   border: 0;
@@ -3810,11 +3798,6 @@ svg {
   background: transparent;
 }
 
-.release-chip:hover,
-.release-chip:focus-visible {
-  background: var(--surface-high);
-}
-
 .release-chip.unclaimed {
   padding-inline: 9px;
 }
@@ -3824,35 +3807,77 @@ svg {
   padding: 2px 6px;
   border-color: transparent;
   background: transparent;
-  text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
-  text-underline-offset: 3px;
-}
-
-.metadata-edit-action,
-.section-edit-action {
-  display: inline-flex;
-  min-height: 32px;
-  align-items: center;
-  padding: 0 7px;
-  color: var(--ink-soft);
-  border-radius: 999px;
-  background: transparent;
-  font: var(--type-meta);
-  opacity: 0.78;
-}
-
-.metadata-edit-action:active,
-.section-edit-action:active {
-  background: var(--surface-high);
-  opacity: 1;
+  color: var(--ink);
 }
 
 .work-relation-label {
   padding-top: 7px;
 }
 
-.work-section-heading {
+.archive-pressable {
+  position: relative;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--motion-fast) ease, transform 90ms ease;
+}
+
+.archive-pressable::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+  background: currentcolor;
+  opacity: 0;
+  transition: opacity var(--motion-fast) ease;
+}
+
+.archive-pressable:active {
+  transform: scale(0.995);
+}
+
+.archive-pressable:active::after {
+  opacity: 0.06;
+}
+
+.archive-pressable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.work-relation-row.archive-pressable {
+  min-height: 48px;
+  align-items: center;
+  padding: var(--space-2);
+  margin-inline: calc(-1 * var(--space-2));
+  border-radius: var(--radius-tag);
+}
+
+.work-relation-row.archive-pressable .work-relation-label {
+  padding-top: 0;
+}
+
+.archive-empty-value {
+  color: var(--outline);
+  font: var(--type-body);
+}
+
+.work-type-chip.icon-only {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  color: var(--ink-soft);
+  border-color: transparent;
+  opacity: 0.62;
+}
+
+.work-type-chip.icon-only svg {
+  width: 14px;
+  height: 14px;
+}
+
+.work-stills-heading {
   display: flex;
   min-height: 40px;
   align-items: center;
@@ -3861,19 +3886,34 @@ svg {
   margin-bottom: var(--space-2);
 }
 
-.work-section-heading > div {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-
-.work-section-heading .work-section-title {
-  margin: 0;
-}
-
-.work-section-count {
+.work-stills-marker {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
   color: var(--ink-soft);
-  font: var(--type-meta);
+  opacity: 0.58;
+}
+
+.work-stills-marker svg {
+  width: 19px;
+  height: 19px;
+}
+
+.section-icon-action {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  color: var(--ink-soft);
+  border-radius: 50%;
+  background: transparent;
+  opacity: 0.62;
+}
+
+.section-icon-action svg {
+  width: 17px;
+  height: 17px;
 }
 
 /* ── 有限剧照带：手机一屏一张、原生横滑、无自动播放 ─────────────────────── */
@@ -3946,27 +3986,6 @@ svg {
   display: grid;
 }
 
-.work-still figcaption {
-  position: absolute;
-  bottom: var(--space-3);
-  left: var(--space-3);
-  display: inline-flex;
-  min-height: 28px;
-  gap: 5px;
-  align-items: center;
-  padding: 0 9px;
-  color: #fff;
-  border-radius: 999px;
-  background: rgb(5 12 14 / 68%);
-  backdrop-filter: blur(8px);
-  font: var(--type-meta);
-}
-
-.work-still figcaption svg {
-  width: 14px;
-  height: 14px;
-}
-
 .work-still-pagination {
   display: flex;
   height: 24px;
@@ -4013,36 +4032,19 @@ svg {
 }
 
 .work-stills-empty {
-  display: flex;
+  display: grid;
   width: 100%;
   min-height: 116px;
-  gap: var(--space-3);
-  align-items: center;
-  justify-content: center;
+  place-items: center;
   padding: var(--space-4);
   color: var(--ink-soft);
-  text-align: left;
   border: 1px dashed var(--outline-soft);
   border-radius: var(--radius-card);
-  background: linear-gradient(145deg, transparent, var(--surface-container));
+  background: var(--surface-container);
 }
 
 .work-stills-empty:active {
   background: var(--surface-high);
-}
-
-.work-stills-empty > span:last-child {
-  display: grid;
-  gap: 3px;
-}
-
-.work-stills-empty b {
-  color: var(--ink);
-  font: var(--type-label);
-}
-
-.work-stills-empty small {
-  font: var(--type-meta);
 }
 
 .work-stills-empty-icon {
@@ -4053,12 +4055,9 @@ svg {
   place-items: center;
   color: var(--accent-strong);
   border-radius: 50%;
-  background: var(--accent-container);
-}
-
-.work-stills-empty-icon svg {
-  width: 22px;
-  height: 22px;
+  background: color-mix(in srgb, var(--accent-container) 60%, transparent);
+  font-size: 24px;
+  font-weight: 300;
 }
 
 /* ── 剧照管理 bottom sheet ──────────────────────────────────────────────── */
@@ -4257,45 +4256,18 @@ svg {
   margin-bottom: var(--space-4);
   border-radius: var(--radius-card);
   background-color: var(--surface-high);
-  background-image: url("/docs/design/mockups/assets/cinema-memory-hero-v1.png");
-  background-position: var(--art-x, 0%) var(--art-y, 0%);
-  background-size: 200% auto;
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 8%);
 }
 
-.sidebar-artwork.override {
-  background-image: none;
-}
-
 .sidebar-artwork-img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.sidebar-artwork-dots {
-  position: absolute;
-  right: 10px;
-  bottom: 9px;
-  display: flex;
-  gap: 4px;
-  padding: 5px 7px;
-  border-radius: 999px;
-  background: rgb(5 12 14 / 46%);
-  backdrop-filter: blur(6px);
-}
-
-.sidebar-artwork-dots i {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: rgb(255 255 255 / 48%);
-}
-
-.sidebar-artwork-dots i.active {
-  width: 13px;
-  border-radius: 999px;
-  background: #fff;
+.sidebar-artwork.image-failed {
+  display: none;
 }
 
 @media (max-width: 380px) {
@@ -4340,6 +4312,25 @@ svg {
   max-height: 40dvh;
   margin-bottom: var(--space-4);
   overflow-y: auto;
+}
+
+.series-current-actions {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.series-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.series-option-row .series-option {
+  width: 100%;
 }
 
 .series-option {

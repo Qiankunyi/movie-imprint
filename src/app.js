@@ -10,6 +10,8 @@ import {
   removeWorkStill,
   setPrimaryWorkStill
 } from "./stills.js?v=1";
+import { selectDailySidebarStill } from "./sidebar-artwork.js?v=1";
+import { SIDEBAR_STILLS, SIDEBAR_STILL_EXTENSIONS } from "../public/assets/sidebar-stills/manifest.js?v=1";
 import { parseTicketText, draftViewingEvent } from "./ticket.js";
 import { buildWorkSearchQuery } from "./bangumi.js?v=13";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
@@ -89,8 +91,7 @@ import {
   seriesRelationLabel,
   setReleaseDateRegion,
   setSeriesRelation,
-  taglineFromSummary,
-  taglineSourceLabel
+  taglineFromSummary
 } from "./library.js?v=3";
 import {
   captureTransition,
@@ -313,7 +314,7 @@ const state = {
   fabOpen: false,             // R5 补丁 4：右下角 FAB 二级菜单是否展开
   fabClosing: false,          // R5 补丁 6：正在播收起动画（播完才从 DOM 移除）
   sidebarSkipEntryAnimation: false, // 由手势提交时渲染的抽屉不播入场动画（见 finishSidebarGesture）
-  sidebarArtworkIndex: Math.floor(Math.random() * 4)
+  sidebarArtworkPath: selectDailySidebarStill(SIDEBAR_STILLS)
 };
 
 let toastTimer = null;
@@ -692,14 +693,8 @@ function fabMenu() {
   </div>`;
 }
 
-const SIDEBAR_ART_POSITIONS = [
-  // 原图是 2×2 的竖幅拼图；16.67% / 83.33% 会在 4:3 窗口里取每幅画的垂直中央，
-  // 配合 background-size: 200% auto 保持原比例，不把人物横向拉伸。
-  ["0%", "16.6667%"], ["100%", "16.6667%"], ["0%", "83.3333%"], ["100%", "83.3333%"]
-];
-
 /**
- * 默认从设计稿拼图中展示四幅 AI 插画之一。未来纪念日逻辑只需在打开抽屉前设置
+ * 默认图片从 public/assets/sidebar-stills/manifest.js 的静态池中按天选择。未来纪念日逻辑只需设置
  * window.movieImprintSidebarArtworkOverride = { tmdbPath } 或 { url, alt } 即可覆盖；
  * 抽屉本身不承担日期规则，避免为低频场景新造一套系统。
  */
@@ -710,18 +705,14 @@ function sidebarArtworkMarkup() {
     : override?.url
       ? createExternalStill(override.url)
       : null;
-  if (overrideStill) {
-    return `<div class="sidebar-artwork override" data-testid="sidebar-artwork">
-      <img class="sidebar-artwork-img resilient-image" src="${escapeHtml(stillUrlFor(overrideStill))}" alt="${escapeHtml(override?.alt || "今日电影记忆")}" referrerpolicy="no-referrer" />
-      <span class="image-fallback">${icon("photo")}<small>图片暂不可用</small></span>
-    </div>`;
-  }
-
-  const index = Math.max(0, Math.min(3, state.sidebarArtworkIndex));
-  const [x, y] = SIDEBAR_ART_POSITIONS[index];
-  return `<button type="button" class="sidebar-artwork" data-action="cycle-sidebar-artwork" aria-label="切换侧栏插画" data-testid="sidebar-artwork" style="--art-x:${x};--art-y:${y}">
-    <span class="sidebar-artwork-dots" aria-hidden="true">${SIDEBAR_ART_POSITIONS.map((_, i) => `<i class="${i === index ? "active" : ""}"></i>`).join("")}</span>
-  </button>`;
+  const localSources = state.sidebarArtworkPath
+    ? SIDEBAR_STILL_EXTENSIONS.map((extension) => `${state.sidebarArtworkPath}${extension}`)
+    : [];
+  const src = overrideStill ? stillUrlFor(overrideStill) : localSources[0];
+  if (!src) return "";
+  return `<div class="sidebar-artwork ${overrideStill ? "override" : ""}" data-testid="sidebar-artwork">
+    <img class="sidebar-artwork-img resilient-image" src="${escapeHtml(src)}" ${!overrideStill ? `data-fallback-srcs="${escapeHtml(JSON.stringify(localSources.slice(1)))}"` : ""} alt="${escapeHtml(override?.alt || "电影画面")}" referrerpolicy="no-referrer" />
+  </div>`;
 }
 
 /**
@@ -907,14 +898,6 @@ function renderShelf() {
 
 // ═══ R4 · 作品页 ════════════════════════════════════════════════════════════
 
-const WORK_TYPE_LABELS = {
-  animation_film: "动画电影",
-  live_action_film: "真人电影",
-  event: "活动",
-  other: "其他",
-  unspecified: "未分类"
-};
-
 // 用户反馈：之前完全没有手动设置作品类型的入口，只有 Bangumi 自动判断出动画/真人
 // 电影，其余全部停在"未分类"——"活动"与"其他"因此是两个永远筛不出东西的死标签。
 // 这里补一个作品页可编辑的入口。"活动"专门配一句说明，区分它和"这一次观看带有
@@ -953,14 +936,11 @@ function workHeroMarkup(work) {
 }
 
 function workMetaLine(work) {
-  // R5：年份取最早的一条上映日（不管是哪个地区），不再从写死的 release_dates.jp 读
   const year = releaseYearOf(work);
-  const typeLabel = WORK_TYPE_LABELS[work.work_type] || WORK_TYPE_LABELS.unspecified;
-  const bangumiRef = (work.external_refs || []).find((ref) => ref.source === "bangumi");
-  const bangumiLink = bangumiRef ? `<a href="https://bangumi.tv/subject/${encodeURIComponent(bangumiRef.id)}" target="_blank" rel="noreferrer">Bangumi ↗</a>` : "";
-  const typeChip = `<button type="button" class="work-type-chip" data-action="edit-work-type" data-testid="edit-work-type">${escapeHtml(typeLabel)}${icon("edit")}</button>`;
-  const parts = [year ? `<span>${escapeHtml(String(year))}</span>` : "", typeChip, bangumiLink].filter(Boolean);
-  return `<div class="work-meta-line">${parts.join('<span class="meta-dot" aria-hidden="true">·</span>')}</div>`;
+  return `<div class="work-meta-line">
+    ${year ? `<span>${escapeHtml(String(year))}</span>` : ""}
+    <button type="button" class="work-type-chip icon-only" data-action="edit-work-type" data-testid="edit-work-type" aria-label="编辑作品类型">${icon("edit")}</button>
+  </div>`;
 }
 
 function workTypeEditorOverlay(work) {
@@ -989,32 +969,28 @@ function releaseDateRow(work) {
   const { entries } = normalizeReleaseDates(work.release_dates);
   const chips = entries.map((entry) => {
     const unknown = entry.region === "unknown";
-    return `<button type="button" class="release-chip ${unknown ? "unclaimed" : ""}" data-action="edit-release-dates" data-testid="release-chip-${escapeHtml(entry.id)}">
+    return `<span class="release-chip ${unknown ? "unclaimed" : ""}" data-testid="release-chip-${escapeHtml(entry.id)}">
       <span class="release-chip-region">${escapeHtml(releaseRegionLabel(entry.region))}</span>
       <span class="release-chip-date">${escapeHtml(formatShortDate(entry.date))}</span>
       ${unknown ? `<span class="release-chip-hint">待认领</span>` : ""}
-    </button>`;
+    </span>`;
   }).join("");
-  return `<div class="work-relation-row work-release-row" data-testid="work-release-row">
+  return `<button type="button" class="work-relation-row work-release-row archive-pressable" data-action="edit-release-dates" data-testid="edit-release-dates" aria-label="上映信息">
     <span class="work-relation-label">上映</span>
-    <span class="work-relation-values">${chips}
-      <button type="button" class="metadata-edit-action" data-action="edit-release-dates" data-testid="edit-release-dates">${chips ? "编辑" : "添加"}</button>
-    </span>
-  </div>`;
+    <span class="work-relation-values">${chips || `<span class="archive-empty-value" aria-hidden="true">—</span>`}</span>
+  </button>`;
 }
 
 /** R5：一句话简介。抓取优先 → AI 兜底 → 手动可改，三种来源在 UI 上要能分辨。 */
 function taglineRow(work) {
   const tagline = work.tagline;
   if (!tagline?.text) {
-    return `<button type="button" class="work-tagline empty" data-action="edit-tagline" data-testid="edit-tagline">
-      <span class="work-tagline-placeholder">${icon("edit")}<span>添加一句话简介</span></span>
+    return `<button type="button" class="work-tagline archive-pressable empty" data-action="edit-tagline" data-testid="edit-tagline" aria-label="补充一句话简介">
+      <span class="work-tagline-placeholder" aria-hidden="true">—</span>
     </button>`;
   }
-  const sourceLabel = taglineSourceLabel(tagline.source);
-  return `<button type="button" class="work-tagline" data-action="edit-tagline" data-testid="edit-tagline">
+  return `<button type="button" class="work-tagline archive-pressable" data-action="edit-tagline" data-testid="edit-tagline" aria-label="一句话简介">
     <span class="work-tagline-text">${escapeHtml(tagline.text)}</span>
-    <span class="work-tagline-source">${sourceLabel ? `${escapeHtml(sourceLabel)} · ` : ""}<span class="work-tagline-edit">编辑</span></span>
   </button>`;
 }
 
@@ -1027,40 +1003,38 @@ function seriesRow(work) {
   const series = findSeriesForWork(state.series, work.id);
   const index = series ? (series.member_ids || []).indexOf(work.id) : -1;
   const value = series
-    ? `<button type="button" class="collection-chip" data-action="open-series" data-series-id="${escapeHtml(series.id)}" data-testid="open-series">
+    ? `<span class="collection-chip" data-testid="current-series">
         ${escapeHtml(series.title)}${index >= 0 ? `<span class="work-relation-index">第 ${index + 1} 部</span>` : ""}
-      </button>
-      <button type="button" class="metadata-edit-action" data-action="edit-series" data-testid="edit-series">编辑</button>`
-    : `<button type="button" class="metadata-edit-action" data-action="edit-series" data-testid="edit-series">添加系列</button>`;
-  return `<div class="work-relation-row" data-testid="work-series-row">
+      </span>`
+    : `<span class="archive-empty-value" aria-hidden="true">—</span>`;
+  return `<button type="button" class="work-relation-row archive-pressable" data-action="edit-series" data-testid="edit-series" aria-label="系列信息">
     <span class="work-relation-label">系列</span>
     <span class="work-relation-values">${value}</span>
-  </div>`;
+  </button>`;
 }
 
 /** R5：片单归属。一部作品可以同时在多个片单里，所以这里是一排 chip 而不是单值。 */
 function collectionsRow(work) {
   const mine = collectionsForWork(state.collections, work.id);
-  const chips = mine.map((collection) => `<button type="button" class="collection-chip" data-action="open-collection" data-collection-id="${escapeHtml(collection.id)}" data-testid="work-collection-${escapeHtml(collection.id)}">${escapeHtml(collection.title)}</button>`).join("");
-  return `<div class="work-relation-row" data-testid="work-collections-row">
+  const chips = mine.map((collection) => `<span class="collection-chip" data-testid="work-collection-${escapeHtml(collection.id)}">${escapeHtml(collection.title)}</span>`).join("");
+  return `<button type="button" class="work-relation-row archive-pressable" data-action="edit-collections" data-testid="edit-collections" aria-label="片单信息">
     <span class="work-relation-label">片单</span>
-    <span class="work-relation-values">${chips}<button type="button" class="metadata-edit-action" data-action="edit-collections" data-testid="edit-collections">${chips ? "管理" : "添加片单"}</button></span>
-  </div>`;
+    <span class="work-relation-values">${chips || `<span class="archive-empty-value" aria-hidden="true">—</span>`}</span>
+  </button>`;
 }
 
 function workStillsMarkup(work) {
   const stills = normalizeWorkStills(work.stills);
-  const heading = `<div class="work-section-heading">
-    <div><h2 class="work-section-title">私人剧照</h2>${stills.length ? `<span class="work-section-count">${stills.length} / ${MAX_WORK_STILLS}</span>` : ""}</div>
-    ${stills.length ? `<button type="button" class="section-edit-action" data-action="edit-stills" data-testid="edit-stills">管理</button>` : ""}
+  const heading = `<div class="work-stills-heading" aria-label="剧照">
+    <span class="work-stills-marker" aria-hidden="true">${icon("photo")}</span>
+    ${stills.length ? `<button type="button" class="section-icon-action archive-pressable" data-action="edit-stills" data-testid="edit-stills" aria-label="管理剧照">${icon("edit")}</button>` : ""}
   </div>`;
 
   if (!stills.length) {
     return `<section class="work-section work-stills-section empty" data-testid="work-stills">
       ${heading}
-      <button type="button" class="work-stills-empty" data-action="edit-stills" data-testid="add-first-still">
-        <span class="work-stills-empty-icon">${icon("photo")}</span>
-        <span><b>留下一张属于你的画面</b><small>最多 4 张，可从 TMDB 挑选或添加图片链接</small></span>
+      <button type="button" class="work-stills-empty archive-pressable" data-action="edit-stills" data-testid="add-first-still" aria-label="添加剧照">
+        <span class="work-stills-empty-icon" aria-hidden="true">＋</span>
       </button>
     </section>`;
   }
@@ -1068,7 +1042,6 @@ function workStillsMarkup(work) {
   const slides = stills.map((still, index) => `<figure class="work-still" data-still-index="${index}">
     <img class="work-still-img resilient-image" src="${escapeHtml(stillUrlFor(still))}" alt="《${escapeHtml(work.title || "")}》保存的剧照 ${index + 1}" loading="${index ? "lazy" : "eager"}" referrerpolicy="no-referrer" />
     <span class="image-fallback">${icon("photo")}<small>这张图片暂时无法显示</small></span>
-    ${index === 0 ? `<figcaption><span>${icon("star")}</span>主展示图</figcaption>` : ""}
   </figure>`).join("");
   const dots = stills.length > 1 ? `<div class="work-still-pagination" aria-label="剧照分页">${stills.map((_, index) => `<span class="${index === 0 ? "active" : ""}" data-still-dot="${index}" aria-current="${index === 0 ? "true" : "false"}"></span>`).join("")}</div>` : "";
 
@@ -1133,10 +1106,9 @@ function workHistoryRow(item, index) {
           <button type="button" class="text-action" data-action="keep-relation-choice" data-event-id="${escapeHtml(item.id)}">保持我的选择</button>
         </div>
       </div>` : ""}
-      ${item.needs_review ? `<div class="work-history-review" data-testid="needs-review-${escapeHtml(item.id)}">
-        <p>这次观看的场景待确认</p>
-        <button type="button" class="text-action" data-action="review-history-event" data-event-id="${escapeHtml(item.id)}">补充信息</button>
-      </div>` : ""}
+      ${item.needs_review ? `<button type="button" class="work-history-review archive-pressable" data-action="review-history-event" data-event-id="${escapeHtml(item.id)}" data-testid="needs-review-${escapeHtml(item.id)}" aria-label="补充这次观看的信息">
+        <span>这次观看的场景待确认</span>
+      </button>` : ""}
     </div>
   </article>`;
 }
@@ -2335,7 +2307,10 @@ function seriesEditorOverlay(work) {
     <section class="bottom-sheet series-editor" role="dialog" aria-modal="true" aria-labelledby="series-editor-title">
       <div class="sheet-handle" aria-hidden="true"></div>
       <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="series-editor-title">归入系列</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
-      ${current ? `<button type="button" class="text-action danger" data-action="leave-series" data-testid="leave-series">移出《${escapeHtml(current.title)}》</button>` : ""}
+      ${current ? `<div class="series-current-actions">
+        <button type="button" class="text-action" data-action="open-series" data-series-id="${escapeHtml(current.id)}" data-testid="open-series">查看系列档案</button>
+        <button type="button" class="text-action danger" data-action="leave-series" data-testid="leave-series">移出《${escapeHtml(current.title)}》</button>
+      </div>` : ""}
       <div class="series-options">${options || `<p class="work-section-empty">还没有任何系列</p>`}</div>
       <form id="series-form">
         <label><span>新建系列</span><input type="text" name="title" maxlength="60" placeholder="例如：蜘蛛侠" data-testid="series-title-input" /></label>
@@ -2348,10 +2323,13 @@ function seriesEditorOverlay(work) {
 /** R5：片单归属编辑。多选——一部作品可以同时属于多个片单。 */
 function collectionsEditorOverlay(work) {
   const mine = new Set(collectionsForWork(state.collections, work.id).map((item) => item.id));
-  const options = state.collections.map((collection) => `<button type="button" class="series-option ${mine.has(collection.id) ? "selected" : ""}" data-action="toggle-collection" data-collection-id="${escapeHtml(collection.id)}" data-testid="toggle-collection-${escapeHtml(collection.id)}">
-    <span class="series-option-title">${escapeHtml(collection.title)}</span>
-    <span class="series-option-count">${collectionEntries(collection).length} 部</span>
-  </button>`).join("");
+  const options = state.collections.map((collection) => `<div class="series-option-row">
+    <button type="button" class="series-option ${mine.has(collection.id) ? "selected" : ""}" data-action="toggle-collection" data-collection-id="${escapeHtml(collection.id)}" data-testid="toggle-collection-${escapeHtml(collection.id)}">
+      <span class="series-option-title">${escapeHtml(collection.title)}</span>
+      <span class="series-option-count">${collectionEntries(collection).length} 部</span>
+    </button>
+    ${mine.has(collection.id) ? `<button type="button" class="icon-button small" data-action="open-collection" data-collection-id="${escapeHtml(collection.id)}" aria-label="打开《${escapeHtml(collection.title)}》片单">${icon("chevron")}</button>` : ""}
+  </div>`).join("");
 
   return `<div class="overlay" data-testid="collections-editor">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
@@ -4474,6 +4452,19 @@ function openSupplementCompose(workId) {
 document.addEventListener("error", (event) => {
   const image = event.target;
   if (!(image instanceof HTMLImageElement) || !image.classList.contains("resilient-image")) return;
+  if (image.classList.contains("sidebar-artwork-img") && image.dataset.fallbackSrcs) {
+    try {
+      const sources = JSON.parse(image.dataset.fallbackSrcs);
+      const next = sources.shift();
+      image.dataset.fallbackSrcs = JSON.stringify(sources);
+      if (next) {
+        image.src = next;
+        return;
+      }
+    } catch {
+      image.dataset.fallbackSrcs = "";
+    }
+  }
   image.hidden = true;
   image.closest(".work-still, .still-manager-preview, .tmdb-still-preview, .sidebar-artwork")?.classList.add("image-failed");
 }, true);
@@ -4518,11 +4509,7 @@ document.addEventListener("click", async (event) => {
     state.overlay = "settings";
     render();
   } else if (action === "open-sidebar") {
-    state.sidebarArtworkIndex = Math.floor(Math.random() * SIDEBAR_ART_POSITIONS.length);
     state.overlay = "sidebar";
-    render();
-  } else if (action === "cycle-sidebar-artwork") {
-    state.sidebarArtworkIndex = (state.sidebarArtworkIndex + 1) % SIDEBAR_ART_POSITIONS.length;
     render();
   } else if (action === "open-shelf") {
     openShelf();
@@ -5995,7 +5982,6 @@ document.addEventListener("touchmove", (event) => {
     // 新一次手势开始了：撤掉上一次收尾动画排的定时器，否则它会在这次拖动进行到
     // 一半时触发并清空手势层（抽屉凭空消失 → 再被下一帧重建，来回晃）
     cancelSidebarTimer();
-    state.sidebarArtworkIndex = Math.floor(Math.random() * SIDEBAR_ART_POSITIONS.length);
     gestureLayer.innerHTML = sidebarDrawer();
     const drawer = sidebarDrawerEl();
     if (!drawer) { sidebarGesture = null; clearGestureLayer(); return; }

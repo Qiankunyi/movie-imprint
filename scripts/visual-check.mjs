@@ -65,6 +65,16 @@ async function openSettings(page) {
 }
 
 async function mockBangumi(page) {
+  await page.route("**/public/assets/sidebar-stills/manifest.js*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/javascript",
+      body: 'export const SIDEBAR_STILLS = Object.freeze(["/public/assets/sidebar-stills/sidebar-01", "/public/assets/sidebar-stills/sidebar-02"]); export const SIDEBAR_STILL_EXTENSIONS = Object.freeze([".avif", ".webp", ".png", ".jpg", ".jpeg"]);'
+    });
+  });
+  await page.route("**/public/assets/sidebar-stills/sidebar-*.*", async (route) => {
+    await route.fulfill({ status: 200, contentType: "image/png", body: mockPosterImage });
+  });
   await page.route("**/api/ai/providers", async (route) => {
     await route.fulfill({
       status: 200,
@@ -239,7 +249,11 @@ async function runArchiveUiPath(browser) {
   const firstItemBox = await page.getByTestId("sidebar-home").boundingBox();
   if (!artBox || Math.abs(artBox.width / artBox.height - 4 / 3) > 0.02) throw new Error("侧栏视觉区不是 4:3");
   if (!firstItemBox || firstItemBox.y < 280 || firstItemBox.y > 650) throw new Error(`侧栏菜单没有下移到单手区：${JSON.stringify(firstItemBox)}`);
-  await page.getByTestId("sidebar-artwork").click();
+  if (await page.locator(".sidebar-artwork-dots, .sidebar-artwork button").count()) throw new Error("侧栏视觉区仍有轮播控件");
+  const dailyArtworkSrc = await page.locator(".sidebar-artwork-img").getAttribute("src");
+  await page.getByTestId("sidebar-home").click();
+  await page.getByTestId("open-sidebar").click();
+  if (await page.locator(".sidebar-artwork-img").getAttribute("src") !== dailyArtworkSrc) throw new Error("同一天再次打开侧栏时图片发生变化");
   await page.getByTestId("sidebar-shelf").click();
   await page.getByTestId("shelf-watch-status").selectOption("all");
 
@@ -255,6 +269,16 @@ async function runArchiveUiPath(browser) {
   await page.getByTestId("shelf-item-work_archive").click();
   await page.getByTestId("work").waitFor();
   if (await page.getByTestId("work-start-record").count()) throw new Error("作品页仍有重复的底部长条记录按钮");
+  const browseText = await page.locator(".work-content").innerText();
+  for (const forbidden of ["编辑", "管理", "添加系列", "私人剧照", "主展示图", "真人电影"]) {
+    if (browseText.includes(forbidden)) throw new Error(`作品浏览态仍显示操作或后台文字：${forbidden}`);
+  }
+  for (const testId of ["edit-tagline", "edit-release-dates", "edit-series", "edit-collections"]) {
+    const entry = page.getByTestId(testId);
+    if (!await entry.count() || !await entry.evaluate((element) => element.classList.contains("archive-pressable"))) {
+      throw new Error(`作品信息区没有统一的内容点击入口：${testId}`);
+    }
+  }
   if (!await page.getByTestId("add-first-still").isVisible()) throw new Error("剧照空状态没有显示");
 
   await page.getByTestId("add-first-still").click();
@@ -277,6 +301,7 @@ async function runArchiveUiPath(browser) {
 
   const track = page.getByTestId("work-stills-track");
   if (await track.locator(".work-still").count() !== 4) throw new Error("作品页没有展示 4 张已保存剧照");
+  if ((await page.locator(".work-stills-section").innerText()).includes("主展示图")) throw new Error("剧照浏览态仍显示主展示图标识");
   if (await page.locator("[data-still-dot]").count() !== 4) throw new Error("多图分页指示数量不正确");
   await page.waitForFunction(() => document.querySelectorAll(".work-still.image-failed").length === 1);
   await track.evaluate((element) => element.scrollTo({ left: element.clientWidth, behavior: "instant" }));
