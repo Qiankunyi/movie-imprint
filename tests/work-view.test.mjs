@@ -10,6 +10,7 @@ import {
   findWorkById,
   impressionKindLabel,
   indexEventsByRecord,
+  viewingEventsForRecord,
   summarizeWorksForShelf,
   filterShelfEntries,
   sortShelfEntries
@@ -126,6 +127,22 @@ test("relation_conflict: true 的事件被标出，供 UI 显示提示", () => {
   const history = buildHistory(events);
   assert.equal(history.find((e) => e.id === "ve_1").relation_conflict, true);
   assert.equal(history.find((e) => e.id === "ve_2").relation_conflict, undefined);
+});
+
+test("旧记录缺少 viewing_event_id 时，首页与作品页都通过 event.record_id 读取正式观影事件", () => {
+  const record = makeRecord({ id: "r_legacy", viewing_event_id: null });
+  const event = makeEvent({ id: "ve_current", record_id: "r_legacy", location_type: "cinema", viewed_on: "2017-09-10" });
+  assert.equal(viewingEventsForRecord(record, [event])[0], event);
+  assert.equal(indexEventsByRecord([record], [event]).get("r_legacy"), event);
+});
+
+test("存在明确 viewing_event_id 时，正式关联优先于其他反向关联事件", () => {
+  const record = makeRecord({ id: "r_1", viewing_event_id: "ve_current" });
+  const oldEvent = makeEvent({ id: "ve_old", record_id: "r_1", location_type: "home" });
+  const currentEvent = makeEvent({ id: "ve_current", record_id: "r_1", location_type: "cinema" });
+  const linked = viewingEventsForRecord(record, [oldEvent, currentEvent]);
+  assert.equal(linked[0], currentEvent);
+  assert.equal(indexEventsByRecord([record], [oldEvent, currentEvent]).get("r_1"), currentEvent);
 });
 
 test("attitudeTimeline 节点用日期标注，supplement 记录也在链上且不带「重看」字样", () => {

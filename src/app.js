@@ -18,7 +18,7 @@ import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
 import { runMigrationIfNeeded } from "./migrate.js?v=3";
 import { EVENT_TYPES } from "./event-types.js?v=1";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
-import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=8";
+import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=9";
 import { memoryListMarkup } from "./memory-list.js?v=1";
 import {
   SELF_INTERVIEW_QUESTIONS,
@@ -59,8 +59,10 @@ import {
   findWorkById,
   summarizeWorksForShelf,
   filterShelfEntries,
-  sortShelfEntries
-} from "./work-view.js?v=4";
+  sortShelfEntries,
+  indexEventsByRecord,
+  viewingEventsForRecord
+} from "./work-view.js?v=5";
 import {
   RELEASE_REGIONS,
   SERIES_RELATION_TYPES,
@@ -547,12 +549,7 @@ async function indexHomeCardData() {
   state.worksById = new Map(state.works.map((work) => [work.id, work]));
   const allEvents = await db.getAll("viewingEvents");
   state.allViewingEvents = allEvents || []; // R4：书架按作品聚合观看次数/最近观看/有无活动场次要用到全量
-  const eventsById = new Map(state.allViewingEvents.map((event) => [event.id, event]));
-  state.recordEventById = new Map();
-  for (const record of state.records) {
-    const event = record.viewing_event_id ? eventsById.get(record.viewing_event_id) : null;
-    if (event) state.recordEventById.set(record.id, event);
-  }
+  state.recordEventById = indexEventsByRecord(state.records, state.allViewingEvents);
   // 索引建好之后立刻按"观影日期"重排时间线——排序依据必须和卡片右下角显示的
   // 那个日期一致，否则补录旧片会莫名其妙插到最前面（见 sortRecordsByViewingDate）。
   state.records = sortRecordsByViewingDate(state.records, state.recordEventById);
@@ -1556,8 +1553,7 @@ function viewingEventsSection(events) {
 }
 
 function eventsForRecord(record) {
-  const linked = (state.viewingEvents || []).filter((event) => event.record_id === record.id || event.id === record.viewing_event_id);
-  return linked.length ? linked : [];
+  return viewingEventsForRecord(record, state.viewingEvents);
 }
 
 function actualViewingDate(record) {

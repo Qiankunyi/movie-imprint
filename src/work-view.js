@@ -56,17 +56,30 @@ export function buildHistory(viewingEvents) {
 }
 
 /**
- * 每条 record 关联的 ViewingEvent（通过 viewing_event_id 查表），supplement 记录没有。
+ * 找出一条记录正式关联的观影事件。新记录以 viewing_event_id 为主；旧记录若没有
+ * 回填这个字段，则兼容 ViewingEvent.record_id 的反向关联。详情、作品页与首页都应
+ * 复用这条规则，避免某个页面读取正式事件、另一个页面又走旧默认值。
+ */
+export function viewingEventsForRecord(record, viewingEvents) {
+  if (!record?.id) return [];
+  const events = Array.isArray(viewingEvents) ? viewingEvents : [];
+  const directId = record.viewing_event_id;
+  return events
+    .filter((event) => event?.id === directId || event?.record_id === record.id)
+    .sort((a, b) => Number(b.id === directId) - Number(a.id === directId));
+}
+
+/**
+ * 每条 record 关联的正式 ViewingEvent，supplement 记录没有。
  * @param {object[]} records
  * @param {object[]} viewingEvents
  * @returns {Map<string, object>} record.id → event
  */
 export function indexEventsByRecord(records, viewingEvents) {
-  const eventsById = new Map((Array.isArray(viewingEvents) ? viewingEvents : []).map((event) => [event.id, event]));
   const map = new Map();
   for (const record of Array.isArray(records) ? records : []) {
-    const eventId = record.viewing_event_id;
-    if (eventId && eventsById.has(eventId)) map.set(record.id, eventsById.get(eventId));
+    const event = viewingEventsForRecord(record, viewingEvents)[0];
+    if (event) map.set(record.id, event);
   }
   return map;
 }

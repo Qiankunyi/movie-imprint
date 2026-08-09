@@ -25,8 +25,6 @@ function escapeHtml(value = "") {
   })[character]);
 }
 
-const LOCATION_LABELS = { home: "在家观看", online: "线上观看", other: "其他方式观看" };
-
 // en-CA → "YYYY-MM-DD"（转成 "/" 分隔）；en-GB 24 小时制 → "HH:MM"；
 // weekday 用 ja-JP 拿单字（日/月/火…），和票务的日式习惯一致。
 const YMD_FMT = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Asia/Tokyo" });
@@ -138,9 +136,9 @@ function viewingCardMarkup(record, work, event, { buildPosterUrl } = {}) {
 
   // 卡片上的日期只精确到"日"：不要星期，也不要具体时刻——点进详情页有完整的票务时间。
   const dateLabel = pendingInfo ? "日期待确认" : event ? eventDateLabel(event, { withTime: false }) : formatDate(record.createdAt);
-  const locationLabel = pendingInfo ? "观影信息待确认" : isCinema
-    ? (event?.viewing_context?.cinema_name || "")
-    : (LOCATION_LABELS[event?.location_type] || LOCATION_LABELS.home);
+  // 首页只保留有辨识度的观影徽章。基础的“在家/电影院”仍保存在 ViewingEvent，
+  // 但不在时间线占一个常驻位置；详情页与作品履历继续完整展示观看方式。
+  const statusLabel = pendingInfo ? "观影信息待确认" : "";
 
   const badgeChips = [
     fmtBadge ? badgeChipMarkup(fmtBadge) : "",
@@ -166,10 +164,10 @@ function viewingCardMarkup(record, work, event, { buildPosterUrl } = {}) {
       ${posterMarkup(work, record, { buildPosterUrl })}
       <div class="record-card-body">
         <h2 class="record-card-title">${escapeHtml(title)}</h2>
-        <div class="record-card-venue-row">
-          <span class="record-card-venue">${escapeHtml(locationLabel || LOCATION_LABELS.home)}</span>
+        ${statusLabel || badgeChips ? `<div class="record-card-venue-row">
+          ${statusLabel ? `<span class="record-card-venue">${escapeHtml(statusLabel)}</span>` : ""}
           ${badgeChips ? `<span class="record-badge-row">${badgeChips}</span>` : ""}
-        </div>
+        </div>` : ""}
         <div class="record-card-bottom">
           ${attitudeTagMarkup(record)}
           ${pendingInfo ? `<span class="record-card-date pending">${escapeHtml(dateLabel)}</span>` : `<time class="record-card-date">${escapeHtml(dateLabel)}</time>`}

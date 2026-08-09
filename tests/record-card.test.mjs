@@ -30,22 +30,22 @@ function cinemaRecord(overrides = {}) {
   };
 }
 
-test("影院卡：含影院名、制式徽章、增强描边 class", () => {
+test("影院卡：时间线隐藏基础影院名，只显示制式徽章与增强描边 class", () => {
   const { record, work, event } = cinemaRecord();
   const html = recordCard(record, { work, event, buildPosterUrl });
   assert.match(html, /record-card cinema high-spec/);
-  assert.match(html, /TOHO シネマズ 新宿/);
+  assert.doesNotMatch(html, /TOHO シネマズ 新宿/);
   assert.match(html, /tone-imax/);
   assert.match(html, /IMAX/);
 });
 
-test("线上/在家卡：含「在家观看」、无制式徽章、无高光 class", () => {
+test("普通在家观看：时间线不显示基础观看方式，也不占用徽章行", () => {
   const { record, work } = cinemaRecord();
   const event = { location_type: "home", viewed_on: "2026-11-20", watch_index: 1, viewing_context: { format: null, event_types: [] } };
   const html = recordCard(record, { work, event, buildPosterUrl });
   assert.match(html, /record-card home"/);
   assert.doesNotMatch(html, /high-spec/);
-  assert.match(html, /在家观看/);
+  assert.doesNotMatch(html, /在家观看|电影院观看|record-card-venue-row/);
   assert.doesNotMatch(html, /format-badge solid/);
 });
 
@@ -90,7 +90,20 @@ test("watch_index === 1 且 location_type === home → 正常渲染，不显示�
   const event = { location_type: "home", viewed_on: "2026-11-20", watch_index: 1, viewing_context: { format: null, event_types: [] } };
   const html = recordCard(record, { work, event, buildPosterUrl });
   assert.doesNotMatch(html, /重看/);
-  assert.match(html, /在家观看/);
+  assert.doesNotMatch(html, /在家观看|record-card-venue-row/);
+});
+
+test("普通电影院且没有制式/特别场次：时间线徽章位置留空，绝不回落成在家观看", () => {
+  const { record, work } = cinemaRecord();
+  const event = {
+    location_type: "cinema",
+    viewed_on: "2017-09-10",
+    watch_index: 1,
+    viewing_context: { cinema_name: null, format: null, event_types: [] }
+  };
+  const html = recordCard(record, { work, event, buildPosterUrl });
+  assert.match(html, /record-card cinema/);
+  assert.doesNotMatch(html, /在家观看|电影院观看|record-card-venue-row/);
 });
 
 test("watch_index === 7 → 显示「重看 · 第7次」，两位数不撑破布局", () => {
@@ -175,15 +188,15 @@ test("待确认作品 → 状态标签同样叠在海报上，不在文字区里
   assert.doesNotMatch(bodyMatch[1], /待确认作品/);
 });
 
-test("R5 补丁 2/3：卡片信息顺序为 标题 → 影院名+徽章 → 底部（态度 + 日期同一行）", () => {
+test("R5 补丁 2/3：卡片信息顺序为 标题 → 辨识度徽章 → 底部（态度 + 日期同一行）", () => {
   const { record, work, event } = cinemaRecord();
   const html = recordCard(record, { work, event, buildPosterUrl });
   const order = ["record-card-title", "record-card-venue-row", "record-card-bottom", "record-attitude-tag", "record-card-date"]
     .map((cls) => html.indexOf(cls));
   assert.ok(order.every((index) => index !== -1), "各区块都应存在");
-  assert.deepEqual([...order].sort((a, b) => a - b), order, "顺序必须是 标题→影院名→底部行(态度→日期)");
-  // 徽章跟在影院名右边、同一行里
-  assert.match(html, /record-card-venue-row">[\s\S]*?record-card-venue[\s\S]*?record-badge-row/);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, "顺序必须是 标题→辨识度徽章→底部行(态度→日期)");
+  assert.match(html, /record-card-venue-row">[\s\S]*?record-badge-row/);
+  assert.doesNotMatch(html, /record-card-venue">TOHO/);
   // 态度与日期必须在同一个底部行里（用户要求态度下移与时间平齐）
   assert.match(html, /record-card-bottom">[\s\S]*?record-attitude-tag[\s\S]*?record-card-date/);
 });

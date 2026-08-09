@@ -469,8 +469,11 @@ async function runFunctionalPath(browser) {
   const summerTrainCard = page.locator(".record-card", { hasText: "夏日列车" });
   await summerTrainCard.waitFor();
   const summerTrainCardText = await summerTrainCard.innerText();
-  if (!summerTrainCardText.includes("测试电影院") || !summerTrainCardText.includes("2017/09/10")) {
-    throw new Error(`无票务影院补录没有按实际日期显示在时间线：${summerTrainCardText}`);
+  if (!summerTrainCardText.includes("IMAX") || !summerTrainCardText.includes("2017/09/10")) {
+    throw new Error(`影院补录的辨识度徽章或实际日期没有显示在时间线：${summerTrainCardText}`);
+  }
+  if (/测试电影院|在家观看|电影院观看/.test(summerTrainCardText)) {
+    throw new Error(`时间线仍在常驻展示基础观看方式或影院名：${summerTrainCardText}`);
   }
   const posterImg = summerTrainCard.locator(".record-poster-img");
   await posterImg.waitFor();
@@ -504,6 +507,18 @@ async function runFunctionalPath(browser) {
   if (!((await page.getByTestId("viewing-events").innerText()) || "").includes("在家／线上观看")) {
     throw new Error("成型记录修改观看方式后没有更新");
   }
+  await returnToTimeline(page);
+  const editedTimelineCard = page.locator(".record-card", { hasText: "夏日列车" });
+  await editedTimelineCard.waitFor();
+  const editedTimelineText = (await editedTimelineCard.innerText()) || "";
+  if (!editedTimelineText.includes("2018/10/11")) {
+    throw new Error(`修改实际观影日期后时间线没有同步：${editedTimelineText}`);
+  }
+  if (/在家观看|电影院观看|测试电影院|IMAX/.test(editedTimelineText)) {
+    throw new Error(`普通观看方式仍占用时间线徽章位，或修改后保留了旧影院信息：${editedTimelineText}`);
+  }
+  await editedTimelineCard.getByRole("heading", { name: "夏日列车" }).click();
+  await page.getByTestId("detail").waitFor();
 
   await page.getByRole("heading", { name: "最先留下来的片段" }).waitFor();
   if (await page.getByTestId("analysis-draft").count()) throw new Error("AI 草稿确认后仍停留在待确认区");
