@@ -3992,100 +3992,6 @@ svg {
   list-style: none;
 }
 
-.collection-entry {
-  display: flex;
-  align-items: stretch;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  border: 1px solid var(--outline-soft);
-  border-radius: var(--radius-md, 12px);
-  background: var(--surface-container);
-}
-
-.collection-entry-main {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  gap: var(--space-3);
-  align-items: flex-start;
-  padding: 0;
-  border: 0;
-  background: none;
-  text-align: left;
-  color: inherit;
-}
-
-.collection-entry-poster {
-  flex: 0 0 auto;
-  width: 48px;
-}
-
-.collection-entry-poster .shelf-poster {
-  width: 48px;
-}
-
-.collection-entry-body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.collection-entry-title {
-  color: var(--ink);
-  font: var(--type-body);
-  font-weight: 600;
-}
-
-.collection-entry-title small {
-  color: var(--ink-soft);
-  font-weight: 400;
-}
-
-/* 已看/未看是从「Work 是否存在观影记录」派生出来的，不是条目上存的字段——
-   所以同一部作品在多个片单里永远同时翻转，不会出现三个片单三种状态。 */
-.collection-entry-status {
-  align-self: flex-start;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font: var(--type-meta);
-  font-size: 11px;
-}
-
-.collection-entry.watched .collection-entry-status {
-  color: var(--accent-strong);
-  background: var(--accent-container);
-}
-
-.collection-entry.unwatched .collection-entry-status {
-  color: var(--ink-soft);
-  background: var(--surface-variant, transparent);
-  border: 1px dashed var(--outline-soft);
-}
-
-.collection-entry-reason {
-  color: var(--ink-soft);
-  font: var(--type-meta);
-  white-space: pre-wrap;
-}
-
-.collection-entry-reason.empty {
-  font-style: italic;
-  opacity: 0.6;
-}
-
-.collection-entry-actions {
-  display: flex;
-  flex: 0 0 auto;
-  flex-direction: column;
-  gap: 2px;
-  align-items: center;
-  justify-content: center;
-}
-
-.collection-entry-actions .icon-button:disabled {
-  opacity: 0.3;
-}
 
 /* ─── R6：统一作品搜索面板 ────────────────────────────────────────────────────
    搜索结果分组呈现（本地已有 / 外部数据源），但对用户是同一个「搜索作品」，
@@ -4492,6 +4398,7 @@ svg {
 }
 
 .collection-entry {
+  position: relative;   /* ⋯ 绝对定位到右上角要靠它 */
   display: flex;
   gap: var(--space-3);
   align-items: stretch;
@@ -4567,17 +4474,20 @@ svg {
   flex: 1 1 auto;
   min-width: 0;
   flex-direction: column;
+  /* 显式 stretch：列向 flex 里若继承到 flex-start，子项会缩成内容宽度，
+     标题行就撑不满，右上角的 ⋯ 也就贴到标题旁边去了。 */
+  align-items: stretch;
   gap: 2px;
 }
 
+/* 标题行右侧留出 ⋯ 的位置（它是绝对定位的，不占文档流） */
 .collection-entry-head {
-  display: flex;
-  gap: var(--space-2);
-  align-items: flex-start;
-  justify-content: space-between;
+  padding-right: 34px;
 }
 
 .collection-entry-title {
+  display: block;
+  width: 100%;
   padding: 0;
   border: 0;
   background: none;
@@ -4595,9 +4505,12 @@ svg {
   font-size: 12px;
 }
 
+/* 固定在卡片右上角——不随标题行数变化而漂移，也不受 flex 对齐影响 */
 .collection-entry-menu {
-  flex: 0 0 auto;
-  margin: -4px -4px 0 0;
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
 }
 
 .collection-entry-added {

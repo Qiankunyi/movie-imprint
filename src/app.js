@@ -1227,7 +1227,9 @@ function renderCollection() {
     const poster = posterUrlFor(work);
     const initial = escapeHtml((work.title || "?").trim().charAt(0) || "?");
 
-    return `<li class="collection-entry ${watched ? "watched" : "unwatched"}" data-testid="collection-entry-${escapeHtml(work.id)}">
+    // 不再给 li 挂 watched/unwatched class——状态已经由海报上的印章表达，
+    // 再叠一层视觉区分只是噪声（而且那两个 class 现在没有任何样式）。
+    return `<li class="collection-entry" data-testid="collection-entry-${escapeHtml(work.id)}">
       <button type="button" class="collection-entry-poster" data-action="open-work" data-work-id="${escapeHtml(work.id)}" aria-label="打开《${escapeHtml(work.title || "")}》">
         ${poster
           ? `<img src="${escapeHtml(poster)}" alt="" loading="lazy" />`

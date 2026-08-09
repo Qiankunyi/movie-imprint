@@ -1189,3 +1189,47 @@ FAB 与页面标题里的旧叫法一并跟上（返回观影轨迹 / 返回私�
 
 移出片单的菜单项特意写了副标题「作品本身与感想都不会被删除」，
 把它和「删除作品」区分开。
+
+---
+
+# R6 补丁 14：片单卡片的 ⋯ 没在右上角
+
+## 症状
+
+标题和 `⋯` 挤在一起、没有右对齐，`⋯` 也不在卡片右上角。
+
+## 根因：旧版卡片的 CSS 还留在文件里，把新规则污染了
+
+补丁 13 重做卡片时，我是**在文件末尾追加新规则**，没有删掉第一版卡片的那 94 行。
+两版规则里都有 `.collection-entry-main`：
+
+```css
+/* 旧版（第一版卡片，那时 -main 是整块可点区域，横向 flex） */
+.collection-entry-main { display: flex; align-items: flex-start; gap: …; }
+
+/* 新版（追加在后面） */
+.collection-entry-main { display: flex; flex-direction: column; gap: 2px; }
+```
+
+同名同特异度，后者胜出——但**新版没有写 `align-items`**，于是它继承了旧版的
+`align-items: flex-start`。在 `flex-direction: column` 的容器里，
+`align-items: flex-start` 意味着**子项按内容宽度收缩而不是撑满**，
+所以标题行没有占满宽度，`justify-content: space-between` 也就无从把 `⋯` 推到右边——
+它只能贴在标题旁。
+
+## 修法
+
+1. **删掉旧版那 94 行**，而不是再叠一层覆盖。这次的 bug 正是"叠加而不清理"造成的，
+   继续叠只会埋下下一个。
+2. `.collection-entry-main` 显式写 `align-items: stretch`，不依赖继承。
+3. `⋯` 改成**绝对定位**在卡片右上角（`position: absolute; top: 6px; right: 6px`），
+   标题行留 34px 右内边距避让。这样它不随标题行数变化而漂移，也完全不受 flex
+   对齐规则影响——"放在右上角"这个要求就变成了字面意义上的实现。
+
+## 顺带：删掉一对没有样式的 class
+
+清理后 `.collection-entry.watched` / `.unwatched` 在 CSS 里已不存在（状态改由海报上的
+印章表达），但模板还在挂这两个 class。**第 7 项静态检查当场报了出来**——这正是补丁 11
+加这条检查的目的。已从模板移除，不留没有效果的 class。
+
+> 这是该检查第二次抓到真问题（第一次是 `.work-candidate.selected` 压根没写样式）。
