@@ -61,3 +61,12 @@ test("非 AI 建议卡片正面不直接放删除按钮（删除走编辑二级�
   const html = memoryListMarkup(sampleCards());
   assert.doesNotMatch(html, /data-action="delete-card"/);
 });
+
+test("Evidence 指向旧源修订时明确标成历史版本", () => {
+  const html = memoryListMarkup([{
+    ...sampleCards()[0],
+    evidence: [{ source_type: "free_reflection", source_revision_id: "raw_rev_1", excerpt: "旧原文" }]
+  }], { currentSourceRevisionIds: ["raw_rev_2"] });
+  assert.match(html, /历史来源版本/);
+  assert.match(html, /旧原文/);
+});

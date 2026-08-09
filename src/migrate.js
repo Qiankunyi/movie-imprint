@@ -22,6 +22,7 @@
 
 import { assignViewingRelations, mergeWorks, normalizeTitle } from "./domain.js";
 import { normalizeReleaseDates } from "./library.js";
+import { normalizeV21Record } from "./imprint-v2.js";
 
 // r1-work-dedup-2：R4 补丁里发现 src/app.js 的 confirmWorkMatch()（local work 实时匹配
 // 到 Bangumi 升格时）漏了一步物理删除旧 work 文档——只把旧 id 从内存 state.works 里
@@ -34,7 +35,7 @@ import { normalizeReleaseDates } from "./library.js";
 // r5-library：R5 又提了一次，因为 ensureWorkFields 现在还要把旧的
 // release_dates.{jp,cn,other} 归一化成"日期 + 地区"的 entries 数组，并补上
 // related_refs / tagline 两个新字段。同样是幂等的，干净数据重跑没有任何变化。
-const MIGRATION_VERSION = "r5-library";
+const MIGRATION_VERSION = "v2.1-self-interview-analysis-lifecycle";
 const MIGRATION_META_ID = "migration-status";
 
 function bangumiRefId(work) {
@@ -128,12 +129,12 @@ export function buildMigratedDataset({ records = [], works = [], viewingEvents =
     const oldWorkId = record.work_id || record.workId;
     const canonical = (oldWorkId && primaryByOldId.get(oldWorkId)) || null;
     const workId = canonical?.id || oldWorkId || null;
-    return {
+    return normalizeV21Record({
       ...record,
       work_id: workId,
       workId: workId, // 兼容期保留
       record_kind: record.record_kind || "viewing"
-    };
+    });
   });
 
   let newEvents = viewingEvents.map((event) => {

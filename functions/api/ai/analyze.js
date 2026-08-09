@@ -15,20 +15,23 @@ export async function onRequest(context) {
   }
 
   const rawText = typeof body.rawText === "string" ? body.rawText : "";
+  const sources = body.sources && typeof body.sources === "object" ? body.sources : null;
 
   try {
     const result = await requestAiAnalysis({
       provider: typeof body.provider === "string" ? body.provider : null,
       title: typeof body.title === "string" ? body.title.slice(0, 160) : "",
       rawText,
+      sources,
       env: context.env
     });
+    const sourceSnapshot = sources ? JSON.stringify(sources) : rawText;
 
     return jsonResponse(200, {
       ...result,
       metadata: {
         ...result.metadata,
-        input_hash: await sha256hex(rawText)
+        input_hash: await sha256hex(sourceSnapshot)
       }
     });
   } catch (error) {
@@ -39,7 +42,9 @@ export async function onRequest(context) {
       {
         error: invalid ? error.message : notConfigured ? "ai_not_configured" : "ai_analysis_failed",
         message: invalid
-          ? "这条记录暂时无法整理"
+          ? (["invalid_ai_input", "request_too_large"].includes(error.message)
+            ? "原始资料过长或为空，当前模型无法完整整理；已保存的资料不会丢失"
+            : "这条记录暂时无法整理")
           : notConfigured
             ? "所选整理服务尚未配置"
             // 密钥配置对了但一直失败时，真正的原因（模型名不存在/配额用尽/schema 被拒绝等）

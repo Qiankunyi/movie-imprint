@@ -1,4 +1,6 @@
 import { addReleaseDate, buildTagline, normalizeReleaseDates, taglineFromSummary } from "./library.js";
+import { createSelfInterview } from "./self-interview.js";
+import { RECORD_SCHEMA_VERSION } from "./imprint-v2.js";
 
 // ─── Work 标题归一化与 ID ────────────────────────────────────────────────────
 
@@ -651,8 +653,24 @@ export function emptyRecommendationDetails() {
 }
 
 export const CARD_TYPES = [
-  "场景", "台词", "主题", "角色", "人物关系", "配音", "镜头／摄影", "作画／动画表现",
-  "配乐", "歌曲", "被击中的瞬间", "可爱／有趣的点", "遗憾／不满", "个人经历联想", "影厅效果", "自定义"
+  "场景", "台词", "剧情转折", "结局", "主题", "观点／表达", "设定／世界观", "改编处理",
+  "角色", "人物关系", "真人表演", "配音",
+  "作画／动画表现", "镜头／摄影", "演出／调度", "美术／场景设计", "色彩／光影", "剪辑／节奏", "视效／特效",
+  "配乐", "歌曲", "音效", "声音演出",
+  "被击中的瞬间", "可爱／有趣的点", "不适／反感", "遗憾／不满", "疑问／困惑", "惊喜／意外", "个人感悟", "最想长期记住",
+  "观看契机", "系列联系", "其他作品联想", "个人经历联想", "现实／时代联想", "创作者／幕后",
+  "影厅效果", "观众反应", "舞台挨拶／映前映后谈", "特典／场刊", "现场事件", "特别放映内容",
+  "用户自定义类型"
+];
+
+export const EMOTION_TAGS = [
+  "开心", "有趣", "可爱", "浪漫", "温暖", "心动", "满足", "爽快", "治愈",
+  "感动", "震撼", "兴奋", "热血", "落泪", "共鸣", "敬佩",
+  "悲伤", "压抑", "愤怒", "恐惧", "不适", "恶心", "失望", "遗憾", "无聊", "反感",
+  "意外", "困惑", "受到启发", "开拓视野", "想深入思考",
+  "怀念", "向往", "意犹未尽", "空虚", "后劲很大", "久久不能释怀",
+  "紧张", "代入", "沉浸", "着迷", "忘记时间",
+  "想讨论", "想推荐", "想吐槽", "想找同好"
 ];
 
 export function createId(prefix, now = Date.now()) {
@@ -727,11 +745,20 @@ export function deterministicAnalysis(text) {
 
 export function createRawOnlyRecord(text, now = new Date().toISOString()) {
   const { title, tags, seriesPath, workTitleHint } = parseDraft(text);
+  const id = createId("record");
+  const rawRevisionId = `${id}_rawrev_1`;
   return {
-    id: createId("record"),
-    schema_version: "0.1-local",
+    id,
+    schema_version: RECORD_SCHEMA_VERSION,
     title,
     rawText: text,
+    raw_revision_id: rawRevisionId,
+    raw_revision_number: 1,
+    raw_saved_at: now,
+    raw_revisions: [],
+    self_interview: createSelfInterview(id, now),
+    activeAnalysisDraft: null,
+    analysis_history: [],
     tags,
     inputHints: { seriesPath, workTitle: workTitleHint },
     createdAt: now,

@@ -15,6 +15,7 @@
  */
 
 import { attitudeLabel, recommendationLabel, formatDate } from "./domain.js";
+import { answeredInterviewItems } from "./self-interview.js";
 
 const dateFmt = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo" });
 const timeFmt = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Tokyo" });
@@ -51,7 +52,7 @@ function viewingEventText(ve) {
 export function buildExportPayload(record, work, viewingEvents = []) {
   const bangumiRef = work?.external_refs?.find((ref) => ref.source === "bangumi") || null;
   return {
-    schema_version: "movie-imprint-export-0.1",
+    schema_version: "movie-imprint-export-2.1",
     exported_at: new Date().toISOString(),
     title: work?.title || record.title,
     original_title: work?.original_title || null,
@@ -66,11 +67,30 @@ export function buildExportPayload(record, work, viewingEvents = []) {
     recommendation_details: record.recommendationDetails || null,
     emotions: (record.emotions || []).map((emotion) => emotion.label).filter(Boolean),
     raw_text: record.rawText || "",
+    raw_revision_id: record.raw_revision_id || null,
+    self_interview: {
+      interview_id: record.self_interview?.interview_id || null,
+      status: record.self_interview?.status || "not_started",
+      answers: answeredInterviewItems(record.self_interview).map((answer) => ({
+        question_id: answer.question_id,
+        question_version: answer.question_version,
+        question: answer.question,
+        answer_text: answer.answer_text,
+        revision_id: answer.revision_id
+      }))
+    },
     cards: (record.cards || []).map((card) => ({
+      card_id: card.card_id,
       type: card.type,
       title: card.title || "",
       content: card.content,
-      is_core: !!card.is_core
+      why_it_matters: card.why_it_matters ?? null,
+      related_emotions: card.related_emotions || [],
+      evidence: card.evidence || [],
+      is_core: !!card.is_core,
+      origin: card.origin || null,
+      user_modified: !!card.user_modified,
+      analysis_id: card.analysis_id || null
     })),
     viewing_events: (viewingEvents || []).map(cleanViewingEvent)
   };
@@ -92,10 +112,6 @@ export function exportMarkdown(record, work, viewingEvents = []) {
     for (const ve of payload.viewing_events) lines.push(`- ${viewingEventText(ve)}`);
   }
   lines.push("");
-  lines.push("## 原文");
-  lines.push("");
-  lines.push(payload.raw_text);
-  lines.push("");
   lines.push("## 态度与推荐");
   lines.push(`- 个人态度：${payload.attitude_label}`);
   lines.push(`- 会推荐吗：${payload.recommendation_label}${payload.recommendation_note ? ` · ${payload.recommendation_note}` : ""}`);
@@ -109,8 +125,14 @@ export function exportMarkdown(record, work, viewingEvents = []) {
       lines.push(`*${card.type}*`);
       lines.push("");
       lines.push(card.content);
+      if (card.why_it_matters) lines.push("", `为什么想留下：${card.why_it_matters}`);
     }
   }
+  if (payload.self_interview.answers.length) {
+    lines.push("", "## 观后自我采访");
+    for (const answer of payload.self_interview.answers) lines.push("", `### ${answer.question}`, "", answer.answer_text);
+  }
+  lines.push("", "## 原文", "", payload.raw_text);
   return lines.join("\n");
 }
 
@@ -125,9 +147,6 @@ export function exportTXT(record, work, viewingEvents = []) {
     for (const ve of payload.viewing_events) lines.push(`  ${viewingEventText(ve)}`);
   }
   lines.push("");
-  lines.push("原文：");
-  lines.push(payload.raw_text);
-  lines.push("");
   lines.push(`个人态度：${payload.attitude_label}`);
   lines.push(`会推荐吗：${payload.recommendation_label}${payload.recommendation_note ? ` · ${payload.recommendation_note}` : ""}`);
   if (payload.emotions.length) lines.push(`文字中的情绪：${payload.emotions.join("、")}`);
@@ -138,8 +157,14 @@ export function exportTXT(record, work, viewingEvents = []) {
       lines.push("");
       lines.push(`[${card.type}] ${card.title || "没有标题"}${card.is_core ? " ・核心" : ""}`);
       lines.push(card.content);
+      if (card.why_it_matters) lines.push(`为什么想留下：${card.why_it_matters}`);
     }
   }
+  if (payload.self_interview.answers.length) {
+    lines.push("", "观后自我采访：");
+    for (const answer of payload.self_interview.answers) lines.push("", answer.question, answer.answer_text);
+  }
+  lines.push("", "原文：", payload.raw_text);
   return lines.join("\n");
 }
 

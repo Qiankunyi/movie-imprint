@@ -8,6 +8,21 @@ import { EVENT_TYPES } from "./event-types.js?v=1";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
 import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=7";
 import { memoryListMarkup } from "./memory-list.js?v=1";
+import {
+  SELF_INTERVIEW_QUESTIONS,
+  answeredInterviewItems,
+  completeSelfInterview,
+  saveInterviewAnswer,
+  skipSelfInterview
+} from "./self-interview.js?v=1";
+import {
+  analysisRequestSources,
+  cardLifecycleFromLegacy,
+  markAnalysesStale,
+  normalizeV21Record,
+  reviseRawText,
+  sourceRevisionIds
+} from "./imprint-v2.js?v=1";
 import { formatBadge, eventBadges } from "./format-badge.js";
 import {
   enterShelf as routeEnterShelf,
@@ -230,6 +245,10 @@ const state = {
   draft: null,
   activeRecordId: null,
   editingCardId: null,
+  editingCardSource: "formal",
+  interviewQuestionIndex: 0,
+  interviewSaveTimer: null,
+  deletedCardUndo: null,
   saveTimer: null,
   saveState: "saved",
   theme: "light",
@@ -440,6 +459,7 @@ async function loadState() {
     db.get("meta", "ai-preference"),
     apiFetch("/api/ai/providers", { headers: { accept: "application/json" } }).then((response) => response.ok ? response.json() : null).catch(() => null)
   ]);
+  state.records = (state.records || []).map((record) => normalizeV21Record(record));
   state.recordingPreference ||= { id: "recording-preference", autoAnalyze: true };
   state.aiProviders ||= { active: null, providers: [] };
   const configured = state.aiProviders.providers.filter((provider) => provider.configured);
@@ -1319,7 +1339,39 @@ function exportOverlay(record) {
 }
 
 function memoryCard(record) {
-  return memoryListMarkup(record.cards || [], { icon });
+  return memoryListMarkup(record.cards || [], { icon, currentSourceRevisionIds: sourceRevisionIds(record) });
+}
+
+function analysisDraftMarkup(record) {
+  const draft = record.activeAnalysisDraft;
+  if (!draft) return "";
+  const emotions = (draft.emotions || []).map((emotion) => `<span>${escapeHtml(emotion.label)}</span>`).join("");
+  return `<section class="analysis-draft ${draft.stale ? "stale" : ""}" data-testid="analysis-draft">
+    <div class="section-heading"><div><small>AI 整理草稿 · 尚未进入正式记录</small><h2>${draft.stale ? "这份草稿基于较早版本" : "这次整理出的电影印记"}</h2></div></div>
+    ${draft.stale ? `<p class="stale-note">源内容已经更新。你可以保留这份历史草稿，也可以重新整理；正式记录不会被覆盖。</p>` : ""}
+    ${draft.attitude?.suggested ? `<p class="draft-attitude">总体态度建议：<b>${escapeHtml(attitudeLabel(draft.attitude.suggested))}</b></p>` : ""}
+    ${emotions ? `<div class="emotion-suggestions">${emotions}</div>` : ""}
+    ${memoryListMarkup(draft.memory_cards || [], { icon, mode: "draft", currentSourceRevisionIds: sourceRevisionIds(record) })}
+    <div class="analysis-draft-actions">
+      <button type="button" class="sheet-done" data-action="confirm-analysis-draft">${record.cards?.length ? "把建议加入正式记录" : "确认这次电影印记"}</button>
+      ${record.cards?.length ? `<button type="button" class="text-action" data-action="replace-with-analysis-draft">用这次结果替换正式卡片</button>` : ""}
+      <button type="button" class="text-action" data-action="discard-analysis-draft">保留正式记录并收起草稿</button>
+    </div>
+  </section>`;
+}
+
+function interviewArchiveMarkup(record) {
+  const interview = record.self_interview;
+  const answered = answeredInterviewItems(interview);
+  const action = interview?.status === "in_progress"
+    ? `<button type="button" class="text-action" data-action="resume-interview">继续采访</button>`
+    : interview?.status === "not_started"
+      ? `<button type="button" class="text-action" data-action="open-interview-invite">开始自我采访</button>`
+      : `<button type="button" class="text-action" data-action="edit-interview">修改回答</button>`;
+  return `<section class="raw-archive interview-archive" data-testid="interview-archive">
+    <div class="raw-archive-heading"><div><small>原始档案</small><h2>🎙 观后自我采访</h2></div>${action}</div>
+    ${answered.length ? `<div class="interview-answer-list">${answered.map((answer) => `<details><summary>${escapeHtml(answer.question)}</summary><p>${escapeHtml(answer.answer_text)}</p></details>`).join("")}</div>` : `<p class="work-section-empty">${interview?.status === "skipped" ? "这次跳过了采访。" : "还没有采访回答。"}</p>`}
+  </section>`;
 }
 
 function normalizedRecommendationDetails(record) {
@@ -1434,14 +1486,17 @@ function renderDetail() {
       <div class="detail-date">${escapeHtml(new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric" }).format(new Date(record.createdAt)))}</div>
       <div class="detail-title-row"><h1>${titleMarkup}</h1><span class="attitude-badge ${record.attitude ? "selected" : "empty"}"><i aria-hidden="true"></i>${escapeHtml(attitudeLabel(record.attitude))}</span></div>
       ${workMatchPanel(record)}
-      ${record.aiWarnings?.length ? `<details class="analysis-warnings" ${record.cards?.length ? "" : "open"}><summary>整理提示</summary><ul>${record.aiWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></details>` : ""}
-      ${record.status === "raw_only_confirmed" ? `<section class="raw-only-status" data-testid="raw-only-status"><div><b>${record.analysis_status === "running" ? "正在安静整理" : "原文已经保存"}</b><p>${record.analysis_status === "running" ? "可以先离开，完成后会出现在这里。" : record.analysis_status === "failed" ? "上次没有整理完成，原文不受影响。" : "结构整理暂未完成，不影响这条记录。"}</p>${record.analysis_status === "failed" && record.analysis_error ? `<small class="raw-only-error" data-testid="analysis-error">原因：${escapeHtml(record.analysis_error)}</small>` : ""}</div><div class="raw-only-actions"><button type="button" data-action="retry-local-analysis" ${record.analysis_status === "running" ? "disabled" : ""}>${record.analysis_status === "failed" ? "重新整理" : "稍后整理"}</button>${record.analysis_status !== "running" ? `<button type="button" class="text-action" data-action="skip-to-manual" data-testid="skip-to-manual">不等了，我自己选</button>` : ""}</div></section>` : `<button class="judgement-summary" type="button" data-action="open-attitude" data-testid="attitude-summary">
+      ${record.aiWarnings?.length ? `<details class="analysis-warnings" open><summary>整理提示</summary><ul>${record.aiWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></details>` : ""}
+      ${record.analysis_status === "running" || record.analysis_status === "failed" ? `<section class="raw-only-status" data-testid="raw-only-status"><div><b>${record.analysis_status === "running" ? "正在安静整理" : "原始资料已经保存"}</b><p>${record.analysis_status === "running" ? "可以先离开，完成后会作为独立草稿出现在这里。" : "上次没有整理完成，自由感想和采访回答都不受影响。"}</p>${record.analysis_status === "failed" && record.analysis_error ? `<small class="raw-only-error" data-testid="analysis-error">原因：${escapeHtml(record.analysis_error)}</small>` : ""}</div><div class="raw-only-actions"><button type="button" data-action="retry-local-analysis" ${record.analysis_status === "running" ? "disabled" : ""}>${record.analysis_status === "failed" ? "重新整理" : "整理中"}</button></div></section>` : ""}
+      ${record.analysis_stale ? `<section class="stale-banner" data-testid="analysis-stale"><b>源内容已更新</b><p>正式卡片保持原样。需要时可以基于最新原始资料重新整理。</p><button type="button" data-action="request-ai-cards">重新整理</button></section>` : ""}
+      ${record.status === "confirmed" ? `<button class="judgement-summary" type="button" data-action="open-attitude" data-testid="attitude-summary">
         <span class="judgement-summary-icon" aria-hidden="true">${icon("edit")}</span><span class="judgement-summary-copy"><small>个人态度与推荐 · ${record.attitude ? "点击修改" : "点击选择"}</small><b>${escapeHtml(attitudeLabel(record.attitude))} · ${recommendation}</b></span>${icon("chevron")}
-      </button>`}
-      <div class="impression-actions"><button class="text-action" type="button" data-action="edit-impression" data-testid="edit-impression">${icon("edit")}编辑原文</button></div>
-      <p class="impression">${escapeHtml(record.rawText)}</p>
+      </button>` : ""}
+      ${analysisDraftMarkup(record)}
       ${viewingEventsSection(state.viewingEvents)}
-      ${record.status === "raw_only_confirmed" ? "" : `<div class="memory-heading"><h2>留下来的片段</h2><div class="memory-heading-actions"><button class="text-action" type="button" data-action="request-ai-cards" data-testid="request-ai-cards" ${record.cardSuggestionStatus === "running" ? "disabled" : ""}>${record.cardSuggestionStatus === "running" ? "AI 整理中…" : "AI 建议卡片"}</button><button class="text-action add-card" type="button" data-action="add-card">＋ 添加卡片</button></div></div>${record.cardSuggestionStatus === "failed" && record.cardSuggestionError ? `<p class="card-suggestion-error" data-testid="card-suggestion-error">AI 建议没有完成：${escapeHtml(record.cardSuggestionError)}</p>` : ""}${memoryCard(record)}`}
+      <div class="memory-heading"><h2>这次留下来的记忆</h2><div class="memory-heading-actions"><button class="text-action" type="button" data-action="request-ai-cards" data-testid="request-ai-cards" ${record.cardSuggestionStatus === "running" || record.analysis_status === "running" ? "disabled" : ""}>${record.cardSuggestionStatus === "running" || record.analysis_status === "running" ? "AI 整理中…" : "重新整理"}</button><button class="text-action add-card" type="button" data-action="add-card">＋ 添加一条记忆</button></div></div>${state.deletedCardUndo?.recordId === record.id ? `<button class="undo-card" type="button" data-action="undo-delete-card">已删除“${escapeHtml(state.deletedCardUndo.card.title || "一条记忆")}” · 撤销</button>` : ""}${record.cardSuggestionStatus === "failed" && record.cardSuggestionError ? `<p class="card-suggestion-error" data-testid="card-suggestion-error">AI 建议没有完成：${escapeHtml(record.cardSuggestionError)}</p>` : ""}${memoryCard(record)}
+      ${interviewArchiveMarkup(record)}
+      <section class="raw-archive reflection-archive"><div class="raw-archive-heading"><div><small>原始档案</small><h2>📝 我的原始感想</h2></div><button class="text-action" type="button" data-action="edit-impression" data-testid="edit-impression">${icon("edit")}编辑原文</button></div><p class="impression">${escapeHtml(record.rawText)}</p></section>
     </article>
   </main>`;
 }
@@ -1720,21 +1775,88 @@ function attitudeOverlay(record) {
   </div>`;
 }
 
+function interviewInviteOverlay(record) {
+  return `<div class="overlay" data-testid="interview-invite">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="稍后再说"></button>
+    <section class="bottom-sheet interview-invite-sheet" role="dialog" aria-modal="true" aria-labelledby="interview-invite-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <span class="sheet-kicker">原始感想已保存</span>
+      <h2 id="interview-invite-title">还想再留下一点刚看完时的记忆吗？</h2>
+      <p>我可以问你几个很短的问题，每题都可以跳过。回答会按原话保存，AI 不会改写。</p>
+      <button type="button" class="sheet-done" data-action="start-interview">开始自我采访</button>
+      <button type="button" class="text-action" data-action="skip-interview">直接生成电影印记</button>
+    </section>
+  </div>`;
+}
+
+function interviewQuestionOverlay(record) {
+  const index = Math.max(0, Math.min(state.interviewQuestionIndex, SELF_INTERVIEW_QUESTIONS.length - 1));
+  const question = SELF_INTERVIEW_QUESTIONS[index];
+  const answer = record.self_interview?.answers?.find((item) => item.question_id === question.id);
+  return `<div class="overlay interview-overlay" data-testid="self-interview">
+    <button class="overlay-backdrop" type="button" data-action="close-interview" aria-label="保存并稍后继续"></button>
+    <section class="bottom-sheet interview-question-sheet" role="dialog" aria-modal="true" aria-labelledby="interview-question-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="interview-progress"><span>${index + 1} / ${SELF_INTERVIEW_QUESTIONS.length}</span><button type="button" class="text-action" data-action="view-all-interview-questions">查看全部问题</button></div>
+      <h2 id="interview-question-title">${escapeHtml(question.question)}</h2>
+      <p class="interview-hint">${escapeHtml(question.hint)}</p>
+      <textarea id="interview-answer-input" data-question-id="${escapeHtml(question.id)}" placeholder="按现在记得的样子写就好">${escapeHtml(answer?.status === "answered" ? answer.answer_text : "")}</textarea>
+      <small class="interview-save-status" data-testid="interview-save-status">回答会自动保存</small>
+      <div class="interview-nav">
+        <button type="button" data-action="interview-previous" ${index === 0 ? "disabled" : ""}>上一题</button>
+        <button type="button" class="text-action" data-action="skip-interview-question">跳过</button>
+        <button type="button" class="sheet-done" data-action="interview-next">${index === SELF_INTERVIEW_QUESTIONS.length - 1 ? "查看摘要" : "下一题"}</button>
+      </div>
+      <button type="button" class="text-action interview-end" data-action="finish-interview">结束采访</button>
+    </section>
+  </div>`;
+}
+
+function interviewAllOverlay(record) {
+  return `<div class="overlay interview-overlay" data-testid="interview-all">
+    <button class="overlay-backdrop" type="button" data-action="close-interview" aria-label="保存并稍后继续"></button>
+    <section class="bottom-sheet interview-all-sheet" role="dialog" aria-modal="true" aria-labelledby="interview-all-title">
+      <div class="sheet-handle" aria-hidden="true"></div><h2 id="interview-all-title">全部问题</h2>
+      <div class="interview-question-list">${SELF_INTERVIEW_QUESTIONS.map((question, index) => {
+        const answer = record.self_interview?.answers?.find((item) => item.question_id === question.id);
+        const label = answer?.status === "answered" ? "已回答" : answer?.status === "skipped" ? "已跳过" : "未回答";
+        return `<button type="button" data-action="jump-interview-question" data-index="${index}"><span>${index + 1}. ${escapeHtml(question.question)}</span><small>${label}</small></button>`;
+      }).join("")}</div>
+      <button type="button" class="sheet-done" data-action="back-to-interview-question">返回当前问题</button>
+    </section>
+  </div>`;
+}
+
+function interviewSummaryOverlay(record) {
+  const answered = answeredInterviewItems(record.self_interview);
+  return `<div class="overlay interview-overlay" data-testid="interview-summary">
+    <button class="overlay-backdrop" type="button" data-action="close-interview" aria-label="保存并稍后继续"></button>
+    <section class="bottom-sheet interview-summary-sheet" role="dialog" aria-modal="true" aria-labelledby="interview-summary-title">
+      <div class="sheet-handle" aria-hidden="true"></div><span class="sheet-kicker">都是你自己的原话</span><h2 id="interview-summary-title">准备好整理这次电影印记了</h2>
+      ${answered.length ? `<div class="interview-summary-answers">${answered.map((answer) => `<div><b>${escapeHtml(answer.question)}</b><p>${escapeHtml(answer.answer_text)}</p></div>`).join("")}</div>` : `<p>这次没有填写采访回答，也可以只根据原始感想整理。</p>`}
+      <button type="button" class="sheet-done" data-action="generate-from-interview">生成电影印记</button>
+      <button type="button" class="text-action" data-action="edit-interview">修改回答</button>
+    </section>
+  </div>`;
+}
+
 function cardEditorOverlay(record) {
-  const editing = record.cards.find((card) => card.card_id === state.editingCardId);
-  const card = editing || { type: "被击中的瞬间", title: "", content: "" };
+  const sourceCards = state.editingCardSource === "draft" ? (record.activeAnalysisDraft?.memory_cards || []) : record.cards;
+  const editing = sourceCards.find((card) => (card.card_id || card.temporary_id) === state.editingCardId);
+  const card = editing || { type: "用户自定义类型", title: "", content: "", why_it_matters: "" };
   // 用户反馈第二轮：删除不摆在卡片正面，走"编辑"这个二级入口——只有已存在、
   // 不是待审 AI 建议（那类有自己的"保留/删除建议"流程）的卡片才带删除。
-  const canDelete = Boolean(editing) && editing.provenance !== "ai_suggested";
+  const canDelete = Boolean(editing) && state.editingCardSource === "formal" && editing.provenance !== "ai_suggested";
   return `<div class="overlay" data-testid="card-editor">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭卡片编辑"></button>
     <section class="bottom-sheet card-editor" role="dialog" aria-modal="true" aria-labelledby="card-editor-title">
       <div class="sheet-handle" aria-hidden="true"></div>
       <div class="sheet-title-row"><div><span class="sheet-kicker">记忆卡片</span><h2 id="card-editor-title">${editing ? "编辑这一张" : "添加一张"}</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
-      <form id="card-form" data-card-id="${editing?.card_id || ""}">
-        <label><span>类型</span><select name="type">${CARD_TYPES.map((type) => `<option ${card.type === type ? "selected" : ""}>${escapeHtml(type)}</option>`).join("")}</select></label>
+      <form id="card-form" data-card-id="${editing ? (editing.card_id || editing.temporary_id) : ""}" data-card-source="${state.editingCardSource}">
+        <label><span>类型</span><select name="type">${CARD_TYPES.map((type) => `<option value="${escapeHtml(type)}" ${card.type === type ? "selected" : ""}>${type === "用户自定义类型" && !editing ? "自动判断（可稍后修改）" : escapeHtml(type)}</option>`).join("")}</select></label>
         <label><span>标题</span><input name="title" value="${escapeHtml(card.title)}" placeholder="给这个片段一个短标题" /></label>
         <label><span>内容</span><textarea name="content" required placeholder="记住了什么？">${escapeHtml(card.content)}</textarea></label>
+        <label><span>为什么想留下（可空）</span><textarea name="why" placeholder="只有原始资料能支持时才填写">${escapeHtml(card.why_it_matters || "")}</textarea></label>
         <div class="card-editor-actions">
           ${canDelete ? `<button type="button" class="danger-text-action" data-action="delete-card" data-card-id="${escapeHtml(editing.card_id)}" data-testid="delete-card">删除</button>` : "<span></span>"}
           <button class="sheet-done" type="submit">${editing ? "保存修改" : "添加卡片"}</button>
@@ -2400,6 +2522,14 @@ function render() {
       ? sceneChoiceOverlay()
     : state.overlay === "compose"
       ? composerOverlay()
+    : state.overlay === "interview-invite" && record
+      ? interviewInviteOverlay(record)
+    : state.overlay === "self-interview" && record
+      ? interviewQuestionOverlay(record)
+    : state.overlay === "interview-all" && record
+      ? interviewAllOverlay(record)
+    : state.overlay === "interview-summary" && record
+      ? interviewSummaryOverlay(record)
     : state.overlay === "settings"
       ? settingsOverlay()
     : state.overlay === "sidebar"
@@ -2600,24 +2730,18 @@ async function finishCompose() {
   state.records.unshift(record);
   if (!state.works.some((item) => item.id === work.id)) state.works.push(work);
   await indexHomeCardData();
-  if (isSupplement) {
-    // 补充记录从作品页发起，完成后停留在作品页（state.view 全程没变过），
-    // 只需要把新记录反映到画面上，不做首页那套滚动位置恢复。
-    renderPreservingScroll();
-    announce("补充记录已保存在本机");
-  } else {
-    render();
-    requestAnimationFrame(() => scrollTo({ top: state.returnScrollY, behavior: "instant" }));
-    announce("原文已保存在本机");
-  }
+  await openRecord(record.id);
+  state.overlay = "interview-invite";
+  render();
+  announce("原文已保存在本机，可以开始自我采访");
   void requestWorkMatch(record.id);
-  if (state.recordingPreference?.autoAnalyze !== false) void runAiAnalysis(record.id);
 }
 
 async function runAiAnalysis(recordId) {
   const record = state.records.find((item) => item.id === recordId);
-  if (!record || record.status !== "raw_only_confirmed" || record.analysis_status === "running") return;
+  if (!record || record.analysis_status === "running") return;
   record.analysis_status = "running";
+  record.cardSuggestionStatus = "running";
   record.analysis_error = null;
   await db.put("records", record);
   renderPreservingScroll();
@@ -2625,26 +2749,35 @@ async function runAiAnalysis(recordId) {
     const response = await apiFetch("/api/ai/analyze", {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ provider: state.aiPreference?.provider, title: currentWork(record)?.title || record.title, rawText: record.rawText })
+      body: JSON.stringify({ provider: state.aiPreference?.provider, title: currentWork(record)?.title || record.title, sources: analysisRequestSources(record) })
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.message || "整理暂时没有完成");
     const analysis = payload.analysis;
-    Object.assign(record, {
-      attitudeSuggestion: analysis.attitude?.suggested || null,
-      attitudeSuggestionDetails: analysis.attitude || null,
-      emotions: analysis.emotions || [],
-      cards: analysis.memory_cards || [],
-      aiWarnings: analysis.warnings || [],
-      analysisMetadata: payload.metadata,
-      status: "confirmed",
-      analysis_status: "ai_draft_ready",
-      updatedAt: new Date().toISOString()
-    });
+    if (record.activeAnalysisDraft) {
+      record.analysis_history ||= [];
+      record.analysis_history.push({ ...record.activeAnalysisDraft, status: "superseded" });
+    }
+    record.activeAnalysisDraft = {
+      ...analysis,
+      source_snapshot_hash: payload.metadata?.input_hash || null,
+      analysis_metadata: payload.metadata || {},
+      status: "draft",
+      stale: false,
+      created_at: new Date().toISOString(),
+      memory_cards: (analysis.memory_cards || []).map((card) => ({ ...card, analysis_id: analysis.analysis_id }))
+    };
+    record.analysisMetadata = payload.metadata;
+    record.aiWarnings = analysis.warnings || [];
+    record.analysis_stale = false;
+    record.analysis_status = "ai_draft_ready";
+    record.cardSuggestionStatus = "done";
+    record.updatedAt = new Date().toISOString();
     await db.put("records", record);
     renderPreservingScroll();
   } catch (error) {
     record.analysis_status = "failed";
+    record.cardSuggestionStatus = "failed";
     record.analysis_error = error.message;
     await db.put("records", record);
     renderPreservingScroll();
@@ -2664,42 +2797,12 @@ async function runAiAnalysis(recordId) {
  */
 async function requestAiCards(recordId) {
   const record = state.records.find((item) => item.id === recordId);
-  if (!record || record.cardSuggestionStatus === "running") return;
-  record.cardSuggestionStatus = "running";
-  record.cardSuggestionError = null;
-  await db.put("records", record);
-  renderPreservingScroll();
-  try {
-    const response = await apiFetch("/api/ai/analyze", {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ provider: state.aiPreference?.provider, title: currentWork(record)?.title || record.title, rawText: record.rawText })
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.message || "AI 建议暂时没有完成");
-    const analysis = payload.analysis;
-    const baseOrder = record.cards.length;
-    const newCards = (analysis.memory_cards || []).map((card, index) => ({ ...card, order: baseOrder + index }));
-    record.cards = [...record.cards, ...newCards];
-    if (!record.attitudeProvenance) {
-      record.attitudeSuggestion = analysis.attitude?.suggested || record.attitudeSuggestion || null;
-      record.attitudeSuggestionDetails = analysis.attitude || record.attitudeSuggestionDetails || null;
-    }
-    record.emotions = analysis.emotions?.length ? analysis.emotions : record.emotions;
-    record.aiWarnings = analysis.warnings || [];
-    record.analysisMetadata = payload.metadata;
-    record.cardSuggestionStatus = "done";
-    record.updatedAt = new Date().toISOString();
-    await db.put("records", record);
-    renderPreservingScroll();
-    announce(newCards.length ? `AI 建议了 ${newCards.length} 张新卡片，一起放在下面等你确认` : "AI 这次没有给出新的建议卡片");
-  } catch (error) {
-    record.cardSuggestionStatus = "failed";
-    record.cardSuggestionError = error.message;
-    await db.put("records", record);
-    renderPreservingScroll();
-    announce("AI 建议暂时没有完成，可以再试一次");
+  if (record?.self_interview?.status === "not_started") {
+    await updateRecord((item) => { item.self_interview = skipSelfInterview(item.self_interview); });
+  } else if (record?.self_interview?.status === "in_progress") {
+    await updateRecord((item) => { item.self_interview = completeSelfInterview(item.self_interview); });
   }
+  return runAiAnalysis(recordId);
 }
 
 async function runRecommendationAnalysis(recordId) {
@@ -3129,6 +3232,60 @@ async function updateRecord(mutator) {
   mutator(record);
   record.updatedAt = new Date().toISOString();
   await db.put("records", record);
+}
+
+async function persistInterviewAnswer(status = "answered") {
+  clearTimeout(state.interviewSaveTimer);
+  const input = document.querySelector("#interview-answer-input");
+  const questionId = input?.dataset.questionId || SELF_INTERVIEW_QUESTIONS[state.interviewQuestionIndex]?.id;
+  const text = input?.value || "";
+  if (!questionId) return;
+  await updateRecord((record) => {
+    const existing = record.self_interview?.answers?.find((answer) => answer.question_id === questionId);
+    const finalStatus = status === "answered" && text.trim() ? "answered" : "skipped";
+    const finalText = finalStatus === "answered" ? text : "";
+    if (existing?.status === finalStatus && existing.answer_text === finalText) return;
+    record.self_interview = saveInterviewAnswer(record.self_interview, questionId, finalText, finalStatus);
+    markAnalysesStale(record);
+  });
+}
+
+function formalizeDraftCard(card, record, { keepCoreSuggestion = true } = {}) {
+  const hasCore = record.cards.some((item) => item.is_core);
+  return cardLifecycleFromLegacy({
+    ...card,
+    card_id: createId("card"),
+    is_core: keepCoreSuggestion && !hasCore && Boolean(card.is_core),
+    order: record.cards.length,
+    provenance: card.user_modified ? "user_modified" : "user_accepted",
+    origin: "ai_generated",
+    status: "confirmed",
+    user_modified: Boolean(card.user_modified)
+  }, card.analysis_id);
+}
+
+function archiveActiveAnalysis(record, status) {
+  if (!record.activeAnalysisDraft) return;
+  record.analysis_history ||= [];
+  record.analysis_history.push({ ...record.activeAnalysisDraft, status });
+  record.activeAnalysisDraft = null;
+}
+
+function applyActiveAnalysisDraft(record, { replaceCards = false } = {}) {
+  const draft = record.activeAnalysisDraft;
+  if (!draft) return;
+  if (replaceCards) record.cards = [];
+  for (const card of draft.memory_cards || []) record.cards.push(formalizeDraftCard(card, record));
+  record.cards.forEach((card, index) => { card.order = index; });
+  if (!record.attitudeProvenance) {
+    record.attitudeSuggestion = draft.attitude?.suggested || null;
+    record.attitudeSuggestionDetails = draft.attitude || null;
+  }
+  record.emotions = draft.emotions || [];
+  archiveActiveAnalysis(record, replaceCards ? "confirmed_replacement" : "confirmed_addition");
+  record.status = "confirmed";
+  record.analysis_status = "confirmed";
+  record.analysis_stale = false;
 }
 
 /**
@@ -4546,6 +4703,70 @@ document.addEventListener("click", async (event) => {
     }
   } else if (action === "finish-compose") {
     await finishCompose();
+  } else if (action === "open-interview-invite") {
+    state.overlay = "interview-invite";
+    render();
+  } else if (action === "start-interview" || action === "resume-interview" || action === "edit-interview") {
+    const record = currentRecord();
+    if (!record) return;
+    const firstOpen = SELF_INTERVIEW_QUESTIONS.findIndex((question) => !record.self_interview?.answers?.some((answer) => answer.question_id === question.id && answer.status === "answered"));
+    state.interviewQuestionIndex = action === "edit-interview" ? 0 : Math.max(0, firstOpen);
+    await updateRecord((item) => {
+      item.self_interview.status = "in_progress";
+      item.self_interview.completed_at = null;
+      item.self_interview.updated_at = new Date().toISOString();
+    });
+    state.overlay = "self-interview";
+    render();
+  } else if (action === "skip-interview") {
+    await updateRecord((record) => { record.self_interview = skipSelfInterview(record.self_interview); });
+    state.overlay = null;
+    renderPreservingScroll();
+    await runAiAnalysis(currentRecord()?.id);
+  } else if (action === "close-interview") {
+    if (state.overlay === "self-interview") await persistInterviewAnswer("answered");
+    state.overlay = null;
+    renderPreservingScroll();
+    announce("采访进度已保存，可以稍后继续");
+  } else if (action === "interview-previous") {
+    await persistInterviewAnswer("answered");
+    state.interviewQuestionIndex = Math.max(0, state.interviewQuestionIndex - 1);
+    render();
+  } else if (action === "interview-next") {
+    await persistInterviewAnswer("answered");
+    if (state.interviewQuestionIndex >= SELF_INTERVIEW_QUESTIONS.length - 1) {
+      await updateRecord((record) => { record.self_interview = completeSelfInterview(record.self_interview); });
+      state.overlay = "interview-summary";
+    } else {
+      state.interviewQuestionIndex += 1;
+    }
+    render();
+  } else if (action === "skip-interview-question") {
+    await persistInterviewAnswer("skipped");
+    if (state.interviewQuestionIndex >= SELF_INTERVIEW_QUESTIONS.length - 1) state.overlay = "interview-summary";
+    else state.interviewQuestionIndex += 1;
+    render();
+  } else if (action === "finish-interview") {
+    await persistInterviewAnswer("answered");
+    await updateRecord((record) => { record.self_interview = completeSelfInterview(record.self_interview); });
+    state.overlay = "interview-summary";
+    render();
+  } else if (action === "view-all-interview-questions") {
+    await persistInterviewAnswer("answered");
+    state.overlay = "interview-all";
+    render();
+  } else if (action === "jump-interview-question") {
+    state.interviewQuestionIndex = Math.max(0, Math.min(Number(trigger.dataset.index) || 0, SELF_INTERVIEW_QUESTIONS.length - 1));
+    state.overlay = "self-interview";
+    render();
+  } else if (action === "back-to-interview-question") {
+    state.overlay = "self-interview";
+    render();
+  } else if (action === "generate-from-interview") {
+    await updateRecord((record) => { record.self_interview = completeSelfInterview(record.self_interview); });
+    state.overlay = null;
+    renderPreservingScroll();
+    await runAiAnalysis(currentRecord()?.id);
   } else if (action === "open-record") {
     openRecord(trigger.dataset.recordId);
   } else if (action === "go-home") {
@@ -4562,6 +4783,55 @@ document.addEventListener("click", async (event) => {
     await runAiAnalysis(currentRecord()?.id);
   } else if (action === "request-ai-cards") {
     await requestAiCards(currentRecord()?.id);
+  } else if (action === "confirm-analysis-draft") {
+    await updateRecord((record) => applyActiveAnalysisDraft(record));
+    renderPreservingScroll();
+    announce("这次电影印记已确认");
+  } else if (action === "replace-with-analysis-draft") {
+    await updateRecord((record) => applyActiveAnalysisDraft(record, { replaceCards: true }));
+    renderPreservingScroll();
+    announce("正式卡片已按你的选择替换");
+  } else if (action === "discard-analysis-draft") {
+    await updateRecord((record) => {
+      archiveActiveAnalysis(record, "dismissed");
+      record.analysis_status = record.status === "confirmed" ? "confirmed" : "manual";
+    });
+    renderPreservingScroll();
+  } else if (action === "accept-draft-card") {
+    await updateRecord((record) => {
+      const cards = record.activeAnalysisDraft?.memory_cards || [];
+      const index = cards.findIndex((card) => (card.card_id || card.temporary_id) === trigger.dataset.cardId);
+      if (index < 0) return;
+      record.cards.push(formalizeDraftCard(cards[index], record));
+      cards.splice(index, 1);
+      record.status = "confirmed";
+    });
+    renderPreservingScroll();
+  } else if (action === "remove-draft-card") {
+    await updateRecord((record) => {
+      const cards = record.activeAnalysisDraft?.memory_cards || [];
+      record.activeAnalysisDraft.memory_cards = cards.filter((card) => (card.card_id || card.temporary_id) !== trigger.dataset.cardId);
+    });
+    renderPreservingScroll();
+  } else if (action === "toggle-core-card") {
+    await updateRecord((record) => {
+      const target = record.cards.find((card) => card.card_id === trigger.dataset.cardId);
+      if (!target) return;
+      const next = !target.is_core;
+      record.cards.forEach((card) => { card.is_core = false; });
+      target.is_core = next;
+    });
+    renderPreservingScroll();
+  } else if (action === "move-card") {
+    await updateRecord((record) => {
+      const index = record.cards.findIndex((card) => card.card_id === trigger.dataset.cardId);
+      const nextIndex = trigger.dataset.direction === "up" ? index - 1 : index + 1;
+      if (index < 0 || nextIndex < 0 || nextIndex >= record.cards.length) return;
+      const [card] = record.cards.splice(index, 1);
+      record.cards.splice(nextIndex, 0, card);
+      record.cards.forEach((item, order) => { item.order = order; });
+    });
+    renderPreservingScroll();
   } else if (action === "skip-to-manual") {
     // 反馈 #3：AI 整理不可用/失败时，之前完全没有手动路径——个人态度与记忆卡片
     // 一直被 status === "raw_only_confirmed" 挡住，只能一直等或重试 AI。
@@ -4681,22 +4951,33 @@ document.addEventListener("click", async (event) => {
     const record = currentRecord();
     const card = record?.cards.find((item) => item.card_id === trigger.dataset.cardId);
     if (!card) return;
-    if (!window.confirm("确定要删除这张记忆卡片吗？删除后无法恢复。")) return;
     await updateRecord((record) => {
       const index = record.cards.findIndex((item) => item.card_id === trigger.dataset.cardId);
       if (index < 0) return;
-      record.cards.splice(index, 1);
+      const [card] = record.cards.splice(index, 1);
+      state.deletedCardUndo = { recordId: record.id, card, index };
       record.cards.forEach((item, cardIndex) => { item.order = cardIndex; });
     });
     state.overlay = null;
     renderPreservingScroll();
-    announce("这张记忆卡片已删除");
+    announce("这张记忆卡片已删除，可以撤销");
+  } else if (action === "undo-delete-card") {
+    const undo = state.deletedCardUndo;
+    if (!undo || undo.recordId !== currentRecord()?.id) return;
+    await updateRecord((record) => {
+      record.cards.splice(Math.min(undo.index, record.cards.length), 0, undo.card);
+      record.cards.forEach((item, index) => { item.order = index; });
+    });
+    state.deletedCardUndo = null;
+    renderPreservingScroll();
   } else if (action === "add-card") {
     state.editingCardId = null;
+    state.editingCardSource = "formal";
     state.overlay = "card";
     render();
   } else if (action === "edit-card") {
     state.editingCardId = trigger.dataset.cardId;
+    state.editingCardSource = trigger.dataset.cardSource || "formal";
     state.overlay = "card";
     render();
   } else if (action === "open-export") {
@@ -4783,6 +5064,17 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("input", (event) => {
+  if (event.target.id === "interview-answer-input") {
+    clearTimeout(state.interviewSaveTimer);
+    const status = document.querySelector("[data-testid='interview-save-status']");
+    if (status) status.textContent = "正在保存…";
+    state.interviewSaveTimer = setTimeout(async () => {
+      await persistInterviewAnswer("answered");
+      const currentStatus = document.querySelector("[data-testid='interview-save-status']");
+      if (currentStatus) currentStatus.textContent = "已保存";
+    }, 300);
+    return;
+  }
   if (event.target.id === "delete-work-confirm-input") {
     state.deleteWorkConfirm = event.target.value;
     const button = document.querySelector("[data-testid='confirm-delete-work']");
@@ -4910,25 +5202,50 @@ document.addEventListener("submit", async (event) => {
     const content = String(data.get("content") || "").trim();
     if (!content) return;
     const id = event.target.dataset.cardId;
+    const source = event.target.dataset.cardSource || "formal";
     await updateRecord((record) => {
+      const cards = source === "draft" ? (record.activeAnalysisDraft?.memory_cards || []) : record.cards;
       if (id) {
-        const card = record.cards.find((item) => item.card_id === id);
-        if (card?.provenance === "ai_suggested") {
-          record.aiSuggestionHistory ||= [];
-          record.aiSuggestionHistory.push({ suggestionType: "memory_card", suggestionId: card.card_id, action: "user_modified", snapshot: { ...card }, at: new Date().toISOString() });
-          card.provenance = "user_modified";
-        }
-        Object.assign(card, { type: data.get("type"), title: String(data.get("title") || "").trim(), content });
+        const card = cards.find((item) => (item.card_id || item.temporary_id) === id);
+        if (!card) return;
+        card.revision_history ||= [];
+        card.revision_history.push({
+          revision_id: createId("cardrev"),
+          title: card.title,
+          content: card.content,
+          why_it_matters: card.why_it_matters ?? null,
+          type: card.type,
+          saved_at: new Date().toISOString()
+        });
+        Object.assign(card, {
+          type: data.get("type"),
+          title: String(data.get("title") || "").trim(),
+          content,
+          why_it_matters: String(data.get("why") || "").trim() || null,
+          user_modified: true,
+          provenance: "user_modified"
+        });
       } else {
         record.cards.push({
           card_id: createId("card"),
           type: data.get("type"),
           title: String(data.get("title") || "").trim(),
           content,
+          why_it_matters: String(data.get("why") || "").trim() || null,
           is_core: false,
           order: record.cards.length,
-          provenance: "user_added"
+          provenance: "user_added",
+          origin: "user_created",
+          status: "confirmed",
+          user_modified: false,
+          analysis_id: null,
+          revision_history: [],
+          related_emotions: [],
+          linked_viewing_ids: [],
+          evidence: [],
+          custom_fields: {}
         });
+        record.status = "confirmed";
       }
     });
     state.overlay = null;
@@ -4943,7 +5260,7 @@ document.addEventListener("submit", async (event) => {
     const data = new FormData(event.target);
     const rawText = String(data.get("rawText") || "").trim();
     if (!rawText) return;
-    await updateRecord((record) => { record.rawText = rawText; });
+    await updateRecord((record) => { reviseRawText(record, rawText); });
     state.overlay = null;
     renderPreservingScroll();
     announce("原文已更新");
@@ -5186,6 +5503,11 @@ window.addEventListener("keydown", async (event) => {
   if (state.overlay === "compose") {
     await saveDraft(document.querySelector("#composer-input")?.value || "", true);
     applyCaptureTransition("close");
+  } else if (state.overlay === "self-interview") {
+    await persistInterviewAnswer("answered");
+    state.overlay = null;
+  } else if (state.overlay === "interview-all" || state.overlay === "interview-summary" || state.overlay === "interview-invite") {
+    state.overlay = null;
   } else if (state.overlay === "capture-entry" || state.overlay === "ticket-confirm" || state.overlay === "scene-choice") {
     state.captureContext = null;
     state.captureTagsExpanded = new Set();

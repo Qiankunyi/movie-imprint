@@ -14,6 +14,35 @@ function matchingEvidence(evidence, triggers = []) {
   return evidence.filter((item) => triggers.some((trigger) => item.excerpt.includes(trigger)));
 }
 
+export function buildValidationSources(testCase) {
+  return {
+    free_reflection: {
+      source_type: "free_reflection",
+      source_id: `${testCase.id}_reflection`,
+      source_revision_id: `${testCase.id}_reflection_rev_1`,
+      text: testCase.rawText
+    },
+    self_interview: {
+      interview_id: `${testCase.id}_interview`,
+      answers: (testCase.interviewAnswers || []).map((answer, index) => ({
+        source_type: "self_interview",
+        source_id: `${testCase.id}_answer_${index + 1}`,
+        source_revision_id: `${testCase.id}_answer_${index + 1}_rev_1`,
+        question_id: answer.questionId,
+        text: answer.text
+      }))
+    }
+  };
+}
+
+function sourceEntries(testCase) {
+  const sources = buildValidationSources(testCase);
+  return [
+    { ...sources.free_reflection, question_id: "" },
+    ...sources.self_interview.answers
+  ];
+}
+
 export function evaluateAiValidationCase(testCase, analysis) {
   const expectation = testCase.expect || {};
   const evidence = collectEvidence(analysis);
@@ -21,6 +50,7 @@ export function evaluateAiValidationCase(testCase, analysis) {
   const emotions = analysis?.emotions || [];
   const attitude = analysis?.attitude?.suggested ?? null;
   const checks = [];
+  const sources = sourceEntries(testCase);
 
   checks.push(check(
     "attitude_allowed",
@@ -34,8 +64,19 @@ export function evaluateAiValidationCase(testCase, analysis) {
   checks.push(check("minimum_emotions", emotions.length >= (expectation.minEmotions || 0), emotions.length));
   checks.push(check(
     "evidence_is_source_bound",
-    evidence.every((item) => typeof item?.excerpt === "string" && testCase.rawText.includes(item.excerpt)),
+    evidence.every((item) => typeof item?.excerpt === "string" && sources.some((source) => (
+      item.source_type === source.source_type
+      && item.source_id === source.source_id
+      && item.source_revision_id === source.source_revision_id
+      && item.question_id === source.question_id
+      && source.text.includes(item.excerpt)
+    ))),
     evidence.length
+  ));
+  checks.push(check(
+    "analysis_snapshot_revisions",
+    sources.every((source) => analysis?.source_revision_ids?.includes(source.source_revision_id)),
+    analysis?.source_revision_ids?.length || 0
   ));
   checks.push(check(
     "recommendation_not_in_analysis",
@@ -87,4 +128,3 @@ export function evaluateAiValidationCase(testCase, analysis) {
     }
   };
 }
-

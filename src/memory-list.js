@@ -19,14 +19,26 @@ function escapeHtml(value = "") {
   })[character]);
 }
 
-function memoryCardMarkup(card, { icon } = {}) {
-  const isAiSuggestion = card.provenance === "ai_suggested";
+function evidenceLabel(item) {
+  if (item.source_type === "self_interview") return `自我采访 · ${item.question_id || "回答"}`;
+  if (item.source_type === "free_reflection") return "原始感想";
+  return "旧版原文依据";
+}
+
+function memoryCardMarkup(card, { icon, mode = "formal", index = 0, count = 1, currentSourceRevisionIds = null } = {}) {
+  const isDraft = mode === "draft";
+  const isAiSuggestion = isDraft || card.provenance === "ai_suggested";
+  const id = card.card_id || card.temporary_id;
   return `<article class="memory-card ${card.is_core ? "core" : ""}" role="listitem" data-testid="memory-card">
-    <div class="memory-card-top"><span>${escapeHtml(card.type)}${isAiSuggestion ? " · 整理建议" : card.provenance === "user_accepted" ? " · 已保留" : ""}</span><button class="text-action" type="button" data-action="edit-card" data-card-id="${escapeHtml(card.card_id)}">${typeof icon === "function" ? icon("edit") : ""}编辑</button></div>
+    <div class="memory-card-top"><span>${escapeHtml(card.type || "自动判断")}${isDraft ? " · AI 草稿" : card.origin === "user_created" ? " · 我添加的" : card.user_modified ? " · 已修改" : ""}</span><button class="text-action" type="button" data-action="edit-card" data-card-id="${escapeHtml(id)}" data-card-source="${isDraft ? "draft" : "formal"}">${typeof icon === "function" ? icon("edit") : ""}编辑</button></div>
     <h3>${escapeHtml(card.title || "没有标题")}</h3>
     <p>${escapeHtml(card.content)}</p>
-    ${card.evidence?.length ? `<details class="evidence-details"><summary>查看原文依据</summary>${card.evidence.map((item) => `<blockquote>${escapeHtml(item.excerpt)}</blockquote>`).join("")}</details>` : ""}
-    ${isAiSuggestion ? `<div class="suggestion-actions"><button type="button" data-action="accept-ai-card" data-card-id="${escapeHtml(card.card_id)}">保留这张</button><button type="button" data-action="remove-ai-card" data-card-id="${escapeHtml(card.card_id)}">删除建议</button></div>` : ""}
+    ${card.why_it_matters ? `<p class="memory-why"><b>为什么想留下</b>${escapeHtml(card.why_it_matters)}</p>` : ""}
+    ${card.evidence?.length ? `<details class="evidence-details"><summary>查看原文依据</summary>${card.evidence.map((item) => {
+      const isHistorical = item.source_revision_id && Array.isArray(currentSourceRevisionIds) && !currentSourceRevisionIds.includes(item.source_revision_id);
+      return `<div class="evidence-item"><small>${escapeHtml(evidenceLabel(item))}${item.source_revision_id ? ` · ${isHistorical ? "历史来源版本" : "来源版本"}` : ""}</small><blockquote>${escapeHtml(item.excerpt)}</blockquote></div>`;
+    }).join("")}</details>` : ""}
+    ${isDraft ? `<div class="suggestion-actions"><button type="button" data-action="accept-draft-card" data-card-id="${escapeHtml(id)}">加入正式记录</button><button type="button" data-action="remove-draft-card" data-card-id="${escapeHtml(id)}">删除建议</button></div>` : isAiSuggestion ? `<div class="suggestion-actions"><button type="button" data-action="accept-ai-card" data-card-id="${escapeHtml(id)}">保留这张</button><button type="button" data-action="remove-ai-card" data-card-id="${escapeHtml(id)}">删除建议</button></div>` : `<div class="memory-card-controls"><button type="button" data-action="toggle-core-card" data-card-id="${escapeHtml(id)}">${card.is_core ? "取消核心" : "设为核心"}</button><button type="button" data-action="move-card" data-card-id="${escapeHtml(id)}" data-direction="up" ${index === 0 ? "disabled" : ""} aria-label="上移">↑</button><button type="button" data-action="move-card" data-card-id="${escapeHtml(id)}" data-direction="down" ${index === count - 1 ? "disabled" : ""} aria-label="下移">↓</button></div>`}
   </article>`;
 }
 
@@ -37,9 +49,10 @@ function memoryCardMarkup(card, { icon } = {}) {
 export function memoryListMarkup(cards, options = {}) {
   const list = Array.isArray(cards) ? cards : [];
   if (!list.length) {
-    return `<div class="memory-empty"><p>还没有记忆卡片。</p><button class="text-action" type="button" data-action="add-card">＋ 添加第一张</button></div>`;
+    if (options.mode === "draft") return `<div class="memory-empty"><p>这次没有内容达到卡片化门槛。原始资料仍已完整保留。</p></div>`;
+    return `<div class="memory-empty"><p>还没有记忆卡片。</p><button class="text-action" type="button" data-action="add-card">＋ 添加第一条</button></div>`;
   }
   return `<div class="memory-list" role="list" aria-label="记忆卡片，共 ${list.length} 张" data-testid="memory-list">
-    ${list.map((card) => memoryCardMarkup(card, options)).join("")}
+    ${list.map((card, index) => memoryCardMarkup(card, { ...options, index, count: list.length })).join("")}
   </div>`;
 }

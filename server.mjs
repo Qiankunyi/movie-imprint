@@ -95,16 +95,19 @@ async function handleAiAnalysis(request, response) {
   try {
     const body = await readJsonBody(request);
     const rawText = typeof body.rawText === "string" ? body.rawText : "";
+    const sources = body.sources && typeof body.sources === "object" ? body.sources : null;
     const result = await requestAiAnalysis({
       provider: typeof body.provider === "string" ? body.provider : null,
       title: typeof body.title === "string" ? body.title.slice(0, 160) : "",
-      rawText
+      rawText,
+      sources
     });
+    const sourceSnapshot = sources ? JSON.stringify(sources) : rawText;
     respondJson(response, 200, {
       ...result,
       metadata: {
         ...result.metadata,
-        input_hash: createHash("sha256").update(rawText, "utf8").digest("hex")
+        input_hash: createHash("sha256").update(sourceSnapshot, "utf8").digest("hex")
       }
     });
   } catch (error) {
@@ -113,7 +116,9 @@ async function handleAiAnalysis(request, response) {
     respondJson(response, invalid ? 400 : notConfigured ? 503 : 502, {
       error: invalid ? error.message : notConfigured ? "ai_not_configured" : "ai_analysis_failed",
       message: invalid
-        ? "这条记录暂时无法整理"
+        ? (["invalid_ai_input", "request_too_large"].includes(error.message)
+          ? "原始资料过长或为空，当前模型无法完整整理；已保存的资料不会丢失"
+          : "这条记录暂时无法整理")
         : notConfigured
           ? "所选整理服务尚未配置"
           : "整理暂时没有完成，原文已经保留"

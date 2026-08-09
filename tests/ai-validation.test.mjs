@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { evaluateAiValidationCase } from "../src/ai-validation.js";
 
 const baseAnalysis = {
-  attitude: { suggested: "like", evidence: [{ excerpt: "我喜欢", voice: "user", claim_mode: "direct_feeling" }] },
+  source_revision_ids: ["privacy_reflection_rev_1"],
+  attitude: { suggested: "like", evidence: [{ source_type: "free_reflection", source_id: "privacy_reflection", source_revision_id: "privacy_reflection_rev_1", question_id: "", excerpt: "我喜欢", voice: "user", claim_mode: "direct_feeling" }] },
   emotions: [],
-  memory_cards: [{ evidence: [{ excerpt: "安静的结尾", voice: "user", claim_mode: "observation" }] }],
+  memory_cards: [{ evidence: [{ source_type: "free_reflection", source_id: "privacy_reflection", source_revision_id: "privacy_reflection_rev_1", question_id: "", excerpt: "安静的结尾", voice: "user", claim_mode: "observation" }] }],
   warnings: []
 };
 
@@ -54,4 +55,3 @@ test("验证门要求编号感想保留为相互独立的记忆点", () => {
   assert.equal(result.checks.find((item) => item.code === "minimum_cards").passed, false);
   assert.equal(result.checks.find((item) => item.code === "independent_memory_points").passed, false);
 });
-

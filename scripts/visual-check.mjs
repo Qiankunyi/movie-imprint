@@ -40,6 +40,30 @@ async function ensureVisible(locator, viewport, label) {
   }
 }
 
+async function openCapture(page, workTitle, { location = "home" } = {}) {
+  if (!(await page.getByTestId("add-record").count())) await page.getByTestId("fab-toggle").click();
+  await page.getByTestId("add-record").click();
+  await page.getByTestId("skip-to-scene").click();
+  await page.getByTestId(location === "cinema" ? "location-cinema" : "location-home").click();
+  if (location === "cinema") {
+    await page.getByTestId("scene-cinema-name-input").fill("测试电影院");
+    await page.getByTestId("scene-format-select").selectOption("IMAX");
+  }
+  await page.getByTestId("scene-work-title-input").fill(workTitle);
+  await page.waitForTimeout(700);
+  await page.getByTestId("confirm-scene-choice").click();
+}
+
+async function returnToTimeline(page) {
+  if (!(await page.getByTestId("detail-back").count())) await page.getByTestId("fab-toggle").click();
+  await page.getByTestId("detail-back").click();
+}
+
+async function openSettings(page) {
+  await page.getByTestId("open-sidebar").click();
+  await page.getByTestId("sidebar-settings").click();
+}
+
 async function mockBangumi(page) {
   await page.route("**/api/ai/providers", async (route) => {
     await route.fulfill({
@@ -59,20 +83,41 @@ async function mockBangumi(page) {
   });
   await page.route("**/api/ai/analyze", async (route) => {
     const body = route.request().postDataJSON();
-    const excerpt = String(body.rawText || "").split("\n").findLast((line) => line.trim() && !line.trim().startsWith("#"))?.trim() || "原文";
-    const evidence = [{ excerpt, basis: "explicit", voice: "user", claim_mode: "direct_feeling", explanation: "测试原文依据", confidence: 0.9 }];
+    const reflection = body.sources?.free_reflection || {
+      source_id: "free_reflection_test",
+      source_revision_id: "free_reflection_revision_test",
+      text: body.rawText || "原文"
+    };
+    const excerpt = String(reflection.text || "").split("\n").findLast((line) => line.trim() && !line.trim().startsWith("#"))?.trim() || "原文";
+    const evidence = [{
+      source_type: "free_reflection",
+      source_id: reflection.source_id,
+      source_revision_id: reflection.source_revision_id,
+      question_id: "",
+      excerpt,
+      basis: "explicit",
+      voice: "user",
+      claim_mode: "direct_feeling",
+      explanation: "测试原文依据",
+      confidence: 0.9
+    }];
+    const analysisId = `analysis_test_${Date.now()}`;
+    const cardId = `card_test_${Date.now()}`;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
         analysis: {
-          schema_version: "0.2",
+          analysis_id: analysisId,
+          schema_version: "2.1",
+          prompt_version: "test-v2.1",
+          source_revision_ids: [reflection.source_revision_id, ...(body.sources?.self_interview?.source_revision_ids || [])],
           attitude: { suggested: "like", alternative: null, evidence, confidence: 0.9 },
-          emotions: [{ label: "被触动", evidence, confidence: 0.9 }],
-          memory_cards: [{ card_id: `card_test_${Date.now()}`, type: "被击中的瞬间", title: "最先留下来的片段", content: excerpt, why_it_matters: null, is_core: true, order: 0, evidence, confidence: 0.9, provenance: "ai_suggested" }],
+          emotions: [{ label: "感动", evidence, confidence: 0.9 }],
+          memory_cards: [{ temporary_id: cardId, card_id: cardId, memory_cluster_id: "cluster_test", type: "被击中的瞬间", title: "最先留下来的片段", content: excerpt, why_it_matters: null, related_emotions: ["感动"], is_core: true, order: 0, evidence, confidence: 0.9, provenance: "ai_suggested", origin: "ai_generated", status: "draft", user_modified: false, revision_history: [], analysis_id: analysisId }],
           warnings: []
         },
-        metadata: { provider: body.provider || "gemini", model: "gemini-test", prompt_version: "test", schema_version: "0.2", input_hash: "test", usage: {} }
+        metadata: { provider: body.provider || "gemini", model: "gemini-test", prompt_version: "test-v2.1", schema_version: "2.1", input_hash: "test", usage: {} }
       })
     });
   });
@@ -142,11 +187,20 @@ async function runFunctionalPath(browser) {
   const viewport = { width: 360, height: 800 };
   const context = await browser.newContext({ viewport, colorScheme: "light", serviceWorkers: "block" });
   const page = await context.newPage();
+  page.on("pageerror", (error) => console.error(`[browser pageerror] ${error.stack || error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") console.error(`[browser console] ${message.text()}`);
+  });
   await mockBangumi(page);
-  await page.goto(`${baseUrl}/?clean=1`);
-  await page.getByTestId("add-record").click();
+  const initialResponse = await page.goto(`${baseUrl}/?clean=1`);
+  await page.waitForTimeout(500);
+  if (!(await page.getByTestId("fab-toggle").count())) {
+    const bodyText = await page.locator("body").innerText().catch(() => "");
+    throw new Error(`首屏没有挂载：status=${initialResponse?.status()} url=${page.url()} body=${bodyText.slice(0, 500)}`);
+  }
+  await openCapture(page, "夏日列车");
   const input = page.getByTestId("composer-input");
-  await input.fill("#列表测试\n");
+  await input.fill("");
   await page.getByRole("button", { name: "列表格式", exact: true }).click();
   await page.getByRole("button", { name: "1. 有序", exact: true }).click();
   await input.type("第一点");
@@ -158,7 +212,7 @@ async function runFunctionalPath(browser) {
   await page.getByRole("button", { name: "- 无序", exact: true }).click();
   await input.type("补充一点");
   const listText = await input.inputValue();
-  if (!listText.includes("1. 第一点\n2. 第二点\n- 补充一点")) throw new Error("列表快捷输入或自动续号失败");
+  if (!listText.includes("1. 第一点\n2. 第二点\n- 补充一点")) throw new Error(`列表快捷输入或自动续号失败：${JSON.stringify(listText)}`);
   await input.fill("#哆啦A梦/大雄与动物行星 看完以后想到了小时候。");
   const seriesHint = page.getByTestId("series-hint");
   if (!(await seriesHint.isVisible())) throw new Error("斜线系列速记没有显示识别提示");
@@ -178,20 +232,22 @@ async function runFunctionalPath(browser) {
   const restored = await page.getByTestId("composer-input").inputValue();
   if (!restored.includes("#夏日列车")) throw new Error("IndexedDB 草稿刷新恢复失败");
   await page.getByTestId("finish-record").click();
-  await page.waitForFunction(() => document.querySelector("[data-testid='work-match-status']")?.textContent?.includes("待确认作品"));
-  await page.getByRole("heading", { name: "夏日列车" }).click();
+  await page.getByTestId("interview-invite").waitFor();
+  await page.getByRole("button", { name: "直接生成电影印记", exact: true }).click();
+  await page.getByTestId("analysis-draft").waitFor();
+  await page.getByRole("button", { name: "确认这次电影印记", exact: true }).click();
   await page.getByTestId("work-match-panel").waitFor();
-  await page.locator("[data-action='confirm-work-match'][data-subject-id='900001']").click();
-  await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("作品已确认"));
-  if (!(await page.getByTestId("work-match-panel").innerText()).includes("作品已确认")) throw new Error("Bangumi 候选确认状态没有显示");
-  await page.getByRole("button", { name: "修改匹配", exact: true }).click();
+  const summerCandidate = page.locator("[data-action='confirm-work-match']").filter({ hasText: "夏日列车" }).first();
+  await summerCandidate.waitFor();
+  await summerCandidate.click();
+  await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("作品条目"));
+  await page.getByTestId("work-match-panel").click();
   await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("请选择正确条目"));
   await page.getByRole("button", { name: "保留当前匹配", exact: true }).click();
-  await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("作品已确认"));
-  if (!(await page.getByTestId("work-match-panel").innerText()).includes("作品已确认")) throw new Error("取消重新匹配后没有保留当前作品");
+  await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("作品条目"));
   const linkedWork = await page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("movie-imprint-local", 2);
+      const request = indexedDB.open("movie-imprint-local", 4);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -211,7 +267,7 @@ async function runFunctionalPath(browser) {
   if (!linkedWork || linkedWork.identity_status !== "matched" || linkedWork.external_refs?.[0]?.id !== "900001") {
     throw new Error("记录没有保存已确认的 Bangumi 作品身份");
   }
-  await page.getByRole("button", { name: "返回记录流" }).click();
+  await returnToTimeline(page);
   await page.reload();
   // R3：壁纸已移除，首页改为鉴赏履历卡——回归检查卡片正确展示海报、没有任何壁纸残留元素、
   // 设置面板已改名且不再有壁纸选项。
@@ -224,7 +280,7 @@ async function runFunctionalPath(browser) {
   await posterImg.waitFor();
   const posterLoaded = await posterImg.evaluate((image) => image.complete && image.naturalWidth > 0);
   if (!posterLoaded) throw new Error("履历卡海报没有正常加载");
-  await page.getByRole("button", { name: "偏好设置", exact: true }).click();
+  await openSettings(page);
   await page.getByTestId("settings").waitFor();
   if (await page.locator("[data-action='toggle-wallpaper'], [data-action='change-wallpaper']").count()) {
     throw new Error("设置面板里仍残留壁纸选项");
@@ -234,9 +290,9 @@ async function runFunctionalPath(browser) {
   await page.getByRole("heading", { name: "夏日列车" }).click();
   await page.getByTestId("detail").waitFor();
 
-  await page.getByRole("button", { name: "保留这张", exact: true }).click();
-  await page.waitForFunction(() => document.querySelector("[data-testid='memory-card']")?.textContent?.includes("已保留"));
-  if (!((await page.getByTestId("memory-card").innerText()) || "").includes("已保留")) throw new Error("AI 记忆卡片没有经过用户明确保留");
+  await page.getByRole("heading", { name: "最先留下来的片段" }).waitFor();
+  if (await page.getByTestId("analysis-draft").count()) throw new Error("AI 草稿确认后仍停留在待确认区");
+  if (!(await page.getByRole("button", { name: "取消核心", exact: true }).count())) throw new Error("AI 草稿没有经过用户明确确认进入正式记录");
 
   await page.getByTestId("attitude-summary").click();
   const recommendationChoices = page.locator(".recommend-choice");
@@ -260,7 +316,7 @@ async function runFunctionalPath(browser) {
   await page.getByTestId("recommendation-note").blur();
   await page.locator(".judgement-sheet > .sheet-done").click();
 
-  await page.getByRole("button", { name: /添加卡片/ }).click();
+  await page.getByRole("button", { name: /添加一条记忆/ }).click();
   await page.locator("#card-form select").selectOption({ label: "配乐" });
   await page.locator("#card-form input[name='title']").fill("雨停后的旋律");
   await page.locator("#card-form textarea[name='content']").fill("片尾的旋律让车窗外的光更安静了。");
@@ -284,33 +340,43 @@ async function runFunctionalPath(browser) {
   if ((await page.getByRole("button", { name: "✓ 喜欢同类题材的人", exact: true }).getAttribute("aria-pressed")) !== "true") throw new Error("推荐快捷条件选中状态刷新恢复失败");
   if ((await page.getByRole("button", { name: "✓ 喜欢安静画面的人", exact: true }).getAttribute("aria-pressed")) !== "true") throw new Error("AI 推荐条件没有经过用户确认并持久化");
   await page.locator(".judgement-sheet > .sheet-done").click();
-  await page.getByRole("button", { name: "返回记录流" }).click();
-  await page.getByRole("button", { name: "偏好设置", exact: true }).click();
+  await page.getByRole("button", { name: "重新整理", exact: true }).click();
+  await page.getByTestId("analysis-draft").waitFor();
+  await page.getByRole("button", { name: "把建议加入正式记录", exact: true }).waitFor();
+  await page.getByRole("button", { name: "用这次结果替换正式卡片", exact: true }).waitFor();
+  await page.getByRole("button", { name: "保留正式记录并收起草稿", exact: true }).click();
+  await page.getByRole("heading", { name: "雨停后的旋律" }).waitFor();
+  await returnToTimeline(page);
+  await openSettings(page);
   await page.locator("[data-action='toggle-auto-analysis']").click();
   await page.waitForFunction(() => document.querySelector("[data-testid='recording-mode']")?.textContent?.includes("当前关闭"));
   await page.getByRole("button", { name: "关闭", exact: true }).click();
   await page.reload();
-  await page.getByTestId("add-record").click();
+  await openCapture(page, "只保存原文");
   await page.getByTestId("composer-input").fill("#只保存原文\n这一刻先不整理，只把原来的话留下来。");
+  await page.waitForFunction(() => document.querySelector("[data-testid='save-status']")?.textContent === "已存于本机");
   await page.getByTestId("finish-record").click();
-  await page.waitForFunction(() => document.querySelector("[data-testid='work-match-status']")?.textContent?.includes("仅保存原文"));
-  await page.getByRole("heading", { name: "只保存原文", exact: true }).click();
-  await page.getByTestId("raw-only-status").waitFor();
-  await page.getByRole("button", { name: "稍后整理", exact: true }).click();
-  await page.getByTestId("attitude-summary").waitFor();
-  await page.getByRole("button", { name: "返回记录流" }).click();
-  await page.getByTestId("add-record").click();
+  await page.getByTestId("interview-invite").waitFor();
+  await page.getByRole("button", { name: "稍后再说", exact: true }).click();
+  await page.getByTestId("interview-archive").waitFor();
+  if (!((await page.locator(".reflection-archive").innerText()) || "").includes("这一刻先不整理")) throw new Error("关闭采访邀请时没有保留原始感想");
+  await returnToTimeline(page);
+  await openCapture(page, "哆啦A梦/大雄与云之王国");
   await page.getByTestId("composer-input").fill("#哆啦A梦/大雄与云之王国\n小时候留下来的印象，现在想重新记下来。");
+  await page.waitForFunction(() => document.querySelector("[data-testid='save-status']")?.textContent === "已存于本机");
   await page.getByTestId("finish-record").click();
-  await page.waitForFunction(() => document.querySelector("[data-testid='work-match-status']")?.textContent?.includes("待确认作品"));
+  await page.getByTestId("interview-invite").waitFor();
+  await page.getByRole("button", { name: "稍后再说", exact: true }).click();
   if (await page.getByRole("heading", { name: "哆啦A梦/大雄与云之王国", exact: true }).count()) throw new Error("斜线系列速记被错误显示为本地作品标题");
-  await page.getByRole("heading", { name: "大雄与云之王国", exact: true }).click();
-  await page.locator("[data-action='confirm-work-match'][data-subject-id='451']").click();
-  await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("作品已确认"));
+  const doraemonCandidate = page.locator("[data-action='confirm-work-match']").filter({ hasText: "大雄与云之王国" }).first();
+  await doraemonCandidate.waitFor();
+  await doraemonCandidate.click();
+  await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("作品条目"));
   const canonicalTitle = page.locator(".detail-title-row h1");
   if ((await canonicalTitle.innerText()) !== "《哆啦A梦：大雄与云之王国》") throw new Error("成品标题没有采用 Bangumi 标准中文名");
   if ((await canonicalTitle.locator("a").getAttribute("href")) !== "https://bangumi.tv/subject/451") throw new Error("成品标题没有链接到正式 Bangumi 条目");
-  await page.getByRole("button", { name: "稍后整理", exact: true }).click();
+  await page.getByRole("button", { name: "重新整理", exact: true }).click();
+  await page.getByTestId("analysis-draft").waitFor();
   await page.getByRole("button", { name: "删除建议", exact: true }).waitFor();
   await page.getByRole("button", { name: "删除建议", exact: true }).click();
   await page.waitForFunction(() => document.querySelector(".memory-empty")?.textContent?.includes("还没有记忆卡片"));
@@ -333,7 +399,7 @@ async function runOfflinePosterPath(browser) {
     const cache = await caches.open("movie-imprint-posters-v1");
     await cache.put("/api/bangumi/image?subjectId=449", new Response(bytes, { headers: { "content-type": "image/png", "x-movie-imprint-cached-at": String(Date.now()) } }));
     const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("movie-imprint-local", 2);
+      const request = indexedDB.open("movie-imprint-local", 4);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -383,8 +449,18 @@ async function runOfflinePosterPath(browser) {
   await context.setOffline(true);
   await page.reload();
   await posterImg.waitFor();
-  const loaded = await posterImg.evaluate((image) => image.complete && image.naturalWidth > 0);
-  if (!loaded) throw new Error("离线刷新后履历卡海报没有从本地缓存恢复");
+  const loaded = await page.waitForFunction(() => {
+    const image = document.querySelector(".record-poster-img");
+    return Boolean(image?.complete && image.naturalWidth > 0);
+  }, null, { timeout: 5000 }).then(() => true).catch(() => false);
+  if (!loaded) {
+    const diagnostics = await page.evaluate(async () => ({
+      controlled: Boolean(navigator.serviceWorker.controller),
+      src: document.querySelector(".record-poster-img")?.getAttribute("src"),
+      cacheKeys: (await (await caches.open("movie-imprint-posters-v1")).keys()).map((item) => item.url)
+    }));
+    throw new Error(`离线刷新后履历卡海报没有从本地缓存恢复：${JSON.stringify(diagnostics)}`);
+  }
   await context.close();
 }
 
@@ -403,29 +479,34 @@ async function captureVariants(browser) {
       const output = join(root, "artifacts", "screenshots", name, theme);
       await mkdir(output, { recursive: true });
       await page.screenshot({ path: join(output, "home.png") });
-      await ensureVisible(page.getByTestId("add-record"), viewport, "首页记录按钮");
+      await ensureVisible(page.getByTestId("fab-toggle"), viewport, "首页记录按钮");
 
-      await page.getByTestId("add-record").click();
+      await openCapture(page, "夏日列车", { location: "cinema" });
       await page.getByTestId("composer-input").fill("#夏日列车 #电影院\n最后一幕还是很击中我。雨停以后，车窗外的光也变得很安静。");
+      await page.waitForFunction(() => document.querySelector("[data-testid='save-status']")?.textContent === "已存于本机");
       await page.waitForTimeout(250);
       await ensureVisible(page.getByTestId("finish-record"), viewport, "记录完成按钮");
       await page.screenshot({ path: join(output, "compose.png") });
       await page.getByTestId("finish-record").click();
-      await page.waitForFunction(() => document.querySelector("[data-testid='work-match-status']")?.textContent?.includes("待确认作品"));
-      await page.getByRole("heading", { name: "夏日列车" }).click();
+      await page.getByTestId("interview-invite").waitFor();
+      await page.getByRole("button", { name: "直接生成电影印记", exact: true }).click();
+      await page.getByTestId("analysis-draft").waitFor();
+      await page.locator("[data-action='confirm-work-match']").filter({ hasText: "夏日列车" }).first().waitFor();
       await page.screenshot({ path: join(output, "detail.png") });
-      await page.locator("[data-action='confirm-work-match'][data-subject-id='900001']").click();
-      await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("作品已确认"));
-      await page.getByRole("button", { name: "返回记录流" }).click();
+      await page.getByRole("button", { name: "确认这次电影印记", exact: true }).click();
+      await page.locator("[data-action='confirm-work-match']").filter({ hasText: "夏日列车" }).first().click();
+      await page.waitForFunction(() => document.querySelector("[data-testid='work-match-panel']")?.textContent?.includes("作品条目"));
+      await returnToTimeline(page);
       // R3：壁纸移除后，首页鉴赏履历卡（含制式/活动徽章、金属描边）替代了原来的壁纸截图。
       await page.locator(".record-card.cinema").first().waitFor();
       await page.screenshot({ path: join(output, "record-cards.png") });
-      await page.getByRole("button", { name: "偏好设置", exact: true }).click();
+      await openSettings(page);
       await page.getByTestId("settings").waitFor();
       await page.waitForTimeout(250);
       await page.screenshot({ path: join(output, "settings.png") });
       await page.getByRole("button", { name: "关闭", exact: true }).click();
-      await page.getByRole("heading", { name: "夏日列车" }).click();
+      await page.locator(".record-card", { hasText: "夏日列车" }).click();
+      await page.getByTestId("detail").waitFor();
       await page.getByTestId("attitude-summary").click();
       await page.getByRole("button", { name: "喜欢", exact: true }).click();
       await page.getByRole("button", { name: "看对象", exact: true }).click();
@@ -452,7 +533,7 @@ try {
   });
   try {
     await runFunctionalPath(browser);
-    await runOfflineWallpaperPath(browser);
+    await runOfflinePosterPath(browser);
     if (!testOnly) await captureVariants(browser);
   } finally {
     await browser.close();

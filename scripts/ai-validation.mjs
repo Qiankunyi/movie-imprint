@@ -1,21 +1,27 @@
 import { requestAiAnalysis } from "../src/ai-providers.js";
-import { evaluateAiValidationCase } from "../src/ai-validation.js";
+import { buildValidationSources, evaluateAiValidationCase } from "../src/ai-validation.js";
 import { syntheticAiValidationCases } from "../tests/fixtures/ai-validation.synthetic.mjs";
 
 const providerArgument = process.argv.find((argument) => argument.startsWith("--provider="));
 const provider = providerArgument?.split("=")[1] || "gemini";
+const caseArgument = process.argv.find((argument) => argument.startsWith("--case="));
+const selectedCase = caseArgument?.split("=")[1] || null;
+const validationCases = selectedCase
+  ? syntheticAiValidationCases.filter((testCase) => testCase.id === selectedCase)
+  : syntheticAiValidationCases;
+if (!validationCases.length) throw new Error(`unknown_validation_case:${selectedCase}`);
 const results = [];
 let model = null;
 let inputTokens = 0;
 let outputTokens = 0;
 let durationMs = 0;
 
-for (const testCase of syntheticAiValidationCases) {
+for (const testCase of validationCases) {
   try {
     const response = await requestAiAnalysis({
       provider,
       title: testCase.title,
-      rawText: testCase.rawText
+      sources: buildValidationSources(testCase)
     });
     model ||= response.metadata.model;
     inputTokens += response.metadata.usage.input_tokens || 0;
@@ -38,7 +44,7 @@ for (const testCase of syntheticAiValidationCases) {
 
 const report = {
   generated_at: new Date().toISOString(),
-  dataset: "synthetic-c3-v1",
+  dataset: "synthetic-v2.1-dual-source",
   privacy: "No raw input, evidence excerpt, or credential is included in this report.",
   provider,
   model,
@@ -51,4 +57,3 @@ const report = {
 
 console.log(`AI_VALIDATION_REPORT=${JSON.stringify(report)}`);
 if (report.passed !== report.total) process.exitCode = 1;
-

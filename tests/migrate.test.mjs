@@ -213,7 +213,7 @@ test("迁移成功：备份被调用、写入去重后的数据、写入 migrati
   assert.equal(db.stores.works.length, 1, "迁移后应只剩 1 个 work");
   assert.equal(db.stores.records.length, 2, "记录条数不应丢失");
   const meta = db.stores.meta.find((item) => item.id === "migration-status");
-  assert.equal(meta.migration_version, "r5-library");
+  assert.equal(meta.migration_version, "v2.1-self-interview-analysis-lifecycle");
   assert.ok(meta.migration_ran_at);
 });
 

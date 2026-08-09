@@ -7,6 +7,7 @@ import {
   validateAiAnalysis,
   validateAiRecommendation
 } from "./ai.js";
+import { SELF_INTERVIEW_QUESTIONS } from "./self-interview.js";
 
 export const AI_PROVIDERS = {
   // gemini-2.0-flash-lite 已被 Google 下线（2026-08 实测报错 HTTP 404 "no longer available"）。
@@ -43,8 +44,17 @@ export function listAiProviders(env = process.env) {
   return { active, providers };
 }
 
-function userPayload({ title, rawText }) {
-  return JSON.stringify({ work_title: title || "未命名的电影", raw_impression: rawText });
+function userPayload({ title, rawText, sources }) {
+  if (!sources) return JSON.stringify({ work_title: title || "未命名的电影", raw_impression: rawText });
+  const questionText = new Map(SELF_INTERVIEW_QUESTIONS.map((question) => [question.id, question.question]));
+  return JSON.stringify({
+    work_title: title || "未命名的电影",
+    free_reflection: sources.free_reflection,
+    self_interview_answers: (sources.self_interview?.answers || []).map((answer) => ({
+      ...answer,
+      question_text: questionText.get(answer.question_id) || answer.question_id
+    }))
+  });
 }
 
 function contractOptions(options = {}) {
@@ -95,7 +105,7 @@ async function callGemini(config, input, fetchImpl, options) {
         // 官方文档说未来的模型世代会直接报 400。索性不传——本来靠的也是 AI_SYSTEM_PROMPT
         // 里那组"硬规则"（逐字证据、态度判定标准等）来保证输出保守/一致，不依赖 temperature。
         generationConfig: {
-          maxOutputTokens: 4096,
+          maxOutputTokens: 8192,
           responseMimeType: "application/json",
           responseSchema: geminiSchema(contract.schema)
         }
@@ -142,7 +152,7 @@ async function callAnthropic(config, input, fetchImpl, options) {
     },
     body: JSON.stringify({
       model: config.model,
-      max_tokens: 4096,
+      max_tokens: 8192,
       system: contract.systemPrompt,
       messages: [{ role: "user", content: contract.inputText || userPayload(input) }],
       output_config: { format: { type: "json_schema", schema: contract.schema } }
@@ -161,7 +171,7 @@ async function callOpenAiCompatible(config, input, fetchImpl, provider, options)
       { role: "system", content: `${contract.systemPrompt}\n输出字段结构：${JSON.stringify(contract.schema)}` },
       { role: "user", content: contract.inputText || userPayload(input) }
     ],
-    max_tokens: 4096,
+    max_tokens: 8192,
     temperature: 0.1
   };
   if (isKimi) {
@@ -205,19 +215,32 @@ export function describeAiError(error, fallbackMessage) {
   return detail ? `${fallbackMessage}（${detail}）` : fallbackMessage;
 }
 
-export async function requestAiAnalysis({ provider, title, rawText, env = process.env, fetchImpl = fetch }) {
-  if (typeof rawText !== "string" || !rawText.trim() || rawText.length > 20000) throw new Error("invalid_ai_input");
+export async function requestAiAnalysis({ provider, title, rawText, sources, env = process.env, fetchImpl = fetch }) {
+  const normalizedSources = sources || {
+    free_reflection: {
+      source_type: "free_reflection",
+      source_id: "legacy_free_reflection",
+      source_revision_id: "legacy_revision",
+      text: rawText
+    },
+    self_interview: { interview_id: null, answers: [] }
+  };
+  const sourceTexts = [normalizedSources.free_reflection?.text, ...(normalizedSources.self_interview?.answers || []).map((answer) => answer?.text)]
+    .filter((text) => typeof text === "string");
+  const totalCharacters = sourceTexts.reduce((sum, text) => sum + text.length, 0);
+  if (!sourceTexts.some((text) => text.trim()) || totalCharacters > 20000) throw new Error("invalid_ai_input");
   const selected = provider || listAiProviders(env).active;
   const config = providerConfig(selected, env);
   const startedAt = Date.now();
+  const input = { title, sources: normalizedSources };
   const result = selected === "gemini"
-    ? await callGemini(config, { title, rawText }, fetchImpl)
+    ? await callGemini(config, input, fetchImpl)
     : selected === "openai"
-      ? await callOpenAi(config, { title, rawText }, fetchImpl)
+      ? await callOpenAi(config, input, fetchImpl)
       : selected === "anthropic"
-        ? await callAnthropic(config, { title, rawText }, fetchImpl)
-        : await callOpenAiCompatible(config, { title, rawText }, fetchImpl, selected);
-  const analysis = validateAiAnalysis(rawText, result.text);
+        ? await callAnthropic(config, input, fetchImpl)
+        : await callOpenAiCompatible(config, input, fetchImpl, selected);
+  const analysis = validateAiAnalysis(sources ? normalizedSources : rawText, result.text);
   return {
     analysis,
     metadata: {
