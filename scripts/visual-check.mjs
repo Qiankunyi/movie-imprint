@@ -48,19 +48,27 @@ async function openCapture(page, workTitle, { location = "home", viewedOn = null
   if (!entryText.includes("观影信息")) {
     throw new Error("开始记录没有先进入统一的观影信息步骤");
   }
-  for (const choice of ["粘贴票务信息", "手动填写观影信息", "跳过票务"]) {
+  for (const choice of ["粘贴票务信息", "解析票务信息", "暂时跳过"]) {
     if (!entryText.includes(choice)) throw new Error(`观影信息步骤缺少“${choice}”入口`);
   }
-  await page.getByTestId("manual-viewing-info").click();
-  if (viewedOn) await page.getByTestId("scene-viewed-on-input").fill(viewedOn);
-  await page.getByTestId(location === "cinema" ? "location-cinema" : "location-home").click();
   if (location === "cinema") {
-    await page.getByTestId("scene-cinema-name-input").fill("测试电影院");
-    await page.getByTestId("scene-format-select").selectOption("IMAX");
+    const ticketDate = (viewedOn || new Date().toISOString().slice(0, 10)).replaceAll("-", "/");
+    await page.getByTestId("capture-paste-input").fill(`松竹マルチプレックスシアターズ
+作品名：【IMAX】${workTitle}
+観賞日：${ticketDate}
+開映時間：19:20
+終映時間：21:30
+劇場：测试电影院
+座席：K-11`);
+    await page.getByTestId("parse-ticket-info").click();
+    await page.getByTestId("ticket-confirm").waitFor();
+    await page.getByTestId("confirm-ticket-capture").click();
+  } else {
+    const titleInput = page.getByTestId("capture-entry-work-title-input");
+    if (await titleInput.count()) await titleInput.fill(workTitle);
+    await page.getByTestId("skip-viewing-info").click();
   }
-  await page.getByTestId("scene-work-title-input").fill(workTitle);
-  await page.waitForTimeout(700);
-  await page.getByTestId("confirm-scene-choice").click();
+  await page.getByTestId("composer").waitFor();
 }
 
 async function returnToTimeline(page) {

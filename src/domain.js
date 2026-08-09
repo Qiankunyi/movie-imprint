@@ -576,8 +576,15 @@ export function reconcileLocalWorkTitle(work, record) {
 export function assignViewingRelations(events) {
   const list = Array.isArray(events) ? events : [];
   const sortKey = (event) => event.screening_at || event.viewed_on || event.createdAt || "";
+  const isPendingPlaceholder = (event) => event.source === "skipped" && event.needs_review && !sortKey(event);
+  const pending = list.filter(isPendingPlaceholder).map((event) => {
+    const next = { ...event, watch_index: null, viewing_relation: null };
+    delete next.relation_conflict;
+    return next;
+  });
 
   const sorted = list
+    .filter((event) => !isPendingPlaceholder(event))
     .map((event, index) => ({ event, index }))
     .sort((a, b) => {
       const ka = sortKey(a.event);
@@ -588,7 +595,7 @@ export function assignViewingRelations(events) {
     })
     .map(({ event }) => event);
 
-  return sorted.map((event, i) => {
+  const assigned = sorted.map((event, i) => {
     const watchIndex = i + 1;
     const timeRelation = watchIndex === 1 ? "first" : "rewatch";
     const locked = event.relation_locked === true && !!event.viewing_relation;
@@ -600,6 +607,7 @@ export function assignViewingRelations(events) {
     else delete next.relation_conflict;
     return next;
   });
+  return [...assigned, ...pending];
 }
 
 // ─── 标签与草稿解析 ────────────────────────────────────────────────────────────

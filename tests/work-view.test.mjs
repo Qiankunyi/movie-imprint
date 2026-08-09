@@ -182,6 +182,18 @@ test("没有有效观影态度时作品页不产生默认态度", () => {
   assert.equal(latestViewingAttitude([makeRecord({ attitude: null })], new Map()), null);
 });
 
+test("观影信息待确认的记录不会抢占作品页最新态度", () => {
+  const events = [
+    makeEvent({ id: "ve_confirmed", viewed_on: "2026-08-01", screening_at: null }),
+    makeEvent({ id: "ve_pending", viewed_on: null, screening_at: null, location_type: null, needs_review: true })
+  ];
+  const records = [
+    makeRecord({ id: "r_confirmed", viewing_event_id: "ve_confirmed", attitude: "like" }),
+    makeRecord({ id: "r_pending", viewing_event_id: "ve_pending", attitude: "love", createdAt: "2026-08-09" })
+  ];
+  assert.equal(latestViewingAttitude(records, indexEventsByRecord(records, events)), "like");
+});
+
 test("stats.totalMinutes / stats.totalSpent 正确累加，缺值不计入且不产生 NaN", () => {
   const events = [
     makeEvent({ id: "ve_1", duration_minutes: 120, ticket_price: { amount: 2000, currency: "JPY" } }),

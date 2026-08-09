@@ -9,6 +9,7 @@ import {
   flipViewingRelation,
   tentativeViewingRelation,
   buildManualViewingEvent,
+  buildPendingViewingEvent,
   createViewingCaptureContext,
   captureWorkTitle,
   finalizeCaptureRecord,
@@ -48,8 +49,8 @@ describe("captureTransition 状态机", () => {
     assert.equal(captureTransition("capture:entry", "manual"), "capture:scene-choice");
   });
 
-  it("capture:entry --skip-ticket--> capture:scene-choice（只跳过票务，不跳过观影信息）", () => {
-    assert.equal(captureTransition("capture:entry", "skip"), "capture:scene-choice");
+  it("capture:entry --skip--> capture:compose（由待确认事件承接观影信息）", () => {
+    assert.equal(captureTransition("capture:entry", "skip"), "capture:compose");
   });
 
   it("capture:entry --close--> idle", () => {
@@ -160,6 +161,16 @@ describe("buildManualViewingEvent（手动填写观影信息）", () => {
       bonusNote: "第3週 色紙"
     });
     assert.equal(event.viewing_context.bonus_note, "第3週 色紙");
+  });
+});
+
+describe("buildPendingViewingEvent（暂时跳过）", () => {
+  it("日期和观看方式保持待确认，不默认成在家观看", () => {
+    const event = buildPendingViewingEvent();
+    assert.equal(event.viewed_on, null);
+    assert.equal(event.location_type, null);
+    assert.equal(event.needs_review, true);
+    assert.equal(event.source, "skipped");
   });
 });
 
@@ -474,10 +485,12 @@ describe("R6 补丁 7：lockedWork 的行为契约", () => {
   it("跳过票务导入时仍保留锁定作品", () => {
     const after = createViewingCaptureContext({ work: { id: "work_birdman", title: "鸟人" } });
     after.source = "skipped";
+    after.pendingEvents = [buildPendingViewingEvent()];
     assert.equal(after.lockedWork, true);
     assert.equal(after.workId, "work_birdman");
     assert.equal(after.workTitle, "鸟人");
-    assert.deepEqual(after.pendingEvents, [], "跳过不会伪造 ViewingEvent");
+    assert.equal(after.pendingEvents[0].needs_review, true, "跳过会建立明确的待确认 ViewingEvent");
+    assert.equal(after.pendingEvents[0].location_type, null, "待确认事件不能默认成在家观看");
   });
 
   it("票务粘贴时，锁定的作品名优先于票面片名", () => {

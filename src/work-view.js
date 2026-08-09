@@ -100,11 +100,15 @@ export function buildAttitudeTimeline(records, eventsByRecordId) {
 export function latestViewingAttitude(records, eventsByRecordId) {
   const candidates = (Array.isArray(records) ? records : [])
     .filter((record) => record.record_kind !== "supplement" && record.attitude)
-    .map((record) => ({
-      attitude: record.attitude,
-      date: recordSortKey(record, eventsByRecordId?.get(record.id))
-    }))
-    .filter((item) => item.date)
+    .map((record) => {
+      const event = eventsByRecordId?.get(record.id);
+      return {
+        attitude: record.attitude,
+        date: recordSortKey(record, event),
+        valid: Boolean(event && !event.needs_review && (event.viewed_on || event.screening_at) && ["home", "cinema"].includes(event.location_type))
+      };
+    })
+    .filter((item) => item.valid && item.date)
     .sort((a, b) => b.date.localeCompare(a.date));
   return candidates[0]?.attitude || null;
 }

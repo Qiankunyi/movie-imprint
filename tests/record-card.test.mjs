@@ -49,6 +49,17 @@ test("线上/在家卡：含「在家观看」、无制式徽章、无高光 cla
   assert.doesNotMatch(html, /format-badge solid/);
 });
 
+test("暂时跳过观影信息：明确显示待确认，不回落成在家观看或创建日期", () => {
+  const { record, work } = cinemaRecord();
+  const event = { location_type: null, viewed_on: null, needs_review: true, viewing_context: { event_types: [] } };
+  const html = recordCard(record, { work, event, buildPosterUrl });
+  assert.match(html, /record-card pending-viewing/);
+  assert.match(html, /观影信息待确认/);
+  assert.match(html, /日期待确认/);
+  assert.doesNotMatch(html, /在家观看/);
+  assert.doesNotMatch(html, /2026\/08\/03/);
+});
+
 test("补充记录卡：含「补充记录」、含间隔年数、日期弱化", () => {
   const record = { id: "record_2", title: "旧作", createdAt: "2029-03-02T00:00:00.000Z", attitude: "love", record_kind: "supplement" };
   const work = { title: "旧作", first_recorded_at: "2026-03-02T00:00:00.000Z" };

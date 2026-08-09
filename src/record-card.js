@@ -126,18 +126,19 @@ function draftCardMarkup(record, { buildPosterUrl } = {}) {
 
 function viewingCardMarkup(record, work, event, { buildPosterUrl } = {}) {
   const title = work?.title || record.title || "未命名的电影";
+  const pendingInfo = !event || event.needs_review || !(event.viewed_on || event.screening_at) || !["home", "cinema"].includes(event.location_type);
   const isCinema = event?.location_type === "cinema";
-  const rawFormat = event?.viewing_context?.format;
-  const fmtBadge = event ? formatBadge(rawFormat) : null;
-  const { badges: evBadges, overflow } = event ? eventBadges(event.viewing_context?.event_types || []) : { badges: [], overflow: 0 };
+  const rawFormat = pendingInfo ? null : event?.viewing_context?.format;
+  const fmtBadge = event && !pendingInfo ? formatBadge(rawFormat) : null;
+  const { badges: evBadges, overflow } = event && !pendingInfo ? eventBadges(event.viewing_context?.event_types || []) : { badges: [], overflow: 0 };
   const watchIndex = event?.watch_index;
   const showRewatch = Number.isInteger(watchIndex) && watchIndex >= 2;
   const highSpec = isCinema && isHighSpecFormat(rawFormat);
   const hasEventBadges = evBadges.length > 0;
 
   // 卡片上的日期只精确到"日"：不要星期，也不要具体时刻——点进详情页有完整的票务时间。
-  const dateLabel = event ? eventDateLabel(event, { withTime: false }) : formatDate(record.createdAt);
-  const locationLabel = isCinema
+  const dateLabel = pendingInfo ? "日期待确认" : event ? eventDateLabel(event, { withTime: false }) : formatDate(record.createdAt);
+  const locationLabel = pendingInfo ? "观影信息待确认" : isCinema
     ? (event?.viewing_context?.cinema_name || "")
     : (LOCATION_LABELS[event?.location_type] || LOCATION_LABELS.home);
 
@@ -150,7 +151,7 @@ function viewingCardMarkup(record, work, event, { buildPosterUrl } = {}) {
 
   const cardClasses = [
     "record-card",
-    isCinema ? "cinema" : "home",
+    pendingInfo ? "pending-viewing" : isCinema ? "cinema" : "home",
     highSpec ? "high-spec" : "",
     hasEventBadges ? "has-event" : ""
   ].filter(Boolean).join(" ");
@@ -171,7 +172,7 @@ function viewingCardMarkup(record, work, event, { buildPosterUrl } = {}) {
         </div>
         <div class="record-card-bottom">
           ${attitudeTagMarkup(record)}
-          <time class="record-card-date">${escapeHtml(dateLabel)}</time>
+          ${pendingInfo ? `<span class="record-card-date pending">${escapeHtml(dateLabel)}</span>` : `<time class="record-card-date">${escapeHtml(dateLabel)}</time>`}
         </div>
       </div>
     </button>

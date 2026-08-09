@@ -444,6 +444,16 @@ test("assignViewingRelations 的实现不读取 location_type（缺失该字段�
   assert.deepEqual(result.map((e) => e.viewing_relation), ["first", "rewatch"]);
 });
 
+test("待确认占位事件不参与初看/重看排序，也不抢占 watch_index", () => {
+  const confirmed = { id: "confirmed", viewed_on: "2020-01-01", source: "manual" };
+  const pending = { id: "pending", viewed_on: null, location_type: null, source: "skipped", needs_review: true };
+  const result = assignViewingRelations([pending, confirmed]);
+  assert.equal(result.find((event) => event.id === "confirmed").viewing_relation, "first");
+  assert.equal(result.find((event) => event.id === "confirmed").watch_index, 1);
+  assert.equal(result.find((event) => event.id === "pending").viewing_relation, null);
+  assert.equal(result.find((event) => event.id === "pending").watch_index, null);
+});
+
 // ─── R5 补丁 6：时间线按观影日期排序 ─────────────────────────────────────────
 
 test("sortRecordsByViewingDate：按观影日期倒序，而不是记录创建时间", () => {

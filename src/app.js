@@ -18,7 +18,7 @@ import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
 import { runMigrationIfNeeded } from "./migrate.js?v=3";
 import { EVENT_TYPES } from "./event-types.js?v=1";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
-import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=7";
+import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=8";
 import { memoryListMarkup } from "./memory-list.js?v=1";
 import {
   SELF_INTERVIEW_QUESTIONS,
@@ -60,7 +60,7 @@ import {
   summarizeWorksForShelf,
   filterShelfEntries,
   sortShelfEntries
-} from "./work-view.js?v=3";
+} from "./work-view.js?v=4";
 import {
   RELEASE_REGIONS,
   SERIES_RELATION_TYPES,
@@ -100,13 +100,14 @@ import {
   updateBonusNote,
   tentativeViewingRelation,
   buildManualViewingEvent,
+  buildPendingViewingEvent,
   createViewingCaptureContext,
   captureWorkTitle,
   finalizeCaptureRecord,
   toggleEventSelection,
   selectAllEvents,
   selectedPendingEvents
-} from "./capture.js?v=4";
+} from "./capture.js?v=5";
 import {
   ATTITUDES,
   ATTITUDE_DESCRIPTIONS,
@@ -133,7 +134,7 @@ import {
   createWorkFromCandidate,
   recommendationLabel,
   resolveWork
-} from "./domain.js?v=18";
+} from "./domain.js?v=19";
 import {
   MIME_TYPES,
   copyExportText,
@@ -1088,12 +1089,13 @@ function ticketPriceLabel(event) {
 
 function workHistoryRow(item, index) {
   const ctx = item.viewing_context || {};
+  const pending = item.needs_review || !(item.viewed_on || item.screening_at) || !["home", "cinema"].includes(item.location_type);
   const isCinema = item.location_type === "cinema";
-  const dateLabel = eventDateLabel(item, { withTime: isCinema }) || formatShortDate(item.viewed_on);
-  const locationLabel = isCinema ? (ctx.cinema_name || "影院观看") : (WORK_LOCATION_LABELS[item.location_type] || WORK_LOCATION_LABELS.home);
+  const dateLabel = pending ? "日期待确认" : (eventDateLabel(item, { withTime: isCinema }) || formatShortDate(item.viewed_on));
+  const locationLabel = pending ? "观影信息待确认" : isCinema ? (ctx.cinema_name || "影院观看") : (WORK_LOCATION_LABELS[item.location_type] || WORK_LOCATION_LABELS.home);
   const fmtBadge = isCinema ? formatBadge(ctx.format) : null;
   const { badges: evBadges } = eventBadges(ctx.event_types || [], { max: 99 }); // 作品页不做首页的截断，全部显示
-  const relationLabel = item.viewing_relation === "first" ? "初看" : item.viewing_relation === "rewatch" ? "重看" : "";
+  const relationLabel = pending ? "" : item.viewing_relation === "first" ? "初看" : item.viewing_relation === "rewatch" ? "重看" : "";
   const metaBits = [
     ctx.auditorium || "",
     item.duration_minutes ? `${item.duration_minutes}分` : "",
@@ -1528,15 +1530,17 @@ function viewingEventsSection(events) {
   const timeFmt = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Tokyo" });
   const rows = events.map((e) => {
     const ctx = e.viewing_context || {};
+    const pending = e.needs_review || !(e.viewed_on || e.screening_at) || !["home", "cinema"].includes(e.location_type);
     const dateStr = e.viewed_on ? dtFmt.format(new Date(e.viewed_on)) : (e.screening_at ? dtFmt.format(new Date(e.screening_at)) : "");
     const startStr = e.screening_at ? timeFmt.format(new Date(e.screening_at)) : "";
     const endStr = e.screening_ends_at ? timeFmt.format(new Date(e.screening_ends_at)) : "";
     const timeRange = startStr && endStr ? `${startStr}–${endStr}` : startStr;
     const seats = ctx.seats?.length ? ctx.seats.join("、") : "";
-    const locationLabel = e.location_type === "cinema" ? (ctx.cinema_name || "电影院观看") : "在家／线上观看";
-    return `<div class="viewing-event-card">
+    const locationLabel = pending ? "观影信息待确认" : e.location_type === "cinema" ? (ctx.cinema_name || "电影院观看") : "在家／线上观看";
+    return `<div class="viewing-event-card ${pending ? "pending" : ""}">
       <div class="ve-heading"><div class="ve-cinema">${escapeHtml(locationLabel)}</div><button type="button" class="icon-button small ve-edit" data-action="edit-history-event" data-event-id="${escapeHtml(e.id)}" aria-label="修改观影信息" data-testid="edit-record-viewing-info">${icon("edit")}</button></div>
       <div class="ve-meta">
+        ${pending ? `<span>补充实际观看日期与观看方式</span>` : ""}
         ${dateStr ? `<span>${escapeHtml(dateStr)}</span>` : ""}
         ${timeRange ? `<span>${escapeHtml(timeRange)}</span>` : ""}
         ${ctx.auditorium ? `<span>${escapeHtml(ctx.auditorium)}</span>` : ""}
@@ -1559,7 +1563,8 @@ function eventsForRecord(record) {
 function actualViewingDate(record) {
   const event = eventsForRecord(record)
     .sort((a, b) => (a.screening_at || a.viewed_on || "").localeCompare(b.screening_at || b.viewed_on || ""))[0];
-  return event?.screening_at || event?.viewed_on || record.createdAt;
+  if (event) return event.screening_at || event.viewed_on || null;
+  return record.record_kind === "supplement" ? record.createdAt : null;
 }
 
 function renderDetail() {
@@ -1573,10 +1578,14 @@ function renderDetail() {
     ? `《<a href="https://bangumi.tv/subject/${encodeURIComponent(bangumiReference.id)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>》`
     : `《${escapeHtml(title)}》`;
   const recordEvents = eventsForRecord(record);
+  const viewedAt = actualViewingDate(record);
+  const detailDate = viewedAt
+    ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo" }).format(new Date(viewedAt))
+    : "观影日期待确认";
   return `<main class="detail-view" data-testid="detail">
     ${detailHeader(record)}
     <article class="detail-content">
-      <div class="detail-date">${escapeHtml(new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo" }).format(new Date(actualViewingDate(record))))}</div>
+      <div class="detail-date ${viewedAt ? "" : "pending"}">${escapeHtml(detailDate)}</div>
       <div class="detail-title-row"><h1>${titleMarkup}</h1><span class="attitude-badge ${record.attitude ? "selected" : "empty"}"><i aria-hidden="true"></i>${escapeHtml(attitudeLabel(record.attitude))}</span></div>
       ${workMatchPanel(record)}
       ${record.aiWarnings?.length ? `<details class="analysis-warnings" open><summary>整理提示</summary><ul>${record.aiWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></details>` : ""}
@@ -1614,6 +1623,8 @@ function captureContextBar(ctx) {
     ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo" }).format(new Date(firstEvent.viewed_on))
     : "";
   const parts = [`《${ctx.workTitle?.trim() || "未命名作品"}》`];
+  const pendingInfo = firstEvent?.needs_review || !(firstEvent?.viewed_on || firstEvent?.screening_at) || !["home", "cinema"].includes(firstEvent?.location_type);
+  if (pendingInfo) parts.push("观影信息待确认");
   if (dateStr) parts.push(dateStr);
   const locationType = firstEvent?.location_type || ctx.locationType;
   if (locationType === "home") {
@@ -1623,6 +1634,7 @@ function captureContextBar(ctx) {
     if (eventContext.auditorium || ctx.auditorium) parts.push(eventContext.auditorium || ctx.auditorium);
     if (eventContext.format || ctx.format) parts.push(eventContext.format || ctx.format);
   }
+  if (pendingInfo) return `<div class="capture-context-bar" data-testid="capture-context-bar">${parts.map(escapeHtml).join(" · ")}</div>`;
   return `<button type="button" class="capture-context-bar" data-action="edit-capture-context" data-testid="capture-context-bar">${parts.map(escapeHtml).join(" · ")}</button>`;
 }
 
@@ -2014,7 +2026,7 @@ function captureEntryOverlay() {
       <div class="sheet-handle" aria-hidden="true"></div>
       <span class="sheet-kicker">记录这次观看</span>
       <h2 id="capture-entry-title">观影信息</h2>
-      <p class="capture-entry-hint">票务只是可选的自动填写来源。没有票务也可以继续手填实际观看日期与观看方式。</p>
+      <p class="capture-entry-hint">粘贴票务后可自动填写影院信息；暂时跳过则把观影信息标为待确认，之后可在记录详情中补全。</p>
       ${ctx.lockedWork
         ? `<div class="capture-entry-work" data-testid="capture-entry-work-locked"><span>作品</span><b>《${escapeHtml(ctx.workTitle || "未命名作品")}》</b></div>`
         : `<label class="capture-entry-title-field"><span>作品</span><input type="text" id="capture-entry-work-title-input" data-testid="capture-entry-work-title-input" value="${escapeHtml(ctx.workTitle || "")}" placeholder="输入作品名；粘贴票务时可留空" /></label>`}
@@ -2023,11 +2035,11 @@ function captureEntryOverlay() {
       </button>` : ""}
       <label class="capture-paste-area" for="capture-paste-input">
         <span>粘贴票务信息</span>
-        <textarea id="capture-paste-input" data-testid="capture-paste-input" placeholder="粘贴票务邮件或订单文本，会自动识别" rows="4"></textarea>
+        <textarea id="capture-paste-input" data-testid="capture-paste-input" placeholder="粘贴票务邮件或订单文本" rows="4"></textarea>
       </label>
       <div class="capture-entry-actions">
-        <button type="button" class="sheet-done" data-action="manual-viewing-info" data-testid="manual-viewing-info">手动填写观影信息</button>
-        <button type="button" class="capture-skip-link" data-action="skip-viewing-info" data-testid="skip-viewing-info" ${canContinue ? "" : "disabled"}>跳过票务，继续手填 →</button>
+        <button type="button" class="sheet-done" data-action="parse-ticket-info" data-testid="parse-ticket-info" disabled>解析票务信息</button>
+        <button type="button" class="capture-skip-link" data-action="skip-viewing-info" data-testid="skip-viewing-info" ${canContinue ? "" : "disabled"}>暂时跳过 →</button>
       </div>
       ${canContinue ? "" : `<small class="capture-entry-requirement">继续前请先填写作品名</small>`}
     </section>
@@ -2228,6 +2240,7 @@ function todayInJapan() {
 function historyEventEditorOverlay(event) {
   const ctx = event.viewing_context || {};
   const isCinema = event.location_type === "cinema";
+  const isHome = event.location_type === "home";
   const localDateTime = event.screening_at ? isoToLocalDateTimeInputValue(event.screening_at) : "";
   const viewedOn = event.viewed_on || localDateTime.slice(0, 10);
   const screeningTime = localDateTime.slice(11, 16);
@@ -2239,8 +2252,8 @@ function historyEventEditorOverlay(event) {
       <div class="sheet-title-row"><div><span class="sheet-kicker">观影场次</span><h2 id="history-editor-title">${isReview ? "补充这次观看的信息" : "编辑这次观影"}</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
       <form id="history-event-form" data-event-id="${escapeHtml(event.id)}">
         <div class="location-choice" role="group" aria-label="观看地点">
-          <label class="location-option ${!isCinema ? "selected" : ""}"><input type="radio" name="locationType" value="home" ${!isCinema ? "checked" : ""} data-testid="history-location-home" />在家／线上</label>
-          <label class="location-option ${isCinema ? "selected" : ""}"><input type="radio" name="locationType" value="cinema" ${isCinema ? "checked" : ""} data-testid="history-location-cinema" />在影院</label>
+          <label class="location-option ${isHome ? "selected" : ""}"><input type="radio" name="locationType" value="home" ${isHome ? "checked" : ""} required data-testid="history-location-home" />在家／线上</label>
+          <label class="location-option ${isCinema ? "selected" : ""}"><input type="radio" name="locationType" value="cinema" ${isCinema ? "checked" : ""} required data-testid="history-location-cinema" />在影院</label>
         </div>
         <label><span>实际观看日期</span><input type="date" name="viewedOn" value="${escapeHtml(viewedOn)}" required data-testid="history-viewed-on" /></label>
         <label><span>开场时间（可选）</span><input type="time" name="screeningTime" value="${escapeHtml(screeningTime)}" data-testid="history-screening-time" /></label>
@@ -3533,8 +3546,26 @@ async function openRecord(recordId) {
   scrollTo(0, 0);
   // 异步加载该记录关联的观影场次，加载完成后刷新详情页
   const record = state.records.find((r) => r.id === recordId);
-  if (record?.workId) {
-    const events = await fetchWorkEvents(record.workId);
+  const recordWorkId = record?.work_id || record?.workId;
+  if (record && recordWorkId) {
+    let events = await fetchWorkEvents(recordWorkId);
+    const linkedEvent = events.find((event) => event.record_id === record.id || event.id === record.viewing_event_id);
+    // 兼容曾经被“直接跳过”保存、因此完全没有 ViewingEvent 的记录。打开详情时补一张
+    // 待确认卡，让用户可以补真实观看日期，而不是继续显示 createdAt 或默认在家。
+    if (record.record_kind !== "supplement" && !linkedEvent) {
+      const pending = {
+        ...buildPendingViewingEvent(),
+        work_id: recordWorkId,
+        record_id: record.id,
+        confirmed_at: new Date().toISOString(),
+        status: "confirmed"
+      };
+      await db.putViewingEvents([pending]);
+      record.viewing_event_id = pending.id;
+      await db.put("records", record);
+      events = [...events, pending];
+      await indexHomeCardData();
+    }
     if (state.activeRecordId === recordId && state.view === "detail") {
       state.viewingEvents = events;
       if (events.length > 0) renderPreservingScroll();
@@ -3682,7 +3713,9 @@ async function saveHistoryEventForm(form) {
   if (!target) return;
 
   const data = new FormData(form);
-  const locationType = data.get("locationType") === "cinema" ? "cinema" : "home";
+  const locationValue = String(data.get("locationType") || "");
+  if (!["home", "cinema"].includes(locationValue)) return;
+  const locationType = locationValue;
   const viewedOn = String(data.get("viewedOn") || "").trim();
   if (!viewedOn) return;
   const screeningTime = String(data.get("screeningTime") || "").trim();
@@ -4837,6 +4870,9 @@ document.addEventListener("click", async (event) => {
     render();
   } else if (action === "use-clipboard-ticket") {
     handleCapturePaste(pendingClipboardText || "");
+  } else if (action === "parse-ticket-info") {
+    const ticketText = document.querySelector("#capture-paste-input")?.value || "";
+    handleCapturePaste(ticketText);
   } else if (action === "manual-viewing-info") {
     if (!state.captureContext) return;
     state.captureContext.source = "manual";
@@ -4847,10 +4883,12 @@ document.addEventListener("click", async (event) => {
   } else if (action === "skip-viewing-info") {
     const ctx = state.captureContext;
     if (!ctx || (!ctx.lockedWork && !ctx.workTitle?.trim())) return;
-    // 这里只跳过票务导入，日期和观看方式仍进入同一手填步骤。
-    ctx.source = "manual";
+    ctx.source = "skipped";
+    ctx.pendingEvents = [buildPendingViewingEvent()];
     applyCaptureTransition("skip");
+    await saveDraft(state.draft?.text || "", true);
     render();
+    focusComposer();
   } else if (action === "repaste-ticket-capture") {
     const previous = state.captureContext;
     const work = previous?.lockedWork && previous.workId ? findWorkById(state.works, previous.workId) : null;
@@ -5396,6 +5434,9 @@ document.addEventListener("input", (event) => {
     if (finish) finish.disabled = !event.target.value.trim();
   } else if (event.target.matches("[data-testid='recommendation-note']")) {
     updateRecord((record) => { record.recommendationNote = event.target.value; });
+  } else if (event.target.id === "capture-paste-input") {
+    const parseButton = document.querySelector("[data-testid='parse-ticket-info']");
+    if (parseButton) parseButton.disabled = !event.target.value.trim();
   } else if (event.target.id === "capture-entry-work-title-input") {
     if (!state.captureContext) return;
     state.captureContext.workTitle = event.target.value;
@@ -5467,17 +5508,14 @@ document.addEventListener("input", (event) => {
   }
 });
 
-// R2 Step 1：大面积粘贴区不需要显式"识别"按钮——粘贴动作本身触发解析。
-// 用 paste 事件而非 input，避免用户手打文字时被误当票务文本解析。
+// 粘贴本身只把文本放进输入框；是否解析由左侧主按钮明确触发，和右侧“暂时跳过”
+// 保持两条不同语义的路径。
 document.addEventListener("paste", (event) => {
   if (event.target.id !== "capture-paste-input") return;
-  const fromClipboardData = event.clipboardData?.getData("text") || "";
-  if (fromClipboardData) {
-    handleCapturePaste(fromClipboardData);
-    return;
-  }
-  // 部分移动端浏览器的 paste 事件里读不到 clipboardData，退一步等默认粘贴动作完成后读取 value。
-  setTimeout(() => handleCapturePaste(event.target.value), 0);
+  setTimeout(() => {
+    const parseButton = document.querySelector("[data-testid='parse-ticket-info']");
+    if (parseButton) parseButton.disabled = !event.target.value.trim();
+  }, 0);
 });
 
 document.addEventListener("error", (event) => {

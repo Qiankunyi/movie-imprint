@@ -39,9 +39,9 @@ export function captureTransition(state, action, context = {}) {
     case "capture:entry":
       if (action === "paste-ticket" || action === "use-clipboard") return "capture:ticket-confirm";
       if (action === "manual") return "capture:scene-choice";
-      // “跳过”只表示不导入票务，不能跳过观影信息本身。日期与观看方式仍在
-      // scene-choice 里由用户确认，避免无票务记录被静默当成“在家观看”。
-      if (action === "skip") return "capture:scene-choice";
+      // 跳过时仍创建一条明确的待确认 ViewingEvent；它不是“在家观看”，也没有
+      // 虚构观看日期。用户完成感想后可在详情页补全。
+      if (action === "skip") return "capture:compose";
       if (action === "close") return "idle";
       return state;
 
@@ -223,6 +223,41 @@ export function selectedPendingEvents(events) {
 
 function newEventId() {
   return `ve_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+/** 跳过票务时使用的占位事件。地点与实际日期保持未知，绝不默认成在家观看。 */
+export function buildPendingViewingEvent() {
+  const id = newEventId();
+  return {
+    id,
+    viewing_id: id,
+    work_id: null,
+    record_id: null,
+    viewed_on: null,
+    screening_at: null,
+    screening_ends_at: null,
+    duration_minutes: null,
+    viewing_relation: null,
+    watch_index: null,
+    location_type: null,
+    ticket_price: null,
+    source: "skipped",
+    screened_content: { kind: "full_movie", episode_start: null, episode_end: null, display_label: null },
+    viewing_context: {
+      cinema_name: null,
+      auditorium: null,
+      city: null,
+      format: null,
+      seats: [],
+      seat_count: 0,
+      ticket_provider: null,
+      event_types: [],
+      bonus_note: null
+    },
+    needs_review: true,
+    confirmed_at: null,
+    status: "pending_confirmation"
+  };
 }
 
 /**

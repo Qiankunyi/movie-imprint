@@ -195,6 +195,18 @@ svg {
   background: var(--record-highlight-cinema-highspec);
 }
 
+.record-card.pending-viewing {
+  border-style: dashed;
+  border-color: var(--outline);
+  box-shadow: none;
+}
+
+.record-card.pending-viewing .record-card-venue,
+.record-card-date.pending,
+.detail-date.pending {
+  color: var(--accent-strong);
+}
+
 /* 补充记录卡：左侧细竖线，与观影卡区分 */
 .record-card.supplement {
   border-left: 3px solid var(--accent);
@@ -2395,6 +2407,11 @@ svg {
 
 .viewing-event-card:last-child {
   margin-bottom: 0;
+}
+
+.viewing-event-card.pending {
+  border-style: dashed;
+  background: var(--surface-high);
 }
 
 .ve-cinema {
