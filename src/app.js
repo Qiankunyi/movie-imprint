@@ -250,6 +250,7 @@ const state = {
   currentSeriesId: null,      // R5：系列页当前显示的系列
   currentCollectionId: null,  // R5：片单详情页当前显示的片单
   editingEntryWorkId: null,   // R6：正在编辑「想看理由」的片单条目对应的 work id
+  entryMenuWorkId: null,      // R6 补丁 13：片单条目的二级菜单当前作用于哪条
   // R6：统一作品搜索面板。query 是输入框当前值，local/external 是两组结果，
   // selected 是用户选中的候选（选中后面板下方出现「为什么想看」输入框）。
   // Phase 4 只有本地搜索；Phase 5/6 接入 Bangumi + TMDB 后 external 才会有内容。
@@ -345,7 +346,13 @@ const icons = {
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
   timeline: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2.5"/>',
   shelf: '<path d="M4 4v16M20 4v16M4 9h16M4 15h16"/>',
-  calendar: '<rect x="4" y="5.5" width="16" height="14.5" rx="2"/><path d="M8 3.5v3.5M16 3.5v3.5M4 10h16"/>'
+  calendar: '<rect x="4" y="5.5" width="16" height="14.5" rx="2"/><path d="M8 3.5v3.5M16 3.5v3.5M4 10h16"/>',
+  // R6 补丁 13：侧边栏三项要各有各的形。原来「作品书架」和「片单」共用 shelf 图标，
+  // 扫一眼分不出哪个是哪个。
+  // 私人影库 = 胶片格（已经收进来的作品）
+  library: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14"/><path d="M3 9.5h4M3 14.5h4M17 9.5h4M17 14.5h4"/>',
+  // 候场片单 = 书签（还没看、排队等着的）
+  watchlist: '<path d="M6 4h12v17l-6-4.2L6 21z"/><path d="M9.5 9.5h5"/>'
 };
 
 // 单条记录导出：文件扩展名与 MIME 类型映射
@@ -562,7 +569,7 @@ function fabActionsFor() {
       themeItem,
       { action: "open-record-menu", icon: "more", label: "更多操作", testId: "open-record-menu" },
       { action: "open-export", icon: "export", label: "导出这条记录" },
-      { action: "close-detail", icon: "back", label: state.detailReturnView === "work" ? "返回作品页" : "返回时间线", testId: "detail-back" }
+      { action: "close-detail", icon: "back", label: state.detailReturnView === "work" ? "返回作品页" : "返回观影轨迹", testId: "detail-back" }
     ];
   }
   if (state.view === "work") {
@@ -576,24 +583,30 @@ function fabActionsFor() {
         : { action: "open-work-capture", icon: "edit", label: "记录这次观看", testId: "work-start-record-fab" },
       { action: "refresh-work-metadata", icon: "match", label: "刷新作品资料", testId: "refresh-work-metadata" },
       { action: "open-delete-work", icon: "trash", label: "删除这部作品", testId: "open-delete-work" },
-      { action: "close-work", icon: "back", label: "返回作品书架", testId: "work-back" }
+      { action: "close-work", icon: "back", label: "返回私人影库", testId: "work-back" }
     ];
   }
   if (state.view === "shelf") {
-    return [themeItem, searchItem, { action: "close-shelf", icon: "back", label: "返回时间线", testId: "shelf-back" }];
+    return [themeItem, searchItem, { action: "close-shelf", icon: "back", label: "返回观影轨迹", testId: "shelf-back" }];
   }
   if (state.view === "series") {
     return [themeItem, { action: "close-series", icon: "back", label: "返回", testId: "series-back" }];
   }
   if (state.view === "collections") {
-    return [themeItem, { action: "go-home", icon: "back", label: "返回时间线" }];
+    // R6 补丁 13：新建入口从页内表单挪到 FAB。原来那个表单常驻在列表下方，
+    // 占掉一屏可观的空间，而"新建片单"是低频动作，不该长期占版面。
+    return [
+      themeItem,
+      { action: "open-create-collection", icon: "edit", label: "新建片单", testId: "open-create-collection" },
+      { action: "go-home", icon: "back", label: "返回观影轨迹" }
+    ];
   }
   if (state.view === "collection") {
     return [
       themeItem,
       { action: "edit-collection", icon: "edit", label: "编辑片单信息", testId: "edit-collection" },
       { action: "delete-collection", icon: "trash", label: "删除这个片单", testId: "delete-collection" },
-      { action: "open-collections", icon: "back", label: "返回片单列表", testId: "collection-back" }
+      { action: "open-collections", icon: "back", label: "返回候场片单", testId: "collection-back" }
     ];
   }
   return [themeItem, searchItem, { action: "open-capture", icon: "edit", label: "开始记录", testId: "add-record" }];
@@ -650,13 +663,13 @@ function sidebarDrawer() {
     <nav class="sidebar-drawer" aria-label="主菜单" data-testid="sidebar-drawer">
       <div class="sidebar-brand"><span class="brand-mark" aria-hidden="true"></span><h2>电影印记</h2></div>
       <button type="button" class="sidebar-item ${state.view === "home" ? "active" : ""}" data-action="go-home" data-testid="sidebar-home">
-        <span class="sidebar-item-icon" aria-hidden="true">${icon("timeline")}</span><span>时间线</span>
+        <span class="sidebar-item-icon" aria-hidden="true">${icon("timeline")}</span><span>观影轨迹</span>
       </button>
       <button type="button" class="sidebar-item ${state.view === "shelf" || state.view === "work" ? "active" : ""}" data-action="open-shelf" data-testid="sidebar-shelf">
-        <span class="sidebar-item-icon" aria-hidden="true">${icon("shelf")}</span><span>作品书架</span>
+        <span class="sidebar-item-icon" aria-hidden="true">${icon("library")}</span><span>私人影库</span>
       </button>
       <button type="button" class="sidebar-item ${state.view === "collections" || state.view === "collection" ? "active" : ""}" data-action="open-collections" data-testid="sidebar-collections">
-        <span class="sidebar-item-icon" aria-hidden="true">${icon("shelf")}</span><span>片单</span>
+        <span class="sidebar-item-icon" aria-hidden="true">${icon("watchlist")}</span><span>候场片单</span>
       </button>
       <div class="sidebar-divider" role="separator"></div>
       <button type="button" class="sidebar-item" data-action="open-settings" data-testid="sidebar-settings">
@@ -1159,14 +1172,9 @@ function renderCollections() {
 
   return `<main class="shelf-view" data-testid="collections">
     <article class="work-content">
-      <h1 class="page-title">片单</h1>
-      <p class="settings-note">片单是你自己定义的主题列表：想怎么归类都可以，和作品客观所属的「系列」互不影响。还没看过的电影也可以先加进来。</p>
-      <div class="collection-rows">${rows || `<p class="work-section-empty">还没有片单，先建一个吧</p>`}</div>
-      <form id="collection-create-form">
-        <label><span>新建片单</span><input type="text" name="title" maxlength="60" placeholder="例如：Michael Keaton 补片" data-testid="new-collection-input" required /></label>
-        <label><span>描述（可选）</span><input type="text" name="description" maxlength="120" placeholder="例如：重看《英雄归来》之后想补的" data-testid="new-collection-description" /></label>
-        <button class="sheet-done" type="submit">创建</button>
-      </form>
+      <h1 class="page-title">候场片单</h1>
+      <p class="settings-note">候场片单是你自己定义的主题列表：想怎么归类都可以，和作品客观所属的「系列」互不影响。还没看过的电影也可以先加进来。</p>
+      <div class="collection-rows">${rows || `<p class="work-section-empty">还没有片单——点右下角的 ＋ 新建一个</p>`}</div>
     </article>
   </main>`;
 }
@@ -1177,6 +1185,18 @@ function renderCollections() {
  * 绝不存在片单条目里。所以同一部《鸟人》同时在三个片单里时，看完之后三个片单
  * 都会自动显示"已看"，不需要分别去改三条条目。
  */
+/** 这部作品最近一次观看的日期标签（拿不到就返回 null，徽章上只显示"看过"）。 */
+function lastWatchedLabel(work) {
+  if (!work) return null;
+  const ids = new Set([work.id, ...(work.merged_from || [])]);
+  const dates = (state.allViewingEvents || [])
+    .filter((event) => ids.has(event.work_id))
+    .map((event) => event.screening_at || event.viewed_on)
+    .filter(Boolean)
+    .sort();
+  return dates.length ? formatShortDate(dates[dates.length - 1]) : null;
+}
+
 function isWorkWatched(workId) {
   if (!workId) return false;
   const work = findWorkById(state.works, workId);
@@ -1199,26 +1219,36 @@ function renderCollection() {
 
   const pairs = collectionWorkEntries(collection, state.works);
   const total = pairs.length;
+
   const rows = pairs.map(({ work, entry }, index) => {
     const watched = isWorkWatched(work.id);
     const year = releaseYearOf(work);
+    const watchedAt = watched ? lastWatchedLabel(work) : null;
+    const poster = posterUrlFor(work);
+    const initial = escapeHtml((work.title || "?").trim().charAt(0) || "?");
+
     return `<li class="collection-entry ${watched ? "watched" : "unwatched"}" data-testid="collection-entry-${escapeHtml(work.id)}">
-      <button type="button" class="collection-entry-main" data-action="open-work" data-work-id="${escapeHtml(work.id)}">
-        <span class="collection-entry-poster">${shelfPosterMarkup(work)}</span>
-        <span class="collection-entry-body">
-          <span class="collection-entry-title">${escapeHtml(work.title || "未命名作品")}${year ? `<small>（${year}）</small>` : ""}</span>
-          <span class="collection-entry-status" data-testid="collection-entry-status-${escapeHtml(work.id)}">${watched ? "已看" : "未看"}</span>
-          ${entry.reason
-            ? `<span class="collection-entry-reason">${escapeHtml(entry.reason)}</span>`
-            : `<span class="collection-entry-reason empty">还没写想看的理由</span>`}
-        </span>
+      <button type="button" class="collection-entry-poster" data-action="open-work" data-work-id="${escapeHtml(work.id)}" aria-label="打开《${escapeHtml(work.title || "")}》">
+        ${poster
+          ? `<img src="${escapeHtml(poster)}" alt="" loading="lazy" />`
+          : `<span class="collection-entry-poster-fallback" aria-hidden="true">${initial}</span>`}
+        ${watched ? `<span class="watched-stamp" data-testid="collection-entry-status-${escapeHtml(work.id)}">
+          <b>看过</b>${watchedAt ? `<small>${escapeHtml(watchedAt)}</small>` : ""}
+        </span>` : ""}
       </button>
-      <span class="collection-entry-actions">
-        <button type="button" class="icon-button" data-action="edit-entry-reason" data-work-id="${escapeHtml(work.id)}" aria-label="编辑想看的理由" data-testid="edit-entry-reason-${escapeHtml(work.id)}">${icon("more")}</button>
-        <button type="button" class="icon-button" data-action="move-entry-up" data-work-id="${escapeHtml(work.id)}" aria-label="上移" ${index === 0 ? "disabled" : ""}>↑</button>
-        <button type="button" class="icon-button" data-action="move-entry-down" data-work-id="${escapeHtml(work.id)}" aria-label="下移" ${index === total - 1 ? "disabled" : ""}>↓</button>
-        <button type="button" class="icon-button" data-action="remove-from-collection" data-work-id="${escapeHtml(work.id)}" aria-label="移出这个片单" data-testid="remove-from-collection-${escapeHtml(work.id)}">${icon("trash")}</button>
-      </span>
+
+      <div class="collection-entry-main">
+        <div class="collection-entry-head">
+          <button type="button" class="collection-entry-title" data-action="open-work" data-work-id="${escapeHtml(work.id)}">
+            ${escapeHtml(work.title || "未命名作品")}${year ? `<small>${year}</small>` : ""}
+          </button>
+          <button type="button" class="icon-button collection-entry-menu" data-action="open-entry-menu" data-work-id="${escapeHtml(work.id)}" data-index="${index}" aria-label="更多操作" data-testid="entry-menu-${escapeHtml(work.id)}">${icon("more")}</button>
+        </div>
+        <p class="collection-entry-added">收藏于 ${escapeHtml(formatShortDate(entry.added_at) || "—")}</p>
+        <p class="collection-entry-reason ${entry.reason ? "" : "empty"}" data-action="edit-entry-reason" data-work-id="${escapeHtml(work.id)}">${
+          entry.reason ? escapeHtml(entry.reason) : "写下想看它的理由…"
+        }</p>
+      </div>
     </li>`;
   }).join("");
 
@@ -2257,6 +2287,50 @@ function workSearchOverlay() {
   </div>`;
 }
 
+/**
+ * R6 补丁 13：片单条目的二级菜单。
+ *
+ * 原来编辑理由/上移/下移/移除四个按钮竖着排在卡片最右侧，既占宽度又把卡片撑高，
+ * 中间还空出一大片。收进右上角一个「⋯」之后，卡片横向空间全部留给海报和理由。
+ */
+function entryMenuOverlay(collection) {
+  const workId = state.entryMenuWorkId;
+  const entries = collectionEntries(collection);
+  const index = entries.findIndex((entry) => entry.work_id === workId);
+  if (index === -1) return "";
+  const work = findWorkById(state.works, workId);
+
+  return `<div class="overlay" data-testid="entry-menu">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="entry-menu-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">${escapeHtml(collection.title)}</span><h2 id="entry-menu-title">《${escapeHtml(work?.title || "")}》</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <div class="settings-actions">
+        <button type="button" data-action="edit-entry-reason" data-work-id="${escapeHtml(workId)}" data-testid="menu-edit-reason"><span><b>编辑想看的理由</b><small>只属于这个片单</small></span>${icon("edit")}</button>
+        <button type="button" data-action="move-entry-up" data-work-id="${escapeHtml(workId)}" ${index === 0 ? "disabled" : ""}><span><b>上移</b></span>↑</button>
+        <button type="button" data-action="move-entry-down" data-work-id="${escapeHtml(workId)}" ${index === entries.length - 1 ? "disabled" : ""}><span><b>下移</b></span>↓</button>
+        <button type="button" class="settings-danger" data-action="remove-from-collection" data-work-id="${escapeHtml(workId)}" data-testid="menu-remove-entry"><span><b>移出这个片单</b><small>作品本身与感想都不会被删除</small></span>${icon("trash")}</button>
+      </div>
+    </section>
+  </div>`;
+}
+
+/** R6 补丁 13：新建片单。从片单列表页的常驻表单挪进来的。 */
+function createCollectionOverlay() {
+  return `<div class="overlay" data-testid="create-collection">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="create-collection-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">候场片单</span><h2 id="create-collection-title">新建片单</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <form id="collection-create-form">
+        <label><span>标题</span><input type="text" name="title" maxlength="60" placeholder="例如：Michael Keaton 补片" data-testid="new-collection-input" required /></label>
+        <label><span>描述（可选）</span><input type="text" name="description" maxlength="120" placeholder="例如：重看《英雄归来》之后想补的" data-testid="new-collection-description" /></label>
+        <button class="sheet-done" type="submit">创建</button>
+      </form>
+    </section>
+  </div>`;
+}
+
 /** R6：编辑片单本身的标题与描述。 */
 function collectionEditorOverlay(collection) {
   return `<div class="overlay" data-testid="collection-editor">
@@ -2360,6 +2434,10 @@ function render() {
         ? resetDataOverlay()
       : state.overlay === "delete-work" && currentWorkForOverlay
         ? deleteWorkOverlay(currentWorkForOverlay)
+      : state.overlay === "create-collection"
+        ? createCollectionOverlay()
+      : state.overlay === "entry-menu" && currentCollectionForOverlay
+        ? entryMenuOverlay(currentCollectionForOverlay)
         : "";
 
   // 三块分别挂载，各自只在自己变化时重写：
@@ -4150,12 +4228,14 @@ document.addEventListener("click", async (event) => {
   } else if (action === "toggle-collection") {
     await toggleWorkInCollection(trigger.dataset.collectionId);
   } else if (action === "remove-from-collection") {
+    state.overlay = null;
     // R6 §5：只有用户主动移除才会删条目。看完电影**不会**自动把它从片单里删掉——
     // 片单本身也是"我过去对什么感兴趣、怎么发现它的"这段记录。
     await updateCurrentCollection((collection) => removeWorkFromCollection(collection, trigger.dataset.workId));
     renderPreservingScroll();
     announce("已移出这个片单");
   } else if (action === "move-entry-up" || action === "move-entry-down") {
+    state.overlay = null;
     const collection = state.collections.find((item) => item.id === state.currentCollectionId);
     const index = collectionEntries(collection).findIndex((entry) => entry.work_id === trigger.dataset.workId);
     if (index === -1) return;
@@ -4169,6 +4249,13 @@ document.addEventListener("click", async (event) => {
     render();
   } else if (action === "edit-collection") {
     state.overlay = "collection-editor";
+    render();
+  } else if (action === "open-entry-menu") {
+    state.entryMenuWorkId = trigger.dataset.workId;
+    state.overlay = "entry-menu";
+    render();
+  } else if (action === "open-create-collection") {
+    state.overlay = "create-collection";
     render();
   } else if (action === "refresh-work-metadata") {
     await refreshWorkMetadata();
@@ -4955,6 +5042,7 @@ document.addEventListener("submit", async (event) => {
     if (!title) return;
     const collection = createCollection({ title, description: String(data.get("description") || "") });
     await persistCollection(collection);
+    state.overlay = null;
     render();
     announce(`已新建片单《${title}》`);
     return;

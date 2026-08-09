@@ -4435,3 +4435,190 @@ svg {
   color: var(--ink-soft);
   font: var(--type-meta);
 }
+
+/* ─── R6 补丁 13 · A：浮层里的表单不许横向溢出 ───────────────────────────────
+   实测「编辑这次观影」在手机上被撑到屏幕外。根因是几个 grid/flex 容器的子项
+   没有 min-width: 0——`datetime-local`、`number` 这类输入有较宽的**固有尺寸**，
+   在栅格里默认不肯收缩到它以下，于是整块把 sheet 撑宽；而 .bottom-sheet 是
+   overflow: auto，撑宽的结果不是裁切而是横向滚动，看起来就是"扩展到屏幕外"。
+
+   这里统一按"允许收缩"处理，而不是给每个输入写死宽度——写死宽度换个字段又会复发。 */
+.bottom-sheet form,
+.bottom-sheet .location-choice,
+.bottom-sheet .price-fields,
+.bottom-sheet .relation-toggle,
+.bottom-sheet .event-tags-row,
+.bottom-sheet .cinema-only-fields {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.bottom-sheet .location-choice > *,
+.bottom-sheet .price-fields > *,
+.bottom-sheet .relation-toggle > *,
+.bottom-sheet label {
+  min-width: 0;
+}
+
+.bottom-sheet input,
+.bottom-sheet select,
+.bottom-sheet textarea {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* 初看/重看在窄屏上等分，不靠内容宽度决定 */
+.bottom-sheet .relation-toggle > .relation-choice {
+  flex: 1 1 0;
+  justify-content: center;
+}
+
+/* 最后一道保险：真有算漏的元素，也只在 sheet 内部裁掉，不撑出屏幕 */
+.bottom-sheet {
+  overflow-x: hidden;
+}
+
+/* ─── R6 补丁 13 · B：片单条目卡片重做 ───────────────────────────────────────
+   旧版：48px 的小海报 + 右侧竖排四个按钮，中间空出一大片。
+   新版横向卡片——海报放大到 80px 靠左，右侧竖排「标题+年份 → 收藏时间 → 理由」，
+   把那片空白交给 reason（它才是 R6 的核心）；操作收进右上角 ⋯。
+
+   为什么不做成"标题在海报下方"的网格：那是豆瓣**网格视图**的排版，右侧空间给的是
+   剧照。本应用右侧要放的是加入理由这种可长可短的文本，网格塞不下。 */
+.collection-entries {
+  gap: var(--space-3);
+}
+
+.collection-entry {
+  display: flex;
+  gap: var(--space-3);
+  align-items: stretch;
+  padding: var(--space-3);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-md, 14px);
+  background: var(--surface-container);
+}
+
+/* 海报：2:3，固定宽度，是卡片的视觉锚点 */
+.collection-entry-poster {
+  position: relative;
+  flex: 0 0 auto;
+  width: 80px;
+  aspect-ratio: 2 / 3;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 10px;
+  background: var(--surface-variant, rgba(0, 0, 0, 0.06));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+.collection-entry-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.collection-entry-poster-fallback {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-soft);
+  font-size: 28px;
+  font-weight: 600;
+}
+
+/* 「看过」印章压在海报右下角——比一个灰色文字标签更有存在感，
+   也把"已看/未看"从一行文字变成一眼可辨的状态。未看时什么都不显示：
+   片单里绝大多数条目本来就没看过，给它们都挂个标签只是噪声。 */
+.watched-stamp {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent-strong, #0f6f63) 88%, transparent);
+  color: #fff;
+  line-height: 1.1;
+  backdrop-filter: blur(2px);
+}
+
+.watched-stamp b {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.watched-stamp small {
+  font-size: 8.5px;
+  opacity: 0.85;
+}
+
+.collection-entry-main {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.collection-entry-head {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.collection-entry-title {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: var(--type-body);
+  font-weight: 600;
+  text-align: left;
+  line-height: 1.35;
+}
+
+.collection-entry-title small {
+  margin-left: 6px;
+  color: var(--ink-soft);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.collection-entry-menu {
+  flex: 0 0 auto;
+  margin: -4px -4px 0 0;
+}
+
+.collection-entry-added {
+  margin: 0;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+/* 理由：卡片的主体内容区。点它直接进编辑，不必绕菜单。 */
+.collection-entry-reason {
+  margin: var(--space-1, 4px) 0 0;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  cursor: text;
+}
+
+.collection-entry-reason.empty {
+  font-style: italic;
+  opacity: 0.5;
+}
