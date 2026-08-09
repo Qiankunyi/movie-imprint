@@ -4,6 +4,7 @@ import {
   buildWorkView,
   buildHistory,
   buildAttitudeTimeline,
+  latestViewingAttitude,
   buildImpressions,
   buildStats,
   findWorkById,
@@ -153,6 +154,32 @@ test("态度为空的 record 不进 attitudeTimeline", () => {
   const timeline = buildAttitudeTimeline(records, new Map());
   assert.equal(timeline.length, 2);
   assert.ok(timeline.every((node) => node.recordId !== "r2"));
+});
+
+test("作品页最新态度按实际观看日期决定，不按记录创建日期决定", () => {
+  const events = [
+    makeEvent({ id: "ve_old", viewed_on: "2017-09-10", screening_at: null }),
+    makeEvent({ id: "ve_new", viewed_on: "2026-08-01", screening_at: null })
+  ];
+  const records = [
+    makeRecord({ id: "r_old", viewing_event_id: "ve_old", attitude: "love", createdAt: "2026-08-09T10:00:00+09:00" }),
+    makeRecord({ id: "r_new", viewing_event_id: "ve_new", attitude: "like", createdAt: "2026-08-01T20:00:00+09:00" })
+  ];
+  assert.equal(latestViewingAttitude(records, indexEventsByRecord(records, events)), "like");
+  assert.equal(buildWorkView(makeWork(), records, events).latestAttitude, "like");
+});
+
+test("补充旧感想不会覆盖最新一次观影的态度", () => {
+  const events = [makeEvent({ id: "ve_1", viewed_on: "2026-08-01", screening_at: null })];
+  const records = [
+    makeRecord({ id: "r_viewing", viewing_event_id: "ve_1", attitude: "neutral" }),
+    makeRecord({ id: "r_supplement", record_kind: "supplement", attitude: "love", createdAt: "2029-01-01" })
+  ];
+  assert.equal(latestViewingAttitude(records, indexEventsByRecord(records, events)), "neutral");
+});
+
+test("没有有效观影态度时作品页不产生默认态度", () => {
+  assert.equal(latestViewingAttitude([makeRecord({ attitude: null })], new Map()), null);
 });
 
 test("stats.totalMinutes / stats.totalSpent 正确累加，缺值不计入且不产生 NaN", () => {

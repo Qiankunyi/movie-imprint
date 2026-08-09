@@ -478,6 +478,7 @@ export function draftViewingEvent(draft, workId, recordId = null) {
     screened_content: { kind: "full_movie", episode_start: null, episode_end: null, display_label: null },
     viewing_context: {
       cinema_name: draft.cinemaName,
+      auditorium: null,
       city: draft.city,
       format: draft.format,
       seats: draft.seats,

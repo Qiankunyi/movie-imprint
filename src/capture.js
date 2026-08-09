@@ -39,7 +39,9 @@ export function captureTransition(state, action, context = {}) {
     case "capture:entry":
       if (action === "paste-ticket" || action === "use-clipboard") return "capture:ticket-confirm";
       if (action === "manual") return "capture:scene-choice";
-      if (action === "skip") return "capture:compose";
+      // “跳过”只表示不导入票务，不能跳过观影信息本身。日期与观看方式仍在
+      // scene-choice 里由用户确认，避免无票务记录被静默当成“在家观看”。
+      if (action === "skip") return "capture:scene-choice";
       if (action === "close") return "idle";
       return state;
 
@@ -56,7 +58,7 @@ export function captureTransition(state, action, context = {}) {
 
     case "capture:compose":
       if (action === "edit-context") {
-        if (context.source === "skipped") return "capture:entry";
+        if (context.source === "skipped") return "capture:scene-choice";
         return context.source === "manual" ? "capture:scene-choice" : "capture:ticket-confirm";
       }
       if (action === "finish" || action === "close") return "idle";
@@ -72,7 +74,7 @@ export function captureTransition(state, action, context = {}) {
  * 传入 work 时锁定到已有作品；不传时由票务或后续手填补全作品身份。
  * @param {{ work?: object|null, subjectId?: string|number|null }} [input]
  */
-export function createViewingCaptureContext({ work = null, subjectId = null } = {}) {
+export function createViewingCaptureContext({ work = null, subjectId = null, viewedOn = null } = {}) {
   const lockedWork = Boolean(work?.id);
   return {
     source: null,
@@ -80,8 +82,10 @@ export function createViewingCaptureContext({ work = null, subjectId = null } = 
     workId: lockedWork ? work.id : null,
     workTitle: lockedWork ? (work.title || "") : "",
     subjectId: lockedWork ? subjectId : null,
+    viewedOn,
     locationType: null,
     cinemaName: null,
+    auditorium: null,
     format: null,
     eventTypes: [],
     bonusNote: null,
@@ -226,11 +230,12 @@ function newEventId() {
  * 初看／重看与观看地点完全正交——这里永远不预设 viewing_relation，
  * 交由 assignViewingRelations 按时间判定。
  *
- * @param {{ locationType: "home" | "cinema", cinemaName?: string|null, format?: string|null,
+ * @param {{ viewedOn: string, locationType: "home" | "cinema", cinemaName?: string|null,
+ *   auditorium?: string|null, format?: string|null,
  *   eventTypes?: string[], bonusNote?: string|null }} input
  * @returns {object}
  */
-export function buildManualViewingEvent({ locationType, cinemaName = null, format = null, eventTypes = [], bonusNote = null } = {}) {
+export function buildManualViewingEvent({ viewedOn, locationType, cinemaName = null, auditorium = null, format = null, eventTypes = [], bonusNote = null } = {}) {
   const id = newEventId();
   const isCinema = locationType === "cinema";
   const normalizedEventTypes = isCinema ? [...new Set(eventTypes)] : [];
@@ -239,7 +244,7 @@ export function buildManualViewingEvent({ locationType, cinemaName = null, forma
     viewing_id: id,
     work_id: null,
     record_id: null,
-    viewed_on: null,
+    viewed_on: viewedOn || null,
     screening_at: null,
     screening_ends_at: null,
     duration_minutes: null,
@@ -251,6 +256,7 @@ export function buildManualViewingEvent({ locationType, cinemaName = null, forma
     screened_content: { kind: "full_movie", episode_start: null, episode_end: null, display_label: null },
     viewing_context: {
       cinema_name: isCinema ? (cinemaName || null) : null,
+      auditorium: isCinema ? (auditorium || null) : null,
       city: null,
       format: isCinema ? (format || null) : null,
       seats: [],

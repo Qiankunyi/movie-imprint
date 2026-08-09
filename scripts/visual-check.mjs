@@ -40,7 +40,7 @@ async function ensureVisible(locator, viewport, label) {
   }
 }
 
-async function openCapture(page, workTitle, { location = "home" } = {}) {
+async function openCapture(page, workTitle, { location = "home", viewedOn = null } = {}) {
   if (!(await page.getByTestId("add-record").count())) await page.getByTestId("fab-toggle").click();
   await page.getByTestId("add-record").click();
   await page.getByTestId("capture-entry").waitFor();
@@ -48,10 +48,11 @@ async function openCapture(page, workTitle, { location = "home" } = {}) {
   if (!entryText.includes("观影信息")) {
     throw new Error("开始记录没有先进入统一的观影信息步骤");
   }
-  for (const choice of ["粘贴票务信息", "手动填写", "直接跳过"]) {
+  for (const choice of ["粘贴票务信息", "手动填写观影信息", "跳过票务"]) {
     if (!entryText.includes(choice)) throw new Error(`观影信息步骤缺少“${choice}”入口`);
   }
   await page.getByTestId("manual-viewing-info").click();
+  if (viewedOn) await page.getByTestId("scene-viewed-on-input").fill(viewedOn);
   await page.getByTestId(location === "cinema" ? "location-cinema" : "location-home").click();
   if (location === "cinema") {
     await page.getByTestId("scene-cinema-name-input").fill("测试电影院");
@@ -335,6 +336,24 @@ async function runArchiveUiPath(browser) {
   if (contentWidth > 681 || await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw new Error("PC Web 作品页响应式溢出");
   await page.locator(".work-stills-shell").hover();
   if (!await page.locator(".work-still-arrow.next").isVisible()) throw new Error("桌面端悬停时没有剧照箭头辅助");
+
+  // 片单详情只保留 FAB 内的添加入口，不再在页面顶部重复放大按钮。
+  await page.getByTestId("fab-toggle").click();
+  await page.getByTestId("work-back").click();
+  await page.getByTestId("fab-toggle").click();
+  await page.getByTestId("shelf-back").click();
+  await page.getByTestId("open-sidebar").click();
+  await page.getByTestId("sidebar-collections").click();
+  await page.getByTestId("fab-toggle").click();
+  await page.getByTestId("open-create-collection").click();
+  await page.getByTestId("new-collection-input").fill("FAB 入口回归片单");
+  await page.locator("#collection-create-form").getByRole("button", { name: "创建", exact: true }).click();
+  await page.getByRole("button", { name: /FAB 入口回归片单/ }).click();
+  if (await page.locator(".collection-add-button").count()) throw new Error("片单详情仍保留顶部大号添加作品按钮");
+  await page.getByTestId("fab-toggle").click();
+  if (await page.getByTestId("collection-add-work").count() !== 1 || !await page.getByTestId("collection-add-work").isVisible()) {
+    throw new Error("片单详情 FAB 没有唯一的添加作品入口");
+  }
   await context.close();
 }
 
@@ -353,7 +372,7 @@ async function runFunctionalPath(browser) {
     const bodyText = await page.locator("body").innerText().catch(() => "");
     throw new Error(`首屏没有挂载：status=${initialResponse?.status()} url=${page.url()} body=${bodyText.slice(0, 500)}`);
   }
-  await openCapture(page, "夏日列车");
+  await openCapture(page, "夏日列车", { location: "cinema", viewedOn: "2017-09-10" });
   const input = page.getByTestId("composer-input");
   await input.fill("");
   await page.getByRole("button", { name: "列表格式", exact: true }).click();
@@ -441,6 +460,10 @@ async function runFunctionalPath(browser) {
   }
   const summerTrainCard = page.locator(".record-card", { hasText: "夏日列车" });
   await summerTrainCard.waitFor();
+  const summerTrainCardText = await summerTrainCard.innerText();
+  if (!summerTrainCardText.includes("测试电影院") || !summerTrainCardText.includes("2017/09/10")) {
+    throw new Error(`无票务影院补录没有按实际日期显示在时间线：${summerTrainCardText}`);
+  }
   const posterImg = summerTrainCard.locator(".record-poster-img");
   await posterImg.waitFor();
   const posterLoaded = await posterImg.evaluate((image) => image.complete && image.naturalWidth > 0);
@@ -454,6 +477,25 @@ async function runFunctionalPath(browser) {
   await page.getByRole("button", { name: "关闭", exact: true }).click();
   await page.getByRole("heading", { name: "夏日列车" }).click();
   await page.getByTestId("detail").waitFor();
+  await page.getByTestId("viewing-events").waitFor();
+  if (!((await page.locator(".detail-date").innerText()) || "").includes("2017年9月10日")) {
+    throw new Error("详情页仍在显示记录创建日期，而不是实际观看日期");
+  }
+  if (!((await page.getByTestId("viewing-events").innerText()) || "").includes("测试电影院")) {
+    throw new Error("无票务 + 电影院观看没有保存为影院场次");
+  }
+  await page.getByTestId("edit-record-viewing-info").click();
+  await page.getByTestId("history-viewed-on").fill("2018-10-11");
+  await page.getByTestId("history-location-home").check();
+  await page.locator("#history-event-form").getByRole("button", { name: "保存", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".detail-date")?.textContent?.includes("2018年10月11日"));
+  const editedDetailDate = (await page.locator(".detail-date").innerText()) || "";
+  if (!editedDetailDate.includes("2018年10月11日")) {
+    throw new Error(`成型记录修改实际观看日期后详情页没有更新：${editedDetailDate}`);
+  }
+  if (!((await page.getByTestId("viewing-events").innerText()) || "").includes("在家／线上观看")) {
+    throw new Error("成型记录修改观看方式后没有更新");
+  }
 
   await page.getByRole("heading", { name: "最先留下来的片段" }).waitFor();
   if (await page.getByTestId("analysis-draft").count()) throw new Error("AI 草稿确认后仍停留在待确认区");
@@ -505,6 +547,15 @@ async function runFunctionalPath(browser) {
   if ((await page.getByRole("button", { name: "✓ 喜欢同类题材的人", exact: true }).getAttribute("aria-pressed")) !== "true") throw new Error("推荐快捷条件选中状态刷新恢复失败");
   if ((await page.getByRole("button", { name: "✓ 喜欢安静画面的人", exact: true }).getAttribute("aria-pressed")) !== "true") throw new Error("AI 推荐条件没有经过用户确认并持久化");
   await page.locator(".judgement-sheet > .sheet-done").click();
+  await returnToTimeline(page);
+  await page.getByTestId("open-sidebar").click();
+  await page.getByTestId("sidebar-shelf").click();
+  await page.locator(".shelf-item", { hasText: "夏日列车" }).click();
+  await page.getByTestId("work").waitFor();
+  const latestAttitudeLabel = await page.getByTestId("work-latest-attitude").getAttribute("aria-label");
+  if (!latestAttitudeLabel?.includes("喜欢")) throw new Error(`作品页没有显示最新个人态度图标：${latestAttitudeLabel}`);
+  await page.locator("[data-testid^='work-impression-']").first().click();
+  await page.getByTestId("detail").waitFor();
   await page.getByRole("button", { name: "重新整理", exact: true }).click();
   await page.getByTestId("analysis-draft").waitFor();
   await page.getByRole("button", { name: "把建议加入正式记录", exact: true }).waitFor();
@@ -512,6 +563,12 @@ async function runFunctionalPath(browser) {
   await page.getByRole("button", { name: "保留正式记录并收起草稿", exact: true }).click();
   await page.getByRole("heading", { name: "雨停后的旋律" }).waitFor();
   await returnToTimeline(page);
+  if (!(await page.getByTestId("open-sidebar").count())) {
+    await page.getByTestId("fab-toggle").click();
+    await page.getByTestId("work-back").click();
+    await page.getByTestId("fab-toggle").click();
+    await page.getByTestId("shelf-back").click();
+  }
   await openSettings(page);
   await page.locator("[data-action='toggle-auto-analysis']").click();
   await page.waitForFunction(() => document.querySelector("[data-testid='recording-mode']")?.textContent?.includes("当前关闭"));

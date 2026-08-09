@@ -60,7 +60,7 @@ import {
   summarizeWorksForShelf,
   filterShelfEntries,
   sortShelfEntries
-} from "./work-view.js?v=2";
+} from "./work-view.js?v=3";
 import {
   RELEASE_REGIONS,
   SERIES_RELATION_TYPES,
@@ -106,7 +106,7 @@ import {
   toggleEventSelection,
   selectAllEvents,
   selectedPendingEvents
-} from "./capture.js?v=3";
+} from "./capture.js?v=4";
 import {
   ATTITUDES,
   ATTITUDE_DESCRIPTIONS,
@@ -394,7 +394,12 @@ const icons = {
   // 候场片单 = 书签（还没看、排队等着的）
   watchlist: '<path d="M6 4h12v17l-6-4.2L6 21z"/><path d="M9.5 9.5h5"/>',
   photo: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m5 17 4.5-4.5 3 3 2-2 4.5 3.5"/>',
-  star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/>'
+  star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/>',
+  sentiment_very_satisfied: '<circle cx="12" cy="12" r="9"/><path d="M7.5 9c.8-1 2.2-1 3 0M13.5 9c.8-1 2.2-1 3 0M7.5 14c1.2 2 2.7 3 4.5 3s3.3-1 4.5-3"/>',
+  sentiment_satisfied: '<circle cx="12" cy="12" r="9"/><circle cx="8.5" cy="9.5" r=".6"/><circle cx="15.5" cy="9.5" r=".6"/><path d="M8 14c1.2 1.5 2.5 2.2 4 2.2s2.8-.7 4-2.2"/>',
+  sentiment_neutral: '<circle cx="12" cy="12" r="9"/><circle cx="8.5" cy="9.5" r=".6"/><circle cx="15.5" cy="9.5" r=".6"/><path d="M8.5 15h7"/>',
+  sentiment_dissatisfied: '<circle cx="12" cy="12" r="9"/><circle cx="8.5" cy="9.5" r=".6"/><circle cx="15.5" cy="9.5" r=".6"/><path d="M8 16c1.2-1.5 2.5-2.2 4-2.2s2.8.7 4 2.2"/>',
+  sentiment_confused: '<circle cx="12" cy="12" r="9"/><circle cx="8.5" cy="9.5" r=".6"/><path d="M14 9.5h3M8.5 15c1.3-1 2.5 1 3.7 0s2.5 1 3.8 0"/>'
 };
 
 // 单条记录导出：文件扩展名与 MIME 类型映射
@@ -402,6 +407,18 @@ const EXPORT_EXT = { json: "json", markdown: "md", txt: "txt" };
 
 function icon(name) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name] || ""}</svg>`;
+}
+
+const ATTITUDE_ICON_NAMES = {
+  dislike: "sentiment_dissatisfied",
+  neutral: "sentiment_neutral",
+  like: "sentiment_satisfied",
+  love: "sentiment_very_satisfied",
+  mixed: "sentiment_confused"
+};
+
+function attitudeIcon(attitude) {
+  return attitude ? icon(ATTITUDE_ICON_NAMES[attitude]) : "";
 }
 
 function escapeHtml(value = "") {
@@ -646,6 +663,7 @@ function fabActionsFor() {
   if (state.view === "collection") {
     return [
       themeItem,
+      { action: "open-work-search", icon: "search", label: "添加作品", testId: "collection-add-work" },
       { action: "edit-collection", icon: "edit", label: "编辑片单信息", testId: "edit-collection" },
       { action: "delete-collection", icon: "trash", label: "删除这个片单", testId: "delete-collection" },
       { action: "open-collections", icon: "back", label: "返回候场片单", testId: "collection-back" }
@@ -1077,6 +1095,7 @@ function workHistoryRow(item, index) {
   const { badges: evBadges } = eventBadges(ctx.event_types || [], { max: 99 }); // 作品页不做首页的截断，全部显示
   const relationLabel = item.viewing_relation === "first" ? "初看" : item.viewing_relation === "rewatch" ? "重看" : "";
   const metaBits = [
+    ctx.auditorium || "",
     item.duration_minutes ? `${item.duration_minutes}分` : "",
     ctx.seats?.length ? `座位 ${ctx.seats.join("、")}` : "",
     ticketPriceLabel(item)
@@ -1146,7 +1165,7 @@ function renderWork() {
   const wantedIn = collectionsForWork(state.collections, work.id);
   return `<main class="work-view" data-testid="work">
     <div class="work-panel" data-testid="work-panel">
-      <div class="work-poster-col">${workHeroMarkup(work)}</div>
+      <div class="work-poster-col">${workHeroMarkup(work)}${view.latestAttitude ? `<div class="work-latest-attitude" aria-label="最新个人态度：${escapeHtml(attitudeLabel(view.latestAttitude))}" data-testid="work-latest-attitude">${attitudeIcon(view.latestAttitude)}</div>` : ""}</div>
       <div class="work-info-col">
         <h1 class="work-title">《${escapeHtml(work.title || "未命名作品")}》</h1>
         ${workMetaLine(work)}
@@ -1342,10 +1361,9 @@ function renderCollection() {
       <h1 class="page-title">${escapeHtml(collection.title)}</h1>
       ${collection.description ? `<p class="settings-note">${escapeHtml(collection.description)}</p>` : ""}
       <p class="collection-summary" data-testid="collection-summary">${total} 部${unwatched ? ` · ${unwatched} 部还没看` : ""}</p>
-      <button type="button" class="sheet-done collection-add-button" data-action="open-work-search" data-testid="collection-add-work">＋ 添加作品</button>
       ${total
         ? `<ul class="collection-entries" data-testid="collection-entries">${rows}</ul>`
-        : `<p class="work-section-empty">这个片单还没有作品——点上面的「＋ 添加作品」搜索，还没看过的电影也可以直接加进来</p>`}
+        : `<p class="work-section-empty">这个片单还没有作品——点右下角的 ＋，选择「添加作品」开始搜索</p>`}
     </article>
   </main>`;
 }
@@ -1515,11 +1533,13 @@ function viewingEventsSection(events) {
     const endStr = e.screening_ends_at ? timeFmt.format(new Date(e.screening_ends_at)) : "";
     const timeRange = startStr && endStr ? `${startStr}–${endStr}` : startStr;
     const seats = ctx.seats?.length ? ctx.seats.join("、") : "";
+    const locationLabel = e.location_type === "cinema" ? (ctx.cinema_name || "电影院观看") : "在家／线上观看";
     return `<div class="viewing-event-card">
-      ${ctx.cinema_name ? `<div class="ve-cinema">${escapeHtml(ctx.cinema_name)}</div>` : ""}
+      <div class="ve-heading"><div class="ve-cinema">${escapeHtml(locationLabel)}</div><button type="button" class="icon-button small ve-edit" data-action="edit-history-event" data-event-id="${escapeHtml(e.id)}" aria-label="修改观影信息" data-testid="edit-record-viewing-info">${icon("edit")}</button></div>
       <div class="ve-meta">
         ${dateStr ? `<span>${escapeHtml(dateStr)}</span>` : ""}
         ${timeRange ? `<span>${escapeHtml(timeRange)}</span>` : ""}
+        ${ctx.auditorium ? `<span>${escapeHtml(ctx.auditorium)}</span>` : ""}
         ${ctx.format ? `<span>${escapeHtml(ctx.format)}</span>` : ""}
         ${seats ? `<span>座位 ${escapeHtml(seats)}</span>` : ""}
       </div>
@@ -1529,6 +1549,17 @@ function viewingEventsSection(events) {
     <h2 class="viewing-events-heading">观影场次</h2>
     ${rows}
   </section>`;
+}
+
+function eventsForRecord(record) {
+  const linked = (state.viewingEvents || []).filter((event) => event.record_id === record.id || event.id === record.viewing_event_id);
+  return linked.length ? linked : [];
+}
+
+function actualViewingDate(record) {
+  const event = eventsForRecord(record)
+    .sort((a, b) => (a.screening_at || a.viewed_on || "").localeCompare(b.screening_at || b.viewed_on || ""))[0];
+  return event?.screening_at || event?.viewed_on || record.createdAt;
 }
 
 function renderDetail() {
@@ -1541,10 +1572,11 @@ function renderDetail() {
   const titleMarkup = bangumiReference
     ? `《<a href="https://bangumi.tv/subject/${encodeURIComponent(bangumiReference.id)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>》`
     : `《${escapeHtml(title)}》`;
+  const recordEvents = eventsForRecord(record);
   return `<main class="detail-view" data-testid="detail">
     ${detailHeader(record)}
     <article class="detail-content">
-      <div class="detail-date">${escapeHtml(new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric" }).format(new Date(record.createdAt)))}</div>
+      <div class="detail-date">${escapeHtml(new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo" }).format(new Date(actualViewingDate(record))))}</div>
       <div class="detail-title-row"><h1>${titleMarkup}</h1><span class="attitude-badge ${record.attitude ? "selected" : "empty"}"><i aria-hidden="true"></i>${escapeHtml(attitudeLabel(record.attitude))}</span></div>
       ${workMatchPanel(record)}
       ${record.aiWarnings?.length ? `<details class="analysis-warnings" open><summary>整理提示</summary><ul>${record.aiWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></details>` : ""}
@@ -1554,7 +1586,7 @@ function renderDetail() {
         <span class="judgement-summary-icon" aria-hidden="true">${icon("edit")}</span><span class="judgement-summary-copy"><small>个人态度与推荐 · ${record.attitude ? "点击修改" : "点击选择"}</small><b>${escapeHtml(attitudeLabel(record.attitude))} · ${recommendation}</b></span>${icon("chevron")}
       </button>` : ""}
       ${analysisDraftMarkup(record)}
-      ${viewingEventsSection(state.viewingEvents)}
+      ${viewingEventsSection(recordEvents)}
       <div class="memory-heading"><h2>这次留下来的记忆</h2><div class="memory-heading-actions"><button class="text-action" type="button" data-action="request-ai-cards" data-testid="request-ai-cards" ${record.cardSuggestionStatus === "running" || record.analysis_status === "running" ? "disabled" : ""}>${record.cardSuggestionStatus === "running" || record.analysis_status === "running" ? "AI 整理中…" : "重新整理"}</button><button class="text-action add-card" type="button" data-action="add-card">＋ 添加一条记忆</button></div></div>${state.deletedCardUndo?.recordId === record.id ? `<button class="undo-card" type="button" data-action="undo-delete-card">已删除“${escapeHtml(state.deletedCardUndo.card.title || "一条记忆")}” · 撤销</button>` : ""}${record.cardSuggestionStatus === "failed" && record.cardSuggestionError ? `<p class="card-suggestion-error" data-testid="card-suggestion-error">AI 建议没有完成：${escapeHtml(record.cardSuggestionError)}</p>` : ""}${memoryCard(record)}
       ${interviewArchiveMarkup(record)}
       <section class="raw-archive reflection-archive"><div class="raw-archive-heading"><div><small>原始档案</small><h2>📝 我的原始感想</h2></div><button class="text-action" type="button" data-action="edit-impression" data-testid="edit-impression">${icon("edit")}编辑原文</button></div><p class="impression">${escapeHtml(record.rawText)}</p></section>
@@ -1577,17 +1609,19 @@ function captureContextBar(ctx) {
     return `<div class="capture-context-bar" data-testid="capture-context-bar">${parts.map(escapeHtml).join(" · ")}</div>`;
   }
   const firstEvent = ctx.pendingEvents?.[0];
+  const eventContext = firstEvent?.viewing_context || {};
   const dateStr = firstEvent?.viewed_on
     ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo" }).format(new Date(firstEvent.viewed_on))
     : "";
   const parts = [`《${ctx.workTitle?.trim() || "未命名作品"}》`];
-  if (ctx.source === "skipped") parts.push("未填写观影信息");
   if (dateStr) parts.push(dateStr);
-  if (ctx.locationType === "home") {
+  const locationType = firstEvent?.location_type || ctx.locationType;
+  if (locationType === "home") {
     parts.push("在家观看");
   } else {
-    if (ctx.cinemaName) parts.push(ctx.cinemaName);
-    if (ctx.format) parts.push(ctx.format);
+    if (eventContext.cinema_name || ctx.cinemaName) parts.push(eventContext.cinema_name || ctx.cinemaName);
+    if (eventContext.auditorium || ctx.auditorium) parts.push(eventContext.auditorium || ctx.auditorium);
+    if (eventContext.format || ctx.format) parts.push(eventContext.format || ctx.format);
   }
   return `<button type="button" class="capture-context-bar" data-action="edit-capture-context" data-testid="capture-context-bar">${parts.map(escapeHtml).join(" · ")}</button>`;
 }
@@ -1808,7 +1842,7 @@ function attitudeOverlay(record) {
       ${record.attitudeSuggestion ? `<div class="suggestion"><p>文字倾向：<b>${attitudeLabel(record.attitudeSuggestion)}</b><span>仅作参考</span></p>${record.attitudeSuggestionDetails?.alternative ? `<small>也可能更接近：${escapeHtml(attitudeLabel(record.attitudeSuggestionDetails.alternative))}</small>` : ""}${record.attitudeSuggestionDetails?.evidence?.[0] ? `<blockquote>${escapeHtml(record.attitudeSuggestionDetails.evidence[0].excerpt)}</blockquote>` : ""}</div>` : record.analysis_status === "ai_draft_ready" ? `<p class="suggestion-empty">文字里没有足够明确的总体态度，这一项完全由你判断。</p>` : ""}
       ${record.emotions?.length ? `<div class="emotion-suggestions" aria-label="文字中的情绪">${record.emotions.map((emotion) => `<span>${escapeHtml(emotion.label)}</span>`).join("")}</div>` : ""}
       <div class="attitude-grid" role="group" aria-label="个人态度">
-        ${ATTITUDES.map(([value, label]) => `<button type="button" class="choice ${record.attitude === value ? "selected" : ""} ${value === "mixed" ? "mixed" : ""}" data-action="select-attitude" data-value="${value}" aria-pressed="${record.attitude === value}"><i></i><span>${label}</span></button>`).join("")}
+        ${ATTITUDES.map(([value, label]) => `<button type="button" class="choice ${record.attitude === value ? "selected" : ""}" data-action="select-attitude" data-value="${value}" aria-pressed="${record.attitude === value}"><span class="attitude-choice-icon" aria-hidden="true">${attitudeIcon(value)}</span><span>${label}</span></button>`).join("")}
       </div>
       ${record.attitude ? `<div class="attitude-description" aria-live="polite"><b>${attitudeLabel(record.attitude)}</b><p>${ATTITUDE_DESCRIPTIONS[record.attitude]}</p></div>` : `<p class="attitude-helper">选择后会显示这一项的判断提示，帮助快速回忆标准。</p>`}
       <div class="recommend-section">
@@ -1968,19 +2002,19 @@ function eventTypeTagsRow(selected, key) {
 
 /**
  * 统一的观影信息 Step 1。所有“记录这次观看”入口都先到这里，用户可以粘贴票务、
- * 手动填写，或明确跳过观影信息后再写感想。
+ * 手动填写，或跳过票务导入后继续确认日期与观看方式。
  * W13 的截图 OCR 在这里预留位置，本窗口不实现、也不显示占位按钮。
  */
 function captureEntryOverlay() {
   const ctx = state.captureContext || {};
-  const canSkip = Boolean(ctx.lockedWork || ctx.workTitle?.trim());
+  const canContinue = Boolean(ctx.lockedWork || ctx.workTitle?.trim());
   return `<div class="overlay" data-testid="capture-entry">
     <button class="overlay-backdrop" type="button" data-action="close-capture" aria-label="收起"></button>
     <section class="bottom-sheet capture-entry" role="dialog" aria-modal="true" aria-labelledby="capture-entry-title">
       <div class="sheet-handle" aria-hidden="true"></div>
       <span class="sheet-kicker">记录这次观看</span>
       <h2 id="capture-entry-title">观影信息</h2>
-      <p class="capture-entry-hint">先补充这次观看的信息，也可以直接跳过；下一步再写感想。</p>
+      <p class="capture-entry-hint">票务只是可选的自动填写来源。没有票务也可以继续手填实际观看日期与观看方式。</p>
       ${ctx.lockedWork
         ? `<div class="capture-entry-work" data-testid="capture-entry-work-locked"><span>作品</span><b>《${escapeHtml(ctx.workTitle || "未命名作品")}》</b></div>`
         : `<label class="capture-entry-title-field"><span>作品</span><input type="text" id="capture-entry-work-title-input" data-testid="capture-entry-work-title-input" value="${escapeHtml(ctx.workTitle || "")}" placeholder="输入作品名；粘贴票务时可留空" /></label>`}
@@ -1992,10 +2026,10 @@ function captureEntryOverlay() {
         <textarea id="capture-paste-input" data-testid="capture-paste-input" placeholder="粘贴票务邮件或订单文本，会自动识别" rows="4"></textarea>
       </label>
       <div class="capture-entry-actions">
-        <button type="button" class="sheet-done" data-action="manual-viewing-info" data-testid="manual-viewing-info">手动填写</button>
-        <button type="button" class="capture-skip-link" data-action="skip-viewing-info" data-testid="skip-viewing-info" ${canSkip ? "" : "disabled"}>直接跳过 →</button>
+        <button type="button" class="sheet-done" data-action="manual-viewing-info" data-testid="manual-viewing-info">手动填写观影信息</button>
+        <button type="button" class="capture-skip-link" data-action="skip-viewing-info" data-testid="skip-viewing-info" ${canContinue ? "" : "disabled"}>跳过票务，继续手填 →</button>
       </div>
-      ${canSkip ? "" : `<small class="capture-entry-requirement">直接跳过前请先填写作品名</small>`}
+      ${canContinue ? "" : `<small class="capture-entry-requirement">继续前请先填写作品名</small>`}
     </section>
   </div>`;
 }
@@ -2031,6 +2065,7 @@ function ticketConfirmOverlay() {
 
   const allEvents = ctx.pendingEvents || [];
   const selectedCount = selectedPendingEvents(allEvents).length;
+  const selectedEventsValid = selectedPendingEvents(allEvents).every((event) => event.viewed_on && event.location_type);
   const allSelected = selectedCount >= allEvents.length;
 
   const cards = allEvents.map((event, index) => {
@@ -2064,7 +2099,17 @@ function ticketConfirmOverlay() {
         ${seatsStr ? `<span>座位 ${escapeHtml(seatsStr)}</span>` : ""}
         ${priceStr ? `<span>${escapeHtml(priceStr)}</span>` : ""}
       </div>
-      ${selected ? `${eventTypeTagsRow(ec.event_types || [], `event-${index}`)}
+      ${selected ? `<div class="ticket-viewing-fields" aria-label="观影信息">
+        <label><span>实际观看日期</span><input type="date" data-field="ticket-viewed-on" data-event-index="${index}" value="${escapeHtml(event.viewed_on || "")}" required /></label>
+        <label><span>观看方式</span><select data-field="ticket-location-type" data-event-index="${index}">
+          <option value="cinema" ${event.location_type === "cinema" ? "selected" : ""}>电影院</option>
+          <option value="home" ${event.location_type === "home" ? "selected" : ""}>在家／线上</option>
+        </select></label>
+        ${event.location_type === "cinema" ? `<label><span>影院</span><input type="text" data-field="ticket-cinema-name" data-event-index="${index}" value="${escapeHtml(ec.cinema_name || "")}" /></label>
+        <label><span>影厅</span><input type="text" data-field="ticket-auditorium" data-event-index="${index}" value="${escapeHtml(ec.auditorium || "")}" /></label>
+        <label><span>制式</span><select data-field="ticket-format" data-event-index="${index}"><option value="">未填写</option>${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${ec.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}</select></label>` : ""}
+      </div>
+      ${eventTypeTagsRow(ec.event_types || [], `event-${index}`)}
       ${(ec.event_types || []).includes("bonus_distribution") ? `<label class="bonus-note-input"><span>特典</span><input type="text" data-field="bonus-note" data-event-index="${index}" value="${escapeHtml(ec.bonus_note || "")}" placeholder="如：第3週 色紙" /></label>` : ""}
       ${ctx.hasHistory ? `<div class="relation-toggle" role="group" aria-label="初看或重看">
         <button type="button" class="relation-choice ${currentRelation === "first" ? "selected" : ""}" data-action="set-relation" data-event-index="${index}" data-value="first">初看</button>
@@ -2091,7 +2136,7 @@ function ticketConfirmOverlay() {
       ${!allSelected && allEvents.length > 1 ? `<button type="button" class="text-action" data-action="select-all-ticket-events" data-testid="select-all-ticket-events">全选</button>` : ""}
       <p class="ticket-privacy-note">姓名、邮箱、取票码已本地移除，原始邮件不保存</p>
       <div class="ticket-actions">
-        <button type="button" class="sheet-done" data-action="confirm-ticket-capture" data-testid="confirm-ticket-capture" ${selectedCount === 0 ? "disabled" : ""}>${escapeHtml(ctaLabel)}</button>
+        <button type="button" class="sheet-done" data-action="confirm-ticket-capture" data-testid="confirm-ticket-capture" ${selectedCount === 0 || !selectedEventsValid ? "disabled" : ""}>${escapeHtml(ctaLabel)}</button>
         <button type="button" class="text-action" data-action="repaste-ticket-capture">重新粘贴</button>
       </div>
     </section>
@@ -2108,20 +2153,24 @@ function sceneChoiceOverlay() {
   const ctx = state.captureContext || {};
   const locationType = ctx.locationType || null;
   const eventTypes = ctx.eventTypes || [];
-  // Work 已锁定时不要求再填作品名——只需要选观看地点就能确认
-  const canConfirm = Boolean(locationType) && (ctx.lockedWork || Boolean(ctx.workTitle?.trim()));
+  // 实际观看日期与观看方式是观影信息本身，票务只负责预填，二者都必须由用户确认。
+  const canConfirm = Boolean(ctx.viewedOn && locationType) && (ctx.lockedWork || Boolean(ctx.workTitle?.trim()));
   return `<div class="overlay" data-testid="scene-choice">
     <button class="overlay-backdrop" type="button" data-action="close-capture" aria-label="关闭"></button>
     <section class="bottom-sheet scene-choice-sheet" role="dialog" aria-modal="true" aria-labelledby="scene-choice-title">
       <div class="sheet-handle" aria-hidden="true"></div>
-      <h2 id="scene-choice-title">这次是在哪看的？</h2>
+      <span class="sheet-kicker">观影信息</span>
+      <h2 id="scene-choice-title">这次是什么时候、在哪看的？</h2>
+      <label class="scene-viewed-on"><span>实际观看日期</span><input type="date" id="scene-viewed-on-input" data-testid="scene-viewed-on-input" value="${escapeHtml(ctx.viewedOn || "")}" required /></label>
       <div class="location-choice" role="group" aria-label="观看地点">
         <button type="button" class="location-option ${locationType === "home" ? "selected" : ""}" data-action="select-location" data-value="home" data-testid="location-home">在家／线上</button>
         <button type="button" class="location-option ${locationType === "cinema" ? "selected" : ""}" data-action="select-location" data-value="cinema" data-testid="location-cinema">在影院</button>
       </div>
       ${locationType === "cinema" ? `<div class="cinema-fields">
         <label><span>影院名</span><input type="text" id="scene-cinema-name-input" data-testid="scene-cinema-name-input" value="${escapeHtml(ctx.cinemaName || "")}" placeholder="影院名称" /></label>
+        <label><span>影厅</span><input type="text" id="scene-auditorium-input" data-testid="scene-auditorium-input" value="${escapeHtml(ctx.auditorium || "")}" placeholder="如：IMAX 厅、3号厅" /></label>
         <label><span>制式</span><select id="scene-format-select" data-testid="scene-format-select">
+          <option value="">未填写</option>
           ${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${ctx.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}
         </select></label>
         ${eventTypeTagsRow(eventTypes, "scene")}
@@ -2165,6 +2214,12 @@ function localDateTimeInputToIso(value) {
   return `${withSeconds}+09:00`;
 }
 
+function todayInJapan() {
+  return new Intl.DateTimeFormat("sv-SE", {
+    year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Asia/Tokyo"
+  }).format(new Date());
+}
+
 /**
  * R4 §3.1「每一行都要有编辑入口，可改地点、时间、影院、制式、活动、初看／重看」，
  * 同一个表单也承担 needs_review 场次的「补充信息」——两者本质是同一件事：把这场
@@ -2173,11 +2228,9 @@ function localDateTimeInputToIso(value) {
 function historyEventEditorOverlay(event) {
   const ctx = event.viewing_context || {};
   const isCinema = event.location_type === "cinema";
-  // 只有真的有 screening_at 才回填时间——event.viewed_on 只是"哪一天"，没有具体时刻。
-  // 如果把 "00:00" 塞进 <input type="datetime-local"> 当默认值，用户不碰这个字段直接保存，
-  // 就会把一个"只知道日期、不知道时间"的场次悄悄写成"零点场"，这是假数据，不是缺省值。
   const localDateTime = event.screening_at ? isoToLocalDateTimeInputValue(event.screening_at) : "";
-  const knownDateOnly = !event.screening_at && event.viewed_on ? formatShortDate(event.viewed_on) : "";
+  const viewedOn = event.viewed_on || localDateTime.slice(0, 10);
+  const screeningTime = localDateTime.slice(11, 16);
   const isReview = Boolean(event.needs_review);
   return `<div class="overlay" data-testid="history-event-editor">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭编辑"></button>
@@ -2189,9 +2242,11 @@ function historyEventEditorOverlay(event) {
           <label class="location-option ${!isCinema ? "selected" : ""}"><input type="radio" name="locationType" value="home" ${!isCinema ? "checked" : ""} data-testid="history-location-home" />在家／线上</label>
           <label class="location-option ${isCinema ? "selected" : ""}"><input type="radio" name="locationType" value="cinema" ${isCinema ? "checked" : ""} data-testid="history-location-cinema" />在影院</label>
         </div>
-        <label><span>观看时间${knownDateOnly ? `（当前只记了日期：${escapeHtml(knownDateOnly)}，没有具体时刻）` : ""}</span><input type="datetime-local" name="screeningAt" value="${escapeHtml(localDateTime)}" data-testid="history-datetime" /></label>
+        <label><span>实际观看日期</span><input type="date" name="viewedOn" value="${escapeHtml(viewedOn)}" required data-testid="history-viewed-on" /></label>
+        <label><span>开场时间（可选）</span><input type="time" name="screeningTime" value="${escapeHtml(screeningTime)}" data-testid="history-screening-time" /></label>
         <div class="cinema-only-fields" data-testid="history-cinema-fields" ${isCinema ? "" : "hidden"}>
           <label><span>影院名</span><input type="text" name="cinemaName" value="${escapeHtml(ctx.cinema_name || "")}" placeholder="影院名称" /></label>
+          <label><span>影厅</span><input type="text" name="auditorium" value="${escapeHtml(ctx.auditorium || "")}" placeholder="如：IMAX 厅、3号厅" /></label>
           <label><span>制式</span><select name="format">
             <option value="">未填写</option>
             ${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${ctx.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}
@@ -2654,7 +2709,8 @@ function render() {
     : renderHome();
   const record = currentRecord();
   const currentWorkForOverlay = state.view === "work" ? findWorkById(state.works, state.currentWorkId) : null;
-  const editingHistoryEvent = state.currentWorkEvents.find((event) => event.id === state.editingHistoryEventId) || null;
+  const editingHistoryEvent = [...(state.currentWorkEvents || []), ...(state.viewingEvents || [])]
+    .find((event) => event.id === state.editingHistoryEventId) || null;
   const currentCollectionForOverlay = state.collections.find((item) => item.id === state.currentCollectionId) || null;
   const overlay = state.overlay === "capture-entry"
     ? captureEntryOverlay()
@@ -3621,14 +3677,16 @@ async function updateHistoryEvent(eventId, mutator) {
  */
 async function saveHistoryEventForm(form) {
   const eventId = form.dataset.eventId;
-  const target = state.currentWorkEvents.find((event) => event.id === eventId);
+  const eventPool = state.view === "detail" ? (state.viewingEvents || []) : (state.currentWorkEvents || []);
+  const target = eventPool.find((event) => event.id === eventId);
   if (!target) return;
 
   const data = new FormData(form);
   const locationType = data.get("locationType") === "cinema" ? "cinema" : "home";
-  const screeningAtLocal = String(data.get("screeningAt") || "").trim();
-  const screeningAt = screeningAtLocal ? localDateTimeInputToIso(screeningAtLocal) : null;
-  const viewedOn = screeningAt ? screeningAt.slice(0, 10) : (target.viewed_on || null);
+  const viewedOn = String(data.get("viewedOn") || "").trim();
+  if (!viewedOn) return;
+  const screeningTime = String(data.get("screeningTime") || "").trim();
+  const screeningAt = screeningTime ? localDateTimeInputToIso(`${viewedOn}T${screeningTime}`) : null;
   const eventTypes = locationType === "cinema" ? [...new Set(data.getAll("eventTypes").map(String))] : [];
   const bonusNoteInput = String(data.get("bonusNote") || "").trim() || null;
   const chosenRelation = ["first", "rewatch"].includes(data.get("relation")) ? data.get("relation") : null;
@@ -3637,7 +3695,7 @@ async function saveHistoryEventForm(form) {
   const amountRaw = String(data.get("ticketAmount") || "").trim();
   const amountNum = amountRaw === "" ? null : Number(amountRaw);
   const countNum = Math.max(1, Number(data.get("ticketCount")) || 1);
-  const ticketPrice = Number.isFinite(amountNum) && amountNum > 0
+  const ticketPrice = locationType === "cinema" && Number.isFinite(amountNum) && amountNum > 0
     ? { ...(target.ticket_price || {}), amount: amountNum, currency: target.ticket_price?.currency || "JPY", count: countNum }
     : null;
 
@@ -3646,11 +3704,18 @@ async function saveHistoryEventForm(form) {
     location_type: locationType,
     viewed_on: viewedOn,
     screening_at: screeningAt,
+    screening_ends_at: screeningAt === target.screening_at ? target.screening_ends_at : null,
+    duration_minutes: screeningAt === target.screening_at ? target.duration_minutes : null,
     ticket_price: ticketPrice,
     viewing_context: {
       ...target.viewing_context,
       cinema_name: locationType === "cinema" ? (String(data.get("cinemaName") || "").trim() || null) : null,
+      auditorium: locationType === "cinema" ? (String(data.get("auditorium") || "").trim() || null) : null,
+      city: locationType === "cinema" ? (target.viewing_context?.city || null) : null,
       format: locationType === "cinema" ? (String(data.get("format") || "").trim() || null) : null,
+      seats: locationType === "cinema" ? (target.viewing_context?.seats || []) : [],
+      seat_count: locationType === "cinema" ? (target.viewing_context?.seat_count || 0) : 0,
+      ticket_provider: locationType === "cinema" ? (target.viewing_context?.ticket_provider || null) : null,
       event_types: eventTypes,
       bonus_note: eventTypes.includes("bonus_distribution") ? bonusNoteInput : null
     },
@@ -3660,15 +3725,16 @@ async function saveHistoryEventForm(form) {
   };
   delete updatedUnlocked.relation_conflict;
 
-  const naturalPass = assignViewingRelations(state.currentWorkEvents.map((event) => (event.id === eventId ? updatedUnlocked : event)));
+  const naturalPass = assignViewingRelations(eventPool.map((event) => (event.id === eventId ? updatedUnlocked : event)));
   const naturalRelation = naturalPass.find((event) => event.id === eventId)?.viewing_relation;
   const finalDraft = chosenRelation && chosenRelation !== naturalRelation
     ? { ...updatedUnlocked, viewing_relation: chosenRelation, relation_locked: true }
     : updatedUnlocked;
 
-  const finalEvents = assignViewingRelations(state.currentWorkEvents.map((event) => (event.id === eventId ? finalDraft : event)));
+  const finalEvents = assignViewingRelations(eventPool.map((event) => (event.id === eventId ? finalDraft : event)));
   await db.putViewingEvents(finalEvents);
-  state.currentWorkEvents = finalEvents;
+  if (state.view === "detail") state.viewingEvents = finalEvents;
+  if (state.currentWorkEvents.some((event) => event.id === eventId)) state.currentWorkEvents = finalEvents;
   await indexHomeCardData();
   state.overlay = null;
   state.editingHistoryEventId = null;
@@ -4436,7 +4502,8 @@ function startViewingCapture(workId = null) {
   state.returnScrollY = scrollY;
   state.captureContext = createViewingCaptureContext({
     work,
-    subjectId: work ? (externalRefId(work, "bangumi") || null) : null
+    subjectId: work ? (externalRefId(work, "bangumi") || null) : null,
+    viewedOn: todayInJapan()
   });
   state.captureTagsExpanded = new Set();
   state.clipboardTicketDetected = false;
@@ -4745,12 +4812,23 @@ document.addEventListener("click", async (event) => {
     const workId = trigger.dataset.workId || (state.view === "work" ? state.currentWorkId : null);
     startViewingCapture(workId);
   } else if (action === "resume-draft") {
-    // 继续写：captureContext 已在 loadState() 时从草稿里恢复，直接回到 Step 3。
+    // 旧版本可能留下 source=skipped 且没有 ViewingEvent 的草稿。恢复时不能继续绕过
+    // 观影信息，否则保存后又会回落成“创建日 + 在家观看”。
     state.returnScrollY = scrollY;
-    state.captureFlowState = state.captureContext ? "capture:compose" : "idle";
-    state.overlay = "compose";
+    const needsViewingInfo = state.captureContext?.mode !== "supplement"
+      && state.captureContext
+      && !(state.captureContext.pendingEvents || []).length;
+    if (needsViewingInfo) {
+      state.captureContext.source = "manual";
+      state.captureContext.viewedOn ||= todayInJapan();
+      state.captureFlowState = "capture:scene-choice";
+      state.overlay = "scene-choice";
+    } else {
+      state.captureFlowState = state.captureContext ? "capture:compose" : "idle";
+      state.overlay = "compose";
+    }
     render();
-    focusComposer();
+    if (!needsViewingInfo) focusComposer();
   } else if (action === "close-capture") {
     // Step 1/2A/2B 的背景点击：还没有产生任何记录，直接丢弃这次捕获上下文。
     state.captureContext = null;
@@ -4769,18 +4847,17 @@ document.addEventListener("click", async (event) => {
   } else if (action === "skip-viewing-info") {
     const ctx = state.captureContext;
     if (!ctx || (!ctx.lockedWork && !ctx.workTitle?.trim())) return;
-    ctx.source = "skipped";
-    ctx.pendingEvents = [];
+    // 这里只跳过票务导入，日期和观看方式仍进入同一手填步骤。
+    ctx.source = "manual";
     applyCaptureTransition("skip");
-    await saveDraft(state.draft?.text || "", true);
     render();
-    focusComposer();
   } else if (action === "repaste-ticket-capture") {
     const previous = state.captureContext;
     const work = previous?.lockedWork && previous.workId ? findWorkById(state.works, previous.workId) : null;
     state.captureContext = createViewingCaptureContext({
       work,
-      subjectId: work ? (externalRefId(work, "bangumi") || null) : null
+      subjectId: work ? (externalRefId(work, "bangumi") || null) : null,
+      viewedOn: todayInJapan()
     });
     state.captureTagsExpanded = new Set();
     applyCaptureTransition("repaste");
@@ -4841,7 +4918,7 @@ document.addEventListener("click", async (event) => {
   } else if (action === "confirm-ticket-capture") {
     const ctx = state.captureContext;
     const selected = selectedPendingEvents(ctx?.pendingEvents);
-    if (!selected.length) return;
+    if (!selected.length || selected.some((event) => !event.viewed_on || !event.location_type)) return;
     ctx.pendingEvents = selected; // 只把用户勾选的场次带进 compose，排除的场次彻底丢弃
     applyCaptureTransition("confirm");
     await saveDraft(state.draft?.text || "", true);
@@ -4861,10 +4938,12 @@ document.addEventListener("click", async (event) => {
     void refreshCaptureHistoryFlag();
   } else if (action === "confirm-scene-choice") {
     const ctx = state.captureContext;
-    if (!ctx?.locationType || !ctx.workTitle?.trim()) return;
+    if (!ctx?.viewedOn || !ctx.locationType || !ctx.workTitle?.trim()) return;
     const event = buildManualViewingEvent({
+      viewedOn: ctx.viewedOn,
       locationType: ctx.locationType,
       cinemaName: ctx.cinemaName,
+      auditorium: ctx.auditorium,
       format: ctx.format,
       eventTypes: ctx.eventTypes,
       bonusNote: ctx.bonusNote
@@ -5338,6 +5417,43 @@ document.addEventListener("input", (event) => {
     scheduleCaptureTitleMatch(event.target.value);
   } else if (event.target.id === "scene-cinema-name-input") {
     if (state.captureContext) state.captureContext.cinemaName = event.target.value;
+  } else if (event.target.id === "scene-auditorium-input") {
+    if (state.captureContext) state.captureContext.auditorium = event.target.value;
+  } else if (event.target.id === "scene-viewed-on-input") {
+    if (!state.captureContext) return;
+    state.captureContext.viewedOn = event.target.value;
+    const confirmButton = document.querySelector("[data-testid='confirm-scene-choice']");
+    if (confirmButton) confirmButton.disabled = !(event.target.value
+      && state.captureContext.locationType
+      && (state.captureContext.lockedWork || state.captureContext.workTitle?.trim()));
+  } else if (event.target.matches("[data-field='ticket-viewed-on']")) {
+    const ctx = state.captureContext;
+    const idx = Number(event.target.dataset.eventIndex);
+    const pending = ctx?.pendingEvents?.[idx];
+    if (!pending) return;
+    const viewedOn = event.target.value;
+    const shiftDate = (iso) => {
+      if (!iso || !viewedOn || !pending.viewed_on) return iso;
+      const dayDelta = Math.round((Date.parse(`${viewedOn}T00:00:00Z`) - Date.parse(`${pending.viewed_on}T00:00:00Z`)) / 86_400_000);
+      const isoDate = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
+      isoDate.setUTCDate(isoDate.getUTCDate() + dayDelta);
+      return `${isoDate.toISOString().slice(0, 10)}${iso.slice(10)}`;
+    };
+    ctx.pendingEvents[idx] = {
+      ...pending,
+      viewed_on: viewedOn || null,
+      screening_at: shiftDate(pending.screening_at),
+      screening_ends_at: shiftDate(pending.screening_ends_at)
+    };
+    const confirmButton = document.querySelector("[data-testid='confirm-ticket-capture']");
+    if (confirmButton) confirmButton.disabled = selectedPendingEvents(ctx.pendingEvents).some((item) => !item.viewed_on || !item.location_type);
+  } else if (event.target.matches("[data-field='ticket-cinema-name'], [data-field='ticket-auditorium']")) {
+    const ctx = state.captureContext;
+    const idx = Number(event.target.dataset.eventIndex);
+    const pending = ctx?.pendingEvents?.[idx];
+    if (!pending) return;
+    const key = event.target.dataset.field === "ticket-auditorium" ? "auditorium" : "cinema_name";
+    ctx.pendingEvents[idx] = { ...pending, viewing_context: { ...pending.viewing_context, [key]: event.target.value || null } };
   } else if (event.target.matches("[data-field='bonus-note']")) {
     const ctx = state.captureContext;
     if (!ctx) return;
@@ -5386,6 +5502,32 @@ document.addEventListener("change", async (event) => {
     announce("推荐说明已保存");
   } else if (event.target.id === "scene-format-select") {
     if (state.captureContext) state.captureContext.format = event.target.value;
+  } else if (event.target.matches("[data-field='ticket-location-type']")) {
+    const ctx = state.captureContext;
+    const idx = Number(event.target.dataset.eventIndex);
+    const pending = ctx?.pendingEvents?.[idx];
+    if (!pending) return;
+    const locationType = event.target.value === "home" ? "home" : "cinema";
+    ctx.pendingEvents[idx] = {
+      ...pending,
+      location_type: locationType,
+      viewing_context: locationType === "cinema" ? pending.viewing_context : {
+        ...pending.viewing_context,
+        cinema_name: null,
+        auditorium: null,
+        format: null,
+        seats: [],
+        seat_count: 0,
+        event_types: [],
+        bonus_note: null
+      }
+    };
+    render();
+  } else if (event.target.matches("[data-field='ticket-format']")) {
+    const ctx = state.captureContext;
+    const idx = Number(event.target.dataset.eventIndex);
+    const pending = ctx?.pendingEvents?.[idx];
+    if (pending) ctx.pendingEvents[idx] = { ...pending, viewing_context: { ...pending.viewing_context, format: event.target.value || null } };
   } else if (event.target.name === "locationType" && event.target.closest("#history-event-form")) {
     // 直接切换字段可见性，不走 render()——避免清空用户已经在其他输入框里打的字。
     const cinemaFields = document.querySelector("[data-testid='history-cinema-fields']");

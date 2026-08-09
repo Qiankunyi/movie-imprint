@@ -48,8 +48,8 @@ describe("captureTransition 状态机", () => {
     assert.equal(captureTransition("capture:entry", "manual"), "capture:scene-choice");
   });
 
-  it("capture:entry --skip--> capture:compose", () => {
-    assert.equal(captureTransition("capture:entry", "skip"), "capture:compose");
+  it("capture:entry --skip-ticket--> capture:scene-choice（只跳过票务，不跳过观影信息）", () => {
+    assert.equal(captureTransition("capture:entry", "skip"), "capture:scene-choice");
   });
 
   it("capture:entry --close--> idle", () => {
@@ -87,7 +87,7 @@ describe("captureTransition 状态机", () => {
   it("capture:compose --edit-context--> 依据 context.source 回到 ticket-confirm 或 scene-choice", () => {
     assert.equal(captureTransition("capture:compose", "edit-context", { source: "ticket_paste" }), "capture:ticket-confirm");
     assert.equal(captureTransition("capture:compose", "edit-context", { source: "manual" }), "capture:scene-choice");
-    assert.equal(captureTransition("capture:compose", "edit-context", { source: "skipped" }), "capture:entry");
+    assert.equal(captureTransition("capture:compose", "edit-context", { source: "skipped" }), "capture:scene-choice");
   });
 
   it("未定义的转移原样返回当前状态，不抛错", () => {
@@ -108,12 +108,14 @@ describe("createViewingCaptureContext 统一入口上下文", () => {
   it("片单或作品页入口锁定同一个已有 Work", () => {
     const context = createViewingCaptureContext({
       work: { id: "work_birdman", title: "Birdman" },
-      subjectId: 265865
+      subjectId: 265865,
+      viewedOn: "2017-09-10"
     });
     assert.equal(context.lockedWork, true);
     assert.equal(context.workId, "work_birdman");
     assert.equal(context.workTitle, "Birdman");
     assert.equal(context.subjectId, 265865);
+    assert.equal(context.viewedOn, "2017-09-10");
   });
 });
 
@@ -121,18 +123,21 @@ describe("createViewingCaptureContext 统一入口上下文", () => {
 
 describe("buildManualViewingEvent（手动填写观影信息）", () => {
   it("在家／线上", () => {
-    const event = buildManualViewingEvent({ locationType: "home" });
+    const event = buildManualViewingEvent({ viewedOn: "2017-09-10", locationType: "home" });
     assert.equal(event.location_type, "home");
+    assert.equal(event.viewed_on, "2017-09-10");
     assert.equal(event.source, "manual");
     assert.equal(event.viewing_relation, null, "不预设初看/重看，交给 assignViewingRelations");
     assert.deepEqual(event.viewing_context.event_types, []);
   });
 
   it("在影院（手填影院名 + 制式）", () => {
-    const event = buildManualViewingEvent({ locationType: "cinema", cinemaName: "TOHOシネマズ新宿", format: "IMAX" });
+    const event = buildManualViewingEvent({ viewedOn: "2017-09-10", locationType: "cinema", cinemaName: "TOHOシネマズ新宿", auditorium: "IMAX厅", format: "IMAX" });
     assert.equal(event.location_type, "cinema");
+    assert.equal(event.viewed_on, "2017-09-10");
     assert.equal(event.source, "manual");
     assert.equal(event.viewing_context.cinema_name, "TOHOシネマズ新宿");
+    assert.equal(event.viewing_context.auditorium, "IMAX厅");
     assert.equal(event.viewing_context.format, "IMAX");
   });
 
@@ -466,7 +471,7 @@ describe("R6 补丁 7：lockedWork 的行为契约", () => {
     assert.equal(canConfirm({ lockedWork: false, workTitle: "" }, "cinema"), false);
   });
 
-  it("直接跳过观影信息时仍保留锁定作品", () => {
+  it("跳过票务导入时仍保留锁定作品", () => {
     const after = createViewingCaptureContext({ work: { id: "work_birdman", title: "鸟人" } });
     after.source = "skipped";
     assert.equal(after.lockedWork, true);

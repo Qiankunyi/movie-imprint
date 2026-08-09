@@ -16,7 +16,7 @@ function eventSortKey(event) {
 }
 
 function recordSortKey(record, event) {
-  return event?.viewed_on || event?.screening_at || record?.createdAt || record?.updatedAt || "";
+  return event?.screening_at || event?.viewed_on || record?.createdAt || record?.updatedAt || "";
 }
 
 function ascending(keyFn) {
@@ -91,6 +91,22 @@ export function buildAttitudeTimeline(records, eventsByRecordId) {
       date: recordSortKey(record, eventsByRecordId?.get(record.id)) || null
     }))
     .sort(ascending((node) => node.date || ""));
+}
+
+/**
+ * 作品页海报旁只显示最近一次有效观影记录的态度。补充记录没有独立 ViewingEvent，
+ * 不代表一次新的观看，不能覆盖真正重看后留下的态度。
+ */
+export function latestViewingAttitude(records, eventsByRecordId) {
+  const candidates = (Array.isArray(records) ? records : [])
+    .filter((record) => record.record_kind !== "supplement" && record.attitude)
+    .map((record) => ({
+      attitude: record.attitude,
+      date: recordSortKey(record, eventsByRecordId?.get(record.id))
+    }))
+    .filter((item) => item.date)
+    .sort((a, b) => b.date.localeCompare(a.date));
+  return candidates[0]?.attitude || null;
 }
 
 /**
@@ -179,6 +195,7 @@ export function buildWorkView(work, records, viewingEvents) {
   return {
     work,
     history: buildHistory(events),
+    latestAttitude: latestViewingAttitude(recs, eventsByRecordId),
     attitudeTimeline: buildAttitudeTimeline(recs, eventsByRecordId),
     impressions: buildImpressions(recs, eventsByRecordId),
     stats: buildStats(events)

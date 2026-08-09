@@ -1817,10 +1817,9 @@ svg {
 }
 
 .attitude-grid {
-  position: relative;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: var(--space-1);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-2);
   padding-top: var(--space-3);
 }
 
@@ -1849,79 +1848,38 @@ svg {
   padding: var(--space-2) 0 0;
 }
 
-.attitude-grid::before {
-  position: absolute;
-  top: 27px;
-  right: 10%;
-  left: 10%;
-  height: 2px;
-  content: "";
-  background: var(--outline-soft);
-}
-
 .choice {
-  position: relative;
   display: grid;
-  min-height: 72px;
-  padding: 0;
-  place-items: start center;
+  min-height: 76px;
+  padding: var(--space-2) 2px;
+  place-items: center;
   gap: var(--space-1);
   color: var(--ink-soft);
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
   background: transparent;
   font: var(--type-label);
 }
 
-.choice i {
-  z-index: 1;
-  display: block;
-  width: 24px;
-  height: 24px;
-  border: 2px solid var(--outline);
-  border-radius: 50%;
-  background: var(--surface-container);
-}
-
-.choice:nth-child(3) i {
-  width: 30px;
-  height: 30px;
-  margin-top: -3px;
-}
-
-.choice:nth-child(4) i {
+.attitude-choice-icon {
+  display: grid;
   width: 36px;
   height: 36px;
-  margin-top: -6px;
-  border-color: var(--film);
+  place-items: center;
+}
+
+.attitude-choice-icon svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .choice.selected {
   color: var(--accent-strong);
-}
-
-.choice.selected i {
-  border: 7px solid var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-container);
-}
-
-.choice.mixed {
-  grid-column: 1 / -1;
-  display: flex;
-  min-height: 56px;
-  padding: 0 var(--space-3);
-  align-items: center;
-  justify-content: flex-start;
-  border: 1px solid var(--outline-soft);
-  border-radius: var(--radius-card);
-}
-
-.choice.mixed i {
-  width: 26px;
-  height: 26px;
-  margin: 0;
-  border: 2px double var(--outline);
-}
-
-.choice.mixed.selected {
   border-color: var(--accent);
   background: var(--accent-container);
 }
@@ -2423,6 +2381,18 @@ svg {
   margin-bottom: var(--space-2);
 }
 
+.ve-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.ve-edit {
+  flex: 0 0 auto;
+  color: var(--ink-soft);
+}
+
 .viewing-event-card:last-child {
   margin-bottom: 0;
 }
@@ -2820,6 +2790,7 @@ svg {
 }
 
 .cinema-fields label,
+.scene-viewed-on,
 .scene-work-title {
   display: grid;
   gap: var(--space-1);
@@ -2829,6 +2800,7 @@ svg {
 
 .cinema-fields input,
 .cinema-fields select,
+.scene-viewed-on input,
 .scene-work-title input {
   min-height: var(--touch);
   padding: 0 var(--space-3);
@@ -2837,6 +2809,39 @@ svg {
   background: var(--surface);
   color: var(--ink);
   font: var(--type-body);
+}
+
+.ticket-viewing-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--outline-soft);
+}
+
+.ticket-viewing-fields label {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.ticket-viewing-fields input,
+.ticket-viewing-fields select {
+  min-height: 42px;
+  padding: 0 var(--space-2);
+  color: var(--ink);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-tag);
+  background: var(--surface);
+  font: var(--type-meta);
+}
+
+@media (max-width: 380px) {
+  .ticket-viewing-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 412px) {
@@ -3165,6 +3170,28 @@ svg {
 .work-poster-col {
   width: 104px;
   flex: 0 0 auto;
+}
+
+.work-latest-attitude {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  margin: var(--space-3) auto 0;
+  place-items: center;
+  color: var(--accent-strong);
+  border: 1px solid var(--outline-soft);
+  border-radius: 50%;
+  background: var(--surface-container);
+}
+
+.work-latest-attitude svg {
+  width: 25px;
+  height: 25px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .work-info-col {
@@ -4606,11 +4633,6 @@ svg {
   margin: var(--space-1) 0 var(--space-3);
   color: var(--ink-soft);
   font: var(--type-meta);
-}
-
-.collection-add-button {
-  width: 100%;
-  margin-bottom: var(--space-4);
 }
 
 .collection-entries {
