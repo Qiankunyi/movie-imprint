@@ -7,6 +7,10 @@ test("同一制式的不同写法归一化到同一个 key", () => {
   assert.equal(formatBadge("ドルビーシネマ").key, formatBadge("Dolby Cinema").key);
   assert.equal(formatBadge("IMAXレーザー").key, formatBadge("IMAX").key);
   assert.equal(formatBadge("IMAX").key, "imax");
+  assert.equal(formatBadge("IMAXレーザーGT").key, "imax-gt");
+  assert.notEqual(formatBadge("IMAXレーザーGT").key, formatBadge("IMAXレーザー").key);
+  assert.equal(formatBadge("4DX").key, formatBadge("MX4D").key);
+  assert.equal(formatBadge("4D").label, "4D");
 });
 
 test("未知制式优雅降级：中性配色，原样显示文本，不抛错", () => {
@@ -60,13 +64,14 @@ test("重复的活动 key 去重后只出现一次", () => {
   assert.equal(overflow, 0);
 });
 
-test("高规格制式判定：IMAX/Dolby Cinema/4DX/MX4D/ScreenX 为高规格，2D 与未知不是", () => {
+test("高规格制式判定：IMAX/IMAX GT/Dolby Cinema/4D/ScreenX 为高规格，普通与未知不是", () => {
   assert.equal(isHighSpecFormat("IMAX"), true);
+  assert.equal(isHighSpecFormat("IMAX GT"), true);
   assert.equal(isHighSpecFormat("Dolby Cinema"), true);
   assert.equal(isHighSpecFormat("4DX"), true);
   assert.equal(isHighSpecFormat("MX4D"), true);
   assert.equal(isHighSpecFormat("ScreenX"), true);
-  assert.equal(isHighSpecFormat("2D"), false);
+  assert.equal(isHighSpecFormat("普通"), false);
   assert.equal(isHighSpecFormat("35mm"), false);
   assert.equal(isHighSpecFormat(null), false);
 });

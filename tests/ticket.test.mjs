@@ -133,7 +133,7 @@ describe("extractFormatAndTitle", () => {
     const { movieTitle, format } = extractFormatAndTitle(
       "【DolbyCinema】劇場版 魔法少女まどか☆マギカ 前編 始まりの物語"
     );
-    assert.equal(format, "DolbyCinema");
+    assert.equal(format, "Dolby Cinema");
     assert.equal(movieTitle, "劇場版 魔法少女まどか☆マギカ 前編 始まりの物語");
     assert.ok(!movieTitle.includes("【"), "片名不应含制式括号");
   });
@@ -157,6 +157,55 @@ describe("extractFormatAndTitle", () => {
     assert.equal(format, "IMAX");
     assert.deepEqual(eventTypes, ["stage_greeting"]);
     assert.equal(movieTitle, "劇場版○○");
+  });
+});
+
+const REAL_109_TICKET = `購入番号：290198
+劇場名　：109シネマズ大阪エキスポシティ
+上映日　：2026/06/20(土)
+上映時間：9:00 ～ 10:55
+上映劇場：シアター11
+上映作品：魔女の宅急便 4Kデジタルリマスター[IMAXレーザーGT]
+券種　　：●大学生(要証明　1枚
+　　　　　合計2,300円
+座席　　：H -19`;
+
+describe("parseTicketText — 109シネマズ真实票据回归", () => {
+  const result = parseTicketText(REAL_109_TICKET);
+  const screening = result.screenings[0];
+
+  it("明确的上映作品优先于第一行購入番号", () => {
+    assert.equal(screening.movieTitle, "魔女の宅急便");
+    assert.ok(!screening.movieTitle.includes("290198"));
+  });
+
+  it("作品、版本与放映规格分离", () => {
+    assert.equal(screening.version, "4Kデジタルリマスター");
+    assert.equal(screening.format, "IMAX GT");
+    assert.equal(screening.formatNote, null);
+    assert.equal(screening.is3D, false);
+  });
+
+  it("影院与影厅使用各自的明确字段", () => {
+    assert.equal(screening.cinemaName, "109シネマズ大阪エキスポシティ");
+    assert.equal(screening.auditorium, "シアター11");
+  });
+
+  it("日期、时间、座位、票价、币种与张数正确", () => {
+    assert.equal(screening.viewedOn, "2026-06-20");
+    assert.equal(screening.screeningAt, "2026-06-20T09:00:00+09:00");
+    assert.equal(screening.screeningEndsAt, "2026-06-20T10:55:00+09:00");
+    assert.deepEqual(screening.seats, ["H-19"]);
+    assert.deepEqual(screening.ticketPrice, { amount: 2300, currency: "JPY", count: 1 });
+  });
+
+  it("ViewingEvent 草稿保留新增的可编辑观影字段", () => {
+    const event = draftViewingEvent(screening, "work_kiki");
+    assert.equal(event.viewing_context.version, "4Kデジタルリマスター");
+    assert.equal(event.viewing_context.auditorium, "シアター11");
+    assert.equal(event.viewing_context.format, "IMAX GT");
+    assert.equal(event.viewing_context.format_note, null);
+    assert.equal(event.viewing_context.is_3d, false);
   });
 });
 
@@ -402,7 +451,7 @@ describe("parseTicketText — KINEZO 单封邮件（含内部分隔线）", () =
   });
 
   it("放映制式正确", () => {
-    assert.ok(result.screenings[0].format?.includes("SCREENX"),
+    assert.equal(result.screenings[0].format, "ScreenX",
       `制式应含 SCREENX，实际：${result.screenings[0].format}`);
   });
 

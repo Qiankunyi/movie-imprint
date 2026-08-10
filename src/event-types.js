@@ -24,7 +24,7 @@ export const EVENT_TYPES = [
 /** 制式关键词——不属于活动分类表，命中即判定为 format */
 const FORMAT_KEYWORD_PATTERNS = [
   /IMAX/i,
-  /Dolby/i,
+  /ドルビーシネマ|Dolby\s*Cinema/i,
   /4DX/i,
   /MX4D/i,
   /ScreenX/i,
@@ -47,7 +47,8 @@ const FORMAT_KEYWORD_PATTERNS = [
  * 银幕规格才是这一场真正的「制式」。
  */
 const FORMAT_EXTRACT_PATTERNS = [
-  /IMAX(?:\s*(?:レーザー|Laser))?/i,
+  /IMAX\s*(?:(?:レーザー|LASER|with\s*Laser)\s*)?GT/i,
+  /IMAX(?:\s*(?:レーザー|Laser|デジタル))?/i,
   /ScreenX/i,
   /4DX(?:\s*SCREEN)?/i,
   /MX4D/i,
@@ -57,6 +58,14 @@ const FORMAT_EXTRACT_PATTERNS = [
   /[23]D/i,
   // 兜底：纯音响系统（非独立银幕规格），只有在没有其它更具体规格命中时才会走到这里
   /Dolby\s*Atmos|Dolby\s*Vision/i
+];
+
+/** 只识别足够明确的版本词；不对普通标题做泛化删词。 */
+const VERSION_PATTERNS = [
+  /^(?:4K\s*)?デジタルリマスター(?:版)?$/i,
+  /^4K\s*リマスター(?:版)?$/i,
+  /^完全版$/,
+  /^修復版$/
 ];
 
 function extractPrimaryFormat(value) {
@@ -71,7 +80,7 @@ function extractPrimaryFormat(value) {
  * 判断一段【】内文本属于制式、活动，还是无法判定。
  * 先匹配制式关键词，再匹配 EVENT_TYPES 的正则，都不中则 unknown。
  * @param {string} content
- * @returns {{ kind: "format", value: string } | { kind: "event", key: string } | { kind: "unknown", value: string }}
+ * @returns {{ kind: "format", value: string } | { kind: "version", value: string } | { kind: "event", key: string } | { kind: "unknown", value: string }}
  */
 export function classifyBracketContent(content) {
   const value = String(content || "").trim();
@@ -81,6 +90,10 @@ export function classifyBracketContent(content) {
     return { kind: "format", value: extractPrimaryFormat(value) };
   }
 
+  if (VERSION_PATTERNS.some((pattern) => pattern.test(value))) {
+    return { kind: "version", value };
+  }
+
   for (const [key, , patterns] of EVENT_TYPES) {
     if (patterns.length && patterns.some((pattern) => pattern.test(value))) {
       return { kind: "event", key };
@@ -88,6 +101,35 @@ export function classifyBracketContent(content) {
   }
 
   return { kind: "unknown", value };
+}
+
+/**
+ * 把影院票据上的名称收敛为产品使用的稳定主分类。
+ * 原始名称只在确有额外意义时进入 formatNote；“レーザー”不会单独保留。
+ * @param {string|null|undefined} rawFormat
+ * @returns {{ format: string|null, formatNote: string|null, is3D: boolean }}
+ */
+export function normalizeCinemaFormat(rawFormat) {
+  const raw = String(rawFormat || "").trim().replace(/^[【[]+|[】\]]+$/g, "").trim();
+  if (!raw) return { format: null, formatNote: null, is3D: false };
+
+  const is3D = /3D/i.test(raw);
+  if (/IMAX\s*(?:(?:レーザー|LASER|with\s*Laser)\s*)?GT/i.test(raw)) {
+    return { format: "IMAX GT", formatNote: null, is3D };
+  }
+  if (/IMAX/i.test(raw)) return { format: "IMAX", formatNote: null, is3D };
+  if (/ドルビーシネマ|Dolby\s*Cinema/i.test(raw)) {
+    return { format: "Dolby Cinema", formatNote: null, is3D };
+  }
+  if (/MX4D/i.test(raw)) return { format: "4D", formatNote: "MX4D", is3D };
+  if (/4DX/i.test(raw)) return { format: "4D", formatNote: "4DX", is3D };
+  if (/^4D$/i.test(raw)) return { format: "4D", formatNote: null, is3D };
+  if (/ScreenX/i.test(raw)) return { format: "ScreenX", formatNote: null, is3D };
+  if (/^(?:2D|3D|普通)$/i.test(raw)) return { format: "普通", formatNote: null, is3D };
+  if (raw === "其他") return { format: "其他", formatNote: null, is3D };
+  if (/^(?:TCX|BESTIA)$/i.test(raw)) return { format: "其他", formatNote: raw, is3D };
+
+  return { format: "其他", formatNote: raw, is3D };
 }
 
 /**

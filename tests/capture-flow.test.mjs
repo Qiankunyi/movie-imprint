@@ -133,13 +133,16 @@ describe("buildManualViewingEvent（手动填写观影信息）", () => {
   });
 
   it("在影院（手填影院名 + 制式）", () => {
-    const event = buildManualViewingEvent({ viewedOn: "2017-09-10", locationType: "cinema", cinemaName: "TOHOシネマズ新宿", auditorium: "IMAX厅", format: "IMAX" });
+    const event = buildManualViewingEvent({ viewedOn: "2017-09-10", locationType: "cinema", cinemaName: "TOHOシネマズ新宿", auditorium: "IMAX厅", version: "4Kリマスター", format: "IMAX", formatNote: "", is3D: true });
     assert.equal(event.location_type, "cinema");
     assert.equal(event.viewed_on, "2017-09-10");
     assert.equal(event.source, "manual");
     assert.equal(event.viewing_context.cinema_name, "TOHOシネマズ新宿");
     assert.equal(event.viewing_context.auditorium, "IMAX厅");
+    assert.equal(event.viewing_context.version, "4Kリマスター");
     assert.equal(event.viewing_context.format, "IMAX");
+    assert.equal(event.viewing_context.format_note, null);
+    assert.equal(event.viewing_context.is_3d, true);
   });
 
   it("手填影院票价时金额、币种、张数独立保存", () => {

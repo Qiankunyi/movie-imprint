@@ -12,20 +12,21 @@
 import { EVENT_TYPES } from "./event-types.js";
 
 const FORMAT_RULES = [
+  { key: "imax-gt", label: "IMAX GT", tone: "imax", patterns: [/IMAX\s*(?:(?:レーザー|LASER|with\s*Laser)\s*)?GT/i] },
   { key: "imax", label: "IMAX", tone: "imax", patterns: [/IMAX/i] },
   // 只认「Dolby Cinema」这个具体银幕品牌，不认裸的 "Dolby"/"Dolby Atmos"/"Dolby Vision"——
   // 后者是很多普通厅也有的音响/画面系统，不等于 Dolby Cinema 这个高端银幕规格。真实案例：
   // 一张「SCREENX with DolbyAtmos」的票，字符串里含 "Dolby" 但这一场其实是 ScreenX 厅，
   // 不应该因为命中裸 "Dolby" 就抢在 ScreenX 前面被误标成「Dolby Cinema」。
   { key: "dolby", label: "Dolby Cinema", tone: "dolby", patterns: [/ドルビーシネマ/, /Dolby\s*Cinema/i] },
-  { key: "4dx", label: "4DX", tone: "warm", patterns: [/4DX/i] },
-  { key: "mx4d", label: "MX4D", tone: "warm", patterns: [/MX4D/i] },
+  { key: "4d", label: "4D", tone: "warm", patterns: [/^4D$/i, /4DX/i, /MX4D/i] },
   { key: "screenx", label: "ScreenX", tone: "screenx", patterns: [/ScreenX/i] },
-  { key: "2d", label: "2D", tone: "neutral", patterns: [/^2D$/i] }
+  { key: "normal", label: "普通", tone: "neutral", patterns: [/^普通$/, /^2D$/i] },
+  { key: "other", label: "其他", tone: "neutral", patterns: [/^其他$/] }
 ];
 
 /** 视觉权重更高的制式——影院卡的增强描边/高光只为这些制式启用 */
-export const HIGH_SPEC_FORMAT_KEYS = ["imax", "dolby", "4dx", "mx4d", "screenx"];
+export const HIGH_SPEC_FORMAT_KEYS = ["imax", "imax-gt", "dolby", "4d", "screenx"];
 
 function stripBracket(value) {
   return String(value ?? "").trim().replace(/^[【[]+|[】\]]+$/g, "").trim();

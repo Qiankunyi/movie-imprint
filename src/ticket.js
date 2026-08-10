@@ -11,7 +11,7 @@
  * 二维码令牌、会员登录 URL、支付方式与卡号仍然强制移除。票价不得进入 AI 请求体。
  */
 
-import { classifyBracketContent, extractEventTypes } from "./event-types.js";
+import { classifyBracketContent, extractEventTypes, normalizeCinemaFormat } from "./event-types.js";
 
 // ─── 1. 敏感信息模式 ────────────────────────────────────────────────────────
 
@@ -104,8 +104,8 @@ const SMT_HEADER_RE = /松竹マルチプレックスシアターズ|SMT\b|smt-c
 function looksLikeBooking(segment) {
   const hasDate = /\d{4}[\/\-年]\d{1,2}[\/\-月]\d{1,2}/.test(segment);
   const hasTime = /\d{1,2}:\d{2}\s*[～〜]\s*\d{1,2}:\d{2}|開映(?:時間)?[：:]/.test(segment);
-  const hasTitle = /(?:作品名|映画名|タイトル)[：:]\s*.{2,}/.test(segment);
-  const hasCinema = /(?:劇場名?|上映劇場)[：:]/.test(segment);
+  const hasTitle = /(?:上映作品|作品名|作品|映画名|タイトル)[ \t　]*[：:][ \t　]*.{2,}/.test(segment);
+  const hasCinema = /(?:劇場名|劇場|映画館|上映劇場)[ \t　]*[：:]/.test(segment);
   return (hasDate || hasTime) && (hasTitle || hasCinema);
 }
 
@@ -153,7 +153,18 @@ const SMT_HEADER_RE_G = /松竹マルチプレックスシアターズ|SMT\b|smt
  * 已知放映制式／活动前缀（用于从电影名称中剥离，可能连续多个【】）
  * 以日文全角方括号包裹为主
  */
-const FORMAT_PREFIX_RE = /^[\s　]*(?:【[^】]*】[\s　]*)+/u;
+const BRACKET_TOKEN_RE = /【([^】]*)】|\[([^\]]*)\]/gu;
+
+/** 仅拆分明确位于标题末尾、且与片名有空格边界的版本词。 */
+function extractVersionSuffix(title) {
+  const value = String(title || "").trim();
+  const match = value.match(/[\s　]+((?:4K\s*)?デジタルリマスター(?:版)?|4K\s*リマスター(?:版)?|完全版|修復版)$/i);
+  if (!match) return { movieTitle: value, version: null };
+  return {
+    movieTitle: value.slice(0, match.index).trim(),
+    version: match[1].replace(/\s+/g, "").trim()
+  };
+}
 
 /**
  * 从邮件中提取的原始片名中分离制式前缀、活动前缀与片名。
@@ -162,25 +173,46 @@ const FORMAT_PREFIX_RE = /^[\s　]*(?:【[^】]*】[\s　]*)+/u;
  * 応援上映）是两类东西，必须分流——不能像旧实现那样把片名里的【...】一律当作制式。
  *
  * @param {string} raw 例如 "【IMAX】【舞台挨拶付き】劇場版○○"
- * @returns {{ movieTitle: string, format: string | null, eventTypes: string[] }}
+ * @returns {{ movieTitle: string, version: string|null, format: string|null, formatNote: string|null, is3D: boolean, eventTypes: string[] }}
  */
 export function extractFormatAndTitle(raw) {
-  const brackets = [...raw.matchAll(/【([^】]*)】/gu)].map((m) => m[1].trim());
-  let format = null;
+  const brackets = [...String(raw || "").matchAll(BRACKET_TOKEN_RE)];
+  const rawFormats = [];
+  let version = null;
   const eventTypes = [];
-  for (const content of brackets) {
+  const removableTokens = [];
+  for (const match of brackets) {
+    const content = (match[1] ?? match[2] ?? "").trim();
     const classification = classifyBracketContent(content);
     if (classification.kind === "format") {
-      if (!format) format = classification.value;
+      rawFormats.push(classification.value);
+      removableTokens.push(match[0]);
+    } else if (classification.kind === "version") {
+      if (!version) version = classification.value;
+      removableTokens.push(match[0]);
     } else if (classification.kind === "event") {
       if (!eventTypes.includes(classification.key)) eventTypes.push(classification.key);
-    } else if (!format) {
-      // 无法判定 → 保守写入 format，保持旧行为，避免信息丢失
-      format = classification.value;
+      removableTokens.push(match[0]);
     }
   }
-  const movieTitle = raw.replace(FORMAT_PREFIX_RE, "").trim();
-  return { movieTitle, format, eventTypes };
+  let cleanedTitle = String(raw || "");
+  for (const token of removableTokens) cleanedTitle = cleanedTitle.replace(token, " ");
+  cleanedTitle = cleanedTitle.replace(/[\s　]+/g, " ").trim();
+
+  const suffix = extractVersionSuffix(cleanedTitle);
+  version ||= suffix.version;
+  const normalizedFormats = rawFormats.map(normalizeCinemaFormat);
+  const normalized = normalizedFormats.find((item) => item.format && item.format !== "普通")
+    || normalizedFormats[0]
+    || normalizeCinemaFormat(null);
+  return {
+    movieTitle: suffix.movieTitle,
+    version,
+    format: normalized.format,
+    formatNote: normalized.formatNote,
+    is3D: normalizedFormats.some((item) => item.is3D),
+    eventTypes
+  };
 }
 
 /**
@@ -232,7 +264,11 @@ export function parseTicketPrice(segment) {
     .filter((n) => Number.isFinite(n) && n > 0);
   if (!amounts.length) return null;
   const amount = amounts.length === 1 ? amounts[0] : amounts.reduce((sum, n) => sum + n, 0);
-  return { amount, currency, count: amounts.length };
+  const explicitCounts = [...text.matchAll(/(\d+)\s*枚/g)]
+    .map((match) => Number(match[1]))
+    .filter((count) => Number.isInteger(count) && count > 0);
+  const count = explicitCounts.length ? Math.max(...explicitCounts) : amounts.length;
+  return { amount, currency, count };
 }
 
 function computeDurationMinutes(startIso, endIso) {
@@ -257,32 +293,51 @@ function computeDurationMinutes(startIso, endIso) {
  */
 export function parseScreeningSegment(segment) {
   // ── 片名 ──────────────────────────────────────────────────────────────────
-  // SMT 格式：「作品名」或"作品名"行，或含【制式】前缀的行
-  const titlePatterns = [
-    /(?:作品名|映画名|タイトル)[：:]\s*(.+)/i,
-    /【[^】]*】(.+)/u,
+  // 明确字段必须先于任何 heuristic；「上映作品」是影院票据中最高优先级的作品字段。
+  const explicitTitlePatterns = [
+    /(?:^|\n)[ \t　]*上映作品[ \t　]*[：:][ \t　]*([^\n]+)/im,
+    /(?:^|\n)[ \t　]*(?:作品名|作品|映画名|タイトル)[ \t　]*[：:][ \t　]*([^\n]+)/im
+  ];
+  const heuristicTitlePatterns = [
+    /(?:^|\n)[ \t　]*((?:【[^】]*】|\[[^\]]*\])+[ \t　]*[^\n]+)/m,
     /(?:^|\n)(劇場版[^\n]+)/m,
     /(?:^|\n)([^\n]*(?:劇場版|THE MOVIE|movie)[^\n]*)/im
   ];
   let rawTitle = null;
-  for (const pattern of titlePatterns) {
+  for (const pattern of explicitTitlePatterns) {
     const m = segment.match(pattern);
     if (m) { rawTitle = m[1].trim(); break; }
   }
-  // 若无明确标签，尝试找最长的非元数据行
+  if (!rawTitle) {
+    for (const pattern of heuristicTitlePatterns) {
+      const m = segment.match(pattern);
+      if (m) { rawTitle = m[1].trim(); break; }
+    }
+  }
+  // 只有完全不存在明确作品字段时才 fallback；所有票务元数据行均不得成为标题。
   if (!rawTitle) {
     const lines = segment.split("\n").map((l) => l.trim()).filter((l) => l.length > 4);
     const candidate = lines.find((l) =>
       !l.match(/^\d{4}[\\/\-年]/) &&
       !l.match(/[席座]/) &&
       !l.match(/REDACTED/) &&
+      !l.match(/^(?:購入番号|予約番号|注文番号|申込番号|受付番号|劇場名|上映劇場|劇場|映画館|シアター名|スクリーン名|上映日|観賞日|鑑賞日|日時|上映時間|開映時間|終映時間|券種|購入枚数|枚数|合計|購入金額|料金|金額|決済方法|支払方法|座席|席番|お座席)[ \t　]*[：:]/i) &&
+      !l.match(/^(?:合計)?[¥￥]?[\d,]+\s*(?:円|元|JPY|CNY)?$/i) &&
+      !/^https?:\/\//i.test(l) &&
       l.length > 8
     );
     rawTitle = candidate || null;
   }
   if (!rawTitle) return null;
 
-  const { movieTitle, format: formatFromTitle, eventTypes: eventTypesFromTitle } = extractFormatAndTitle(rawTitle);
+  const {
+    movieTitle,
+    version,
+    format: formatFromTitle,
+    formatNote: formatNoteFromTitle,
+    is3D: is3DFromTitle,
+    eventTypes: eventTypesFromTitle
+  } = extractFormatAndTitle(rawTitle);
 
   // ── 日期与时間 ────────────────────────────────────────────────────────────
   // 格式：2026/7/18、2026-07-18、2026年7月18日
@@ -320,8 +375,8 @@ export function parseScreeningSegment(segment) {
   // ── 影院 ──────────────────────────────────────────────────────────────────
   // 注意：先用带标签的精确模式，避免匹配到「劇場版」「シアターズ」等非影院名
   const cinemaPatterns = [
-    /(?:劇場名|上映劇場|映画館)[：:]\s*([^\n]+)/i,
-    /劇場[：:]\s*([^\n]+)/i,           // 「劇場：MOVIX京都」，避免匹配「劇場版」
+    /(?:^|\n)[ \t　]*(?:劇場名|映画館)[ \t　]*[：:][ \t　]*([^\n]+)/im,
+    /(?:^|\n)[ \t　]*劇場[ \t　]*[：:][ \t　]*([^\n]+)/im, // 「劇場：MOVIX京都」，不匹配「上映劇場」
     /(MOVIX\S+)/i,
     /(TOHOシネマズ\S+)/i,
     /(イオンシネマ\S+)/i,
@@ -333,6 +388,12 @@ export function parseScreeningSegment(segment) {
     const m = segment.match(pattern);
     if (m) { cinemaName = m[1].trim(); break; }
   }
+
+  // 「上映劇場」在 109 シネマズ等票据中表示具体影厅，不能与「劇場名」混用。
+  const auditoriumMatch = segment.match(
+    /(?:^|\n)[ \t　]*(?:上映劇場|シアター名|スクリーン名|上映スクリーン)[ \t　]*[：:][ \t　]*([^\n]+)/im
+  );
+  const auditorium = auditoriumMatch ? auditoriumMatch[1].trim() : null;
 
   // 城市：从影院名推断
   let city = null;
@@ -346,23 +407,27 @@ export function parseScreeningSegment(segment) {
   // Dolby Cinema 银幕规格）放最后兜底，避免它在同一段文本里抢在 ScreenX/IMAX 等真正的
   // 银幕规格前面被误判（参见 src/event-types.js 顶部注释里的真实票务案例）。
   const formatPatterns = [
-    /(?:上映方式|制式|スクリーン)[：:\s]*([^\n]+)/i,
-    /(IMAX(?:\s*レーザー)?)/i,
+    /(?:上映方式|放映方式|制式)[ \t　]*[：:][ \t　]*([^\n]+)/i,
+    /(IMAX\s*(?:(?:レーザー|LASER|with\s*Laser)\s*)?GT)/i,
+    /(IMAX(?:\s*(?:レーザー|Laser|デジタル))?(?:\s*3D)?)/i,
     /(ScreenX)/i,
-    /(4DX(?:SCREEN)?)/i,
-    /(MX4D)/i,
+    /(4DX(?:SCREEN)?(?:\s*3D)?)/i,
+    /(MX4D(?:\s*3D)?)/i,
     /(TCX)/i,
     /(BESTIA)/i,
     /(Dolby\s*Cinema)/i,
     /(Dolby\s*(?:Atmos|Vision)?)/i
   ];
-  let screeningFormat = formatFromTitle;
-  if (!screeningFormat) {
+  let rawScreeningFormat = null;
+  if (!formatFromTitle) {
     for (const pattern of formatPatterns) {
       const m = segment.match(pattern);
-      if (m) { screeningFormat = m[1].trim(); break; }
+      if (m) { rawScreeningFormat = m[1].trim(); break; }
     }
   }
+  const normalizedFormat = formatFromTitle
+    ? { format: formatFromTitle, formatNote: formatNoteFromTitle, is3D: is3DFromTitle }
+    : normalizeCinemaFormat(rawScreeningFormat);
 
   // ── 座位 ──────────────────────────────────────────────────────────────────
   // 格式：J-11、J-12 或 J11 J12 或 「J-11・J-12」
@@ -371,10 +436,9 @@ export function parseScreeningSegment(segment) {
   ) || segment.match(/\b([A-Z]-?\d{1,3}(?:[・、\s,]+[A-Z]-?\d{1,3})*)\b/);
   let seats = [];
   if (seatMatch) {
-    seats = seatMatch[1]
-      .split(/[・、\s,]+/)
-      .map((s) => s.trim())
-      .filter((s) => /^[A-Z]-?\d+$/.test(s));
+    seats = (seatMatch[1].match(/[A-Z][ \t　]*-?[ \t　]*\d{1,3}/gi) || [])
+      .map((seat) => seat.replace(/[ \t　]+/g, "").toUpperCase())
+      .map((seat) => seat.includes("-") ? seat : seat.replace(/^([A-Z])(\d+)$/, "$1-$2"));
   }
 
   // ── 票务提供商 ────────────────────────────────────────────────────────────
@@ -395,12 +459,16 @@ export function parseScreeningSegment(segment) {
   return {
     movieTitle,
     rawTitle,
+    version,
     viewedOn,
     screeningAt,
     screeningEndsAt,
     cinemaName,
+    auditorium,
     city,
-    format: screeningFormat,
+    format: normalizedFormat.format,
+    formatNote: normalizedFormat.formatNote,
+    is3D: normalizedFormat.is3D,
     eventTypes,
     seats,
     seatCount: seats.length,
@@ -415,12 +483,16 @@ export function parseScreeningSegment(segment) {
  * @typedef {Object} ScreeningDraft
  * @property {string}        movieTitle       片名（已移除制式前缀）
  * @property {string|null}   rawTitle         邮件原始片名
+ * @property {string|null}   version          明确识别出的作品版本
  * @property {string|null}   viewedOn         观影日期 YYYY-MM-DD
  * @property {string|null}   screeningAt      放映开始 ISO 8601 +09:00
  * @property {string|null}   screeningEndsAt  放映结束 ISO 8601 +09:00
  * @property {string|null}   cinemaName       影院名
+ * @property {string|null}   auditorium       影厅
  * @property {string|null}   city             城市（推断值，可修改）
  * @property {string|null}   format           放映制式
+ * @property {string|null}   formatNote       规格备注
+ * @property {boolean}       is3D             是否为 3D 放映
  * @property {string[]}      eventTypes       活动类型 key 数组（舞台挨拶／応援上映等，与制式分流）
  * @property {string[]}      seats            座位列表
  * @property {number}        seatCount        座位数
@@ -506,9 +578,12 @@ export function draftViewingEvent(draft, workId, recordId = null) {
     screened_content: { kind: "full_movie", episode_start: null, episode_end: null, display_label: null },
     viewing_context: {
       cinema_name: draft.cinemaName,
-      auditorium: null,
+      auditorium: draft.auditorium || null,
       city: draft.city,
       format: draft.format,
+      version: draft.version || null,
+      format_note: draft.formatNote || null,
+      is_3d: Boolean(draft.is3D),
       seats: draft.seats,
       seat_count: draft.seatCount,
       ticket_provider: draft.ticketProvider,

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyBracketContent, extractEventTypes } from "../src/event-types.js";
+import { classifyBracketContent, extractEventTypes, normalizeCinemaFormat } from "../src/event-types.js";
 import { extractFormatAndTitle } from "../src/ticket.js";
 
 test("classifyBracketContent 识别制式关键词", () => {
@@ -28,10 +28,27 @@ test("同一封邮件出现两次「舞台挨拶」→ event_types 去重，只�
   assert.deepEqual(extractEventTypes(text), ["stage_greeting"]);
 });
 
-test("未知的【】内容 → 保守写入 format，不丢失", () => {
-  const { format, eventTypes } = extractFormatAndTitle("【デジタルリマスター版】劇場版○○");
-  assert.equal(format, "デジタルリマスター版");
+test("明确版本【】内容 → 写入 version，不再冒充 format", () => {
+  const { version, format, eventTypes } = extractFormatAndTitle("【デジタルリマスター版】劇場版○○");
+  assert.equal(version, "デジタルリマスター版");
+  assert.equal(format, null);
   assert.deepEqual(eventTypes, []);
+});
+
+test("放映规格标准化保留 IMAX / IMAX GT 差异，并把 3D 作为附加属性", () => {
+  assert.deepEqual(normalizeCinemaFormat("IMAXレーザー"), { format: "IMAX", formatNote: null, is3D: false });
+  assert.deepEqual(normalizeCinemaFormat("IMAX LASER GT"), { format: "IMAX GT", formatNote: null, is3D: false });
+  assert.deepEqual(normalizeCinemaFormat("IMAX 3D"), { format: "IMAX", formatNote: null, is3D: true });
+  const combined = extractFormatAndTitle("【IMAX】【3D】劇場版○○");
+  assert.equal(combined.format, "IMAX");
+  assert.equal(combined.is3D, true);
+  assert.equal(combined.movieTitle, "劇場版○○");
+});
+
+test("4DX / MX4D 收敛为 4D，并只把有意义的原始名称写入备注", () => {
+  assert.deepEqual(normalizeCinemaFormat("4D"), { format: "4D", formatNote: null, is3D: false });
+  assert.deepEqual(normalizeCinemaFormat("4DX"), { format: "4D", formatNote: "4DX", is3D: false });
+  assert.deepEqual(normalizeCinemaFormat("MX4D 3D"), { format: "4D", formatNote: "MX4D", is3D: true });
 });
 
 test("回归保护：前篇／后篇等区分词不被制式／活动提取吞掉", () => {
@@ -60,7 +77,7 @@ test("回归：括号内容同时含银幕规格与 Dolby Atmos 音响系统 →
 
 test("回归：extractFormatAndTitle 对同一真实票务案例也只保留 ScreenX 制式", () => {
   const { format } = extractFormatAndTitle("【SCREENX with DolbyAtmos・字幕】スパイダーマン：ブランド・ニュー・デイ");
-  assert.equal(format, "SCREENX");
+  assert.equal(format, "ScreenX");
 });
 
 test("work_type 与 event_types 不互相推导：other_event 不会被自动分类命中", () => {

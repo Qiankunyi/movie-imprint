@@ -86,7 +86,10 @@ export function createViewingCaptureContext({ work = null, subjectId = null, vie
     locationType: null,
     cinemaName: null,
     auditorium: null,
+    version: null,
     format: null,
+    formatNote: null,
+    is3D: false,
     ticketAmount: null,
     ticketCurrency: "JPY",
     ticketCount: 1,
@@ -250,7 +253,10 @@ export function buildPendingViewingEvent() {
       cinema_name: null,
       auditorium: null,
       city: null,
+      version: null,
       format: null,
+      format_note: null,
+      is_3d: false,
       seats: [],
       seat_count: 0,
       ticket_provider: null,
@@ -269,11 +275,12 @@ export function buildPendingViewingEvent() {
  * 交由 assignViewingRelations 按时间判定。
  *
  * @param {{ viewedOn: string, locationType: "home" | "cinema", cinemaName?: string|null,
- *   auditorium?: string|null, format?: string|null,
+ *   auditorium?: string|null, version?: string|null, format?: string|null,
+ *   formatNote?: string|null, is3D?: boolean,
  *   eventTypes?: string[], bonusNote?: string|null }} input
  * @returns {object}
  */
-export function buildManualViewingEvent({ viewedOn, locationType, cinemaName = null, auditorium = null, format = null, ticketPrice = null, eventTypes = [], bonusNote = null } = {}) {
+export function buildManualViewingEvent({ viewedOn, locationType, cinemaName = null, auditorium = null, version = null, format = null, formatNote = null, is3D = false, ticketPrice = null, eventTypes = [], bonusNote = null } = {}) {
   const id = newEventId();
   const isCinema = locationType === "cinema";
   const normalizedEventTypes = isCinema ? [...new Set(eventTypes)] : [];
@@ -302,7 +309,10 @@ export function buildManualViewingEvent({ viewedOn, locationType, cinemaName = n
       cinema_name: isCinema ? (cinemaName || null) : null,
       auditorium: isCinema ? (auditorium || null) : null,
       city: null,
+      version: version || null,
       format: isCinema ? (format || null) : null,
+      format_note: isCinema ? (formatNote || null) : null,
+      is_3d: isCinema ? Boolean(is3D) : false,
       seats: [],
       seat_count: 0,
       ticket_provider: null,

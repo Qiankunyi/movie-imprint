@@ -12,11 +12,11 @@ import {
 } from "./stills.js?v=1";
 import { selectDailySidebarStill } from "./sidebar-artwork.js?v=1";
 import { SIDEBAR_STILLS, SIDEBAR_STILL_EXTENSIONS } from "../public/assets/sidebar-stills/manifest.js?v=1";
-import { parseTicketText, draftViewingEvent } from "./ticket.js?v=2";
+import { parseTicketText, draftViewingEvent } from "./ticket.js?v=3";
 import { buildWorkSearchQuery } from "./bangumi.js?v=13";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
-import { runMigrationIfNeeded } from "./migrate.js?v=3";
-import { EVENT_TYPES } from "./event-types.js?v=1";
+import { runMigrationIfNeeded } from "./migrate.js?v=4";
+import { EVENT_TYPES, normalizeCinemaFormat } from "./event-types.js?v=2";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
 import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=9";
 import { memoryListMarkup } from "./memory-list.js?v=1";
@@ -110,7 +110,7 @@ import {
   toggleEventSelection,
   selectAllEvents,
   selectedPendingEvents
-} from "./capture.js?v=6";
+} from "./capture.js?v=7";
 import {
   ATTITUDES,
   ATTITUDE_DESCRIPTIONS,
@@ -1115,6 +1115,7 @@ function ticketPriceLabel(event) {
 
 function workHistoryRow(item, index) {
   const ctx = item.viewing_context || {};
+  const normalizedSpec = normalizedViewingFormat(ctx);
   const pending = item.needs_review || !(item.viewed_on || item.screening_at) || !["home", "cinema"].includes(item.location_type);
   const isCinema = item.location_type === "cinema";
   const dateLabel = pending ? "日期待确认" : (eventDateLabel(item, { withTime: isCinema }) || formatShortDate(item.viewed_on));
@@ -1123,7 +1124,10 @@ function workHistoryRow(item, index) {
   const { badges: evBadges } = eventBadges(ctx.event_types || [], { max: 99 }); // 作品页不做首页的截断，全部显示
   const relationLabel = pending ? "" : item.viewing_relation === "first" ? "初看" : item.viewing_relation === "rewatch" ? "重看" : "";
   const metaBits = [
+    ctx.version || "",
     ctx.auditorium || "",
+    normalizedSpec.formatNote || "",
+    normalizedSpec.is3D ? "3D" : "",
     item.duration_minutes ? `${item.duration_minutes}分` : "",
     ctx.seats?.length ? `座位 ${ctx.seats.join("、")}` : "",
     ticketPriceLabel(item)
@@ -1568,6 +1572,7 @@ function viewingEventsSection(events) {
   const timeFmt = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Tokyo" });
   const rows = events.map((e) => {
     const ctx = e.viewing_context || {};
+    const normalizedSpec = normalizedViewingFormat(ctx);
     const pending = e.needs_review || !(e.viewed_on || e.screening_at) || !["home", "cinema"].includes(e.location_type);
     const dateStr = e.viewed_on ? dtFmt.format(new Date(e.viewed_on)) : (e.screening_at ? dtFmt.format(new Date(e.screening_at)) : "");
     const startStr = e.screening_at ? timeFmt.format(new Date(e.screening_at)) : "";
@@ -1582,8 +1587,11 @@ function viewingEventsSection(events) {
         ${pending ? `<span>补充实际观看日期与观看方式</span>` : ""}
         ${dateStr ? `<span>${escapeHtml(dateStr)}</span>` : ""}
         ${timeRange ? `<span>${escapeHtml(timeRange)}</span>` : ""}
+        ${ctx.version ? `<span>${escapeHtml(ctx.version)}</span>` : ""}
         ${ctx.auditorium ? `<span>${escapeHtml(ctx.auditorium)}</span>` : ""}
-        ${ctx.format ? `<span>${escapeHtml(ctx.format)}</span>` : ""}
+        ${normalizedSpec.format ? `<span>${escapeHtml(normalizedSpec.format)}</span>` : ""}
+        ${normalizedSpec.formatNote ? `<span>${escapeHtml(normalizedSpec.formatNote)}</span>` : ""}
+        ${normalizedSpec.is3D ? `<span>3D</span>` : ""}
         ${seats ? `<span>座位 ${escapeHtml(seats)}</span>` : ""}
         ${ticketPrice ? `<span>${escapeHtml(ticketPrice)}</span>` : ""}
       </div>
@@ -1652,6 +1660,11 @@ function captureContextBar(ctx) {
   }
   const firstEvent = ctx.pendingEvents?.[0];
   const eventContext = firstEvent?.viewing_context || {};
+  const normalizedSpec = normalizedViewingFormat({
+    format: eventContext.format || ctx.format,
+    format_note: eventContext.format_note ?? ctx.formatNote,
+    is_3d: eventContext.is_3d ?? ctx.is3D
+  });
   const dateStr = firstEvent?.viewed_on
     ? new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Tokyo" }).format(new Date(firstEvent.viewed_on))
     : "";
@@ -1659,13 +1672,16 @@ function captureContextBar(ctx) {
   const pendingInfo = firstEvent?.needs_review || !(firstEvent?.viewed_on || firstEvent?.screening_at) || !["home", "cinema"].includes(firstEvent?.location_type);
   if (pendingInfo) parts.push("观影信息待确认");
   if (dateStr) parts.push(dateStr);
+  if (eventContext.version || ctx.version) parts.push(eventContext.version || ctx.version);
   const locationType = firstEvent?.location_type || ctx.locationType;
   if (locationType === "home") {
     parts.push("在家观看");
   } else {
     if (eventContext.cinema_name || ctx.cinemaName) parts.push(eventContext.cinema_name || ctx.cinemaName);
     if (eventContext.auditorium || ctx.auditorium) parts.push(eventContext.auditorium || ctx.auditorium);
-    if (eventContext.format || ctx.format) parts.push(eventContext.format || ctx.format);
+    if (normalizedSpec.format) parts.push(normalizedSpec.format);
+    if (normalizedSpec.formatNote) parts.push(normalizedSpec.formatNote);
+    if (normalizedSpec.is3D) parts.push("3D");
   }
   if (pendingInfo) return `<div class="capture-context-bar" data-testid="capture-context-bar">${parts.map(escapeHtml).join(" · ")}</div>`;
   return `<button type="button" class="capture-context-bar" data-action="edit-capture-context" data-testid="capture-context-bar">${parts.map(escapeHtml).join(" · ")}</button>`;
@@ -2116,6 +2132,7 @@ function ticketConfirmOverlay() {
   const cards = allEvents.map((event, index) => {
     const selected = event.selected !== false;
     const ec = event.viewing_context || {};
+    const normalizedSpec = normalizedViewingFormat(ec);
     const dateStr = event.viewed_on ? dateFmt.format(new Date(`${event.viewed_on}T00:00:00`)) : "";
     const startStr = event.screening_at ? timeFmt.format(new Date(event.screening_at)) : "";
     const endStr = event.screening_ends_at ? timeFmt.format(new Date(event.screening_ends_at)) : "";
@@ -2139,7 +2156,8 @@ function ticketConfirmOverlay() {
         ${timeRange ? `<span>${escapeHtml(timeRange)}</span>` : ""}
       </div>
       <div class="ticket-confirm-meta secondary">
-        ${ec.format ? `<span>${escapeHtml(ec.format)}</span>` : ""}
+        ${ec.version ? `<span>${escapeHtml(ec.version)}</span>` : ""}
+        ${normalizedSpec.format ? `<span>${escapeHtml(normalizedSpec.format)}${normalizedSpec.is3D ? " · 3D" : ""}</span>` : ""}
         ${event.duration_minutes ? `<span>${event.duration_minutes}分</span>` : ""}
         ${seatsStr ? `<span>座位 ${escapeHtml(seatsStr)}</span>` : ""}
         ${priceStr ? `<span>${escapeHtml(priceStr)}</span>` : ""}
@@ -2150,9 +2168,12 @@ function ticketConfirmOverlay() {
           <option value="cinema" ${event.location_type === "cinema" ? "selected" : ""}>电影院</option>
           <option value="home" ${event.location_type === "home" ? "selected" : ""}>在家／线上</option>
         </select></label>
+        <label><span>版本（可选）</span><input type="text" data-field="ticket-version" data-event-index="${index}" value="${escapeHtml(ec.version || "")}" /></label>
         ${event.location_type === "cinema" ? `<label><span>影院</span><input type="text" data-field="ticket-cinema-name" data-event-index="${index}" value="${escapeHtml(ec.cinema_name || "")}" /></label>
         <label><span>影厅</span><input type="text" data-field="ticket-auditorium" data-event-index="${index}" value="${escapeHtml(ec.auditorium || "")}" /></label>
-        <label><span>制式</span><select data-field="ticket-format" data-event-index="${index}"><option value="">未填写</option>${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${ec.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}</select></label>
+        <label><span>放映规格</span><select data-field="ticket-format" data-event-index="${index}"><option value="">未填写</option>${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${normalizedSpec.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}</select></label>
+        <label><span>规格备注（可选）</span><input type="text" data-field="ticket-format-note" data-event-index="${index}" value="${escapeHtml(normalizedSpec.formatNote || "")}" /></label>
+        <label><span>3D</span><select data-field="ticket-is-3d" data-event-index="${index}"><option value="false" ${normalizedSpec.is3D ? "" : "selected"}>否</option><option value="true" ${normalizedSpec.is3D ? "selected" : ""}>是</option></select></label>
         <div class="price-fields ticket-price-fields">
           <label><span>票价合计</span><input type="number" min="0" step="0.01" inputmode="decimal" data-field="ticket-price-amount" data-event-index="${index}" value="${event.ticket_price?.amount ?? ""}" placeholder="未填写" /></label>
           <label><span>币种</span><select data-field="ticket-price-currency" data-event-index="${index}">
@@ -2196,7 +2217,16 @@ function ticketConfirmOverlay() {
   </div>`;
 }
 
-const CINEMA_FORMAT_OPTIONS = ["2D", "3D", "IMAX", "IMAXレーザー", "Dolby Cinema", "4DX", "MX4D", "ScreenX", "其他"];
+const CINEMA_FORMAT_OPTIONS = ["普通", "IMAX", "IMAX GT", "Dolby Cinema", "4D", "ScreenX", "其他"];
+
+function normalizedViewingFormat(context = {}) {
+  const normalized = normalizeCinemaFormat(context.format);
+  return {
+    format: normalized.format,
+    formatNote: context.format_note ?? normalized.formatNote,
+    is3D: typeof context.is_3d === "boolean" ? context.is_3d : normalized.is3D
+  };
+}
 
 /**
  * R2 Step 2B · 场景二选一（跳过分支）。初看／重看与观看地点完全正交——
@@ -2206,6 +2236,7 @@ function sceneChoiceOverlay() {
   const ctx = state.captureContext || {};
   const locationType = ctx.locationType || null;
   const eventTypes = ctx.eventTypes || [];
+  const normalizedSpec = normalizedViewingFormat({ format: ctx.format, format_note: ctx.formatNote, is_3d: ctx.is3D });
   // 实际观看日期与观看方式是观影信息本身，票务只负责预填，二者都必须由用户确认。
   const canConfirm = Boolean(ctx.viewedOn && locationType) && (ctx.lockedWork || Boolean(ctx.workTitle?.trim()));
   return `<div class="overlay" data-testid="scene-choice">
@@ -2219,13 +2250,16 @@ function sceneChoiceOverlay() {
         <button type="button" class="location-option ${locationType === "home" ? "selected" : ""}" data-action="select-location" data-value="home" data-testid="location-home">在家／线上</button>
         <button type="button" class="location-option ${locationType === "cinema" ? "selected" : ""}" data-action="select-location" data-value="cinema" data-testid="location-cinema">在影院</button>
       </div>
+      <label class="scene-viewed-on"><span>版本（可选）</span><input type="text" id="scene-version-input" value="${escapeHtml(ctx.version || "")}" /></label>
       ${locationType === "cinema" ? `<div class="cinema-fields">
         <label><span>影院名</span><input type="text" id="scene-cinema-name-input" data-testid="scene-cinema-name-input" value="${escapeHtml(ctx.cinemaName || "")}" placeholder="影院名称" /></label>
         <label><span>影厅</span><input type="text" id="scene-auditorium-input" data-testid="scene-auditorium-input" value="${escapeHtml(ctx.auditorium || "")}" placeholder="如：IMAX 厅、3号厅" /></label>
-        <label><span>制式</span><select id="scene-format-select" data-testid="scene-format-select">
+        <label><span>放映规格</span><select id="scene-format-select" data-testid="scene-format-select">
           <option value="">未填写</option>
-          ${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${ctx.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}
+          ${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${normalizedSpec.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}
         </select></label>
+        <label><span>规格备注（可选）</span><input type="text" id="scene-format-note-input" value="${escapeHtml(normalizedSpec.formatNote || "")}" /></label>
+        <label><span>3D</span><select id="scene-is-3d-select"><option value="false" ${normalizedSpec.is3D ? "" : "selected"}>否</option><option value="true" ${normalizedSpec.is3D ? "selected" : ""}>是</option></select></label>
         <div class="price-fields ticket-price-fields">
           <label><span>票价合计</span><input type="number" min="0" step="0.01" inputmode="decimal" id="scene-ticket-amount-input" value="${ctx.ticketAmount ?? ""}" placeholder="未填写" /></label>
           <label><span>币种</span><select id="scene-ticket-currency-select">
@@ -2288,6 +2322,7 @@ function todayInJapan() {
  */
 function historyEventEditorOverlay(event) {
   const ctx = event.viewing_context || {};
+  const normalizedSpec = normalizedViewingFormat(ctx);
   const isCinema = event.location_type === "cinema";
   const isHome = event.location_type === "home";
   const localDateTime = event.screening_at ? isoToLocalDateTimeInputValue(event.screening_at) : "";
@@ -2306,13 +2341,16 @@ function historyEventEditorOverlay(event) {
         </div>
         <label><span>实际观看日期</span><input type="date" name="viewedOn" value="${escapeHtml(viewedOn)}" required data-testid="history-viewed-on" /></label>
         <label><span>开场时间（可选）</span><input type="time" name="screeningTime" value="${escapeHtml(screeningTime)}" data-testid="history-screening-time" /></label>
+        <label><span>版本（可选）</span><input type="text" name="version" value="${escapeHtml(ctx.version || "")}" /></label>
         <div class="cinema-only-fields" data-testid="history-cinema-fields" ${isCinema ? "" : "hidden"}>
           <label><span>影院名</span><input type="text" name="cinemaName" value="${escapeHtml(ctx.cinema_name || "")}" placeholder="影院名称" /></label>
           <label><span>影厅</span><input type="text" name="auditorium" value="${escapeHtml(ctx.auditorium || "")}" placeholder="如：IMAX 厅、3号厅" /></label>
-          <label><span>制式</span><select name="format">
+          <label><span>放映规格</span><select name="format">
             <option value="">未填写</option>
-            ${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${ctx.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}
+            ${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${normalizedSpec.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}
           </select></label>
+          <label><span>规格备注（可选）</span><input type="text" name="formatNote" value="${escapeHtml(normalizedSpec.formatNote || "")}" /></label>
+          <label><span>3D</span><select name="is3D"><option value="false" ${normalizedSpec.is3D ? "" : "selected"}>否</option><option value="true" ${normalizedSpec.is3D ? "selected" : ""}>是</option></select></label>
           <fieldset class="event-tags-row" aria-label="活动类型">
             ${EVENT_TYPES.map(([key, label]) => `<label class="event-tag-chip ${(ctx.event_types || []).includes(key) ? "selected" : ""}"><input type="checkbox" name="eventTypes" value="${key}" ${(ctx.event_types || []).includes(key) ? "checked" : ""} />${escapeHtml(label)}</label>`).join("")}
           </fieldset>
@@ -3826,7 +3864,10 @@ async function saveHistoryEventForm(form) {
       cinema_name: locationType === "cinema" ? (String(data.get("cinemaName") || "").trim() || null) : null,
       auditorium: locationType === "cinema" ? (String(data.get("auditorium") || "").trim() || null) : null,
       city: locationType === "cinema" ? (target.viewing_context?.city || null) : null,
+      version: String(data.get("version") || "").trim() || null,
       format: locationType === "cinema" ? (String(data.get("format") || "").trim() || null) : null,
+      format_note: locationType === "cinema" ? (String(data.get("formatNote") || "").trim() || null) : null,
+      is_3d: locationType === "cinema" && data.get("is3D") === "true",
       seats: locationType === "cinema" ? (target.viewing_context?.seats || []) : [],
       seat_count: locationType === "cinema" ? (target.viewing_context?.seat_count || 0) : 0,
       ticket_provider: locationType === "cinema" ? (target.viewing_context?.ticket_provider || null) : null,
@@ -5110,7 +5151,10 @@ document.addEventListener("click", async (event) => {
       locationType: ctx.locationType,
       cinemaName: ctx.cinemaName,
       auditorium: ctx.auditorium,
+      version: ctx.version,
       format: ctx.format,
+      formatNote: ctx.formatNote,
+      is3D: ctx.is3D,
       ticketPrice: Number(ctx.ticketAmount) > 0 ? {
         amount: Number(ctx.ticketAmount),
         currency: ctx.ticketCurrency === "CNY" ? "CNY" : "JPY",
@@ -5606,6 +5650,10 @@ document.addEventListener("input", (event) => {
     if (state.captureContext) state.captureContext.cinemaName = event.target.value;
   } else if (event.target.id === "scene-auditorium-input") {
     if (state.captureContext) state.captureContext.auditorium = event.target.value;
+  } else if (event.target.id === "scene-version-input") {
+    if (state.captureContext) state.captureContext.version = event.target.value;
+  } else if (event.target.id === "scene-format-note-input") {
+    if (state.captureContext) state.captureContext.formatNote = event.target.value;
   } else if (event.target.id === "scene-ticket-amount-input") {
     if (state.captureContext) state.captureContext.ticketAmount = event.target.value === "" ? null : Number(event.target.value);
   } else if (event.target.id === "scene-ticket-count-input") {
@@ -5638,12 +5686,17 @@ document.addEventListener("input", (event) => {
     };
     const confirmButton = document.querySelector("[data-testid='confirm-ticket-capture']");
     if (confirmButton) confirmButton.disabled = selectedPendingEvents(ctx.pendingEvents).some((item) => !item.viewed_on || !item.location_type);
-  } else if (event.target.matches("[data-field='ticket-cinema-name'], [data-field='ticket-auditorium']")) {
+  } else if (event.target.matches("[data-field='ticket-cinema-name'], [data-field='ticket-auditorium'], [data-field='ticket-version'], [data-field='ticket-format-note']")) {
     const ctx = state.captureContext;
     const idx = Number(event.target.dataset.eventIndex);
     const pending = ctx?.pendingEvents?.[idx];
     if (!pending) return;
-    const key = event.target.dataset.field === "ticket-auditorium" ? "auditorium" : "cinema_name";
+    const key = {
+      "ticket-cinema-name": "cinema_name",
+      "ticket-auditorium": "auditorium",
+      "ticket-version": "version",
+      "ticket-format-note": "format_note"
+    }[event.target.dataset.field];
     ctx.pendingEvents[idx] = { ...pending, viewing_context: { ...pending.viewing_context, [key]: event.target.value || null } };
   } else if (event.target.matches("[data-field='ticket-price-amount'], [data-field='ticket-price-count']")) {
     const ctx = state.captureContext;
@@ -5711,7 +5764,9 @@ document.addEventListener("change", async (event) => {
     await updateRecord((record) => { record.recommendationNote = event.target.value.trim(); });
     announce("推荐说明已保存");
   } else if (event.target.id === "scene-format-select") {
-    if (state.captureContext) state.captureContext.format = event.target.value;
+    if (state.captureContext) state.captureContext.format = event.target.value || null;
+  } else if (event.target.id === "scene-is-3d-select") {
+    if (state.captureContext) state.captureContext.is3D = event.target.value === "true";
   } else if (event.target.id === "scene-ticket-currency-select") {
     if (state.captureContext) state.captureContext.ticketCurrency = event.target.value === "CNY" ? "CNY" : "JPY";
   } else if (event.target.matches("[data-field='ticket-location-type']")) {
@@ -5729,6 +5784,8 @@ document.addEventListener("change", async (event) => {
         cinema_name: null,
         auditorium: null,
         format: null,
+        format_note: null,
+        is_3d: false,
         seats: [],
         seat_count: 0,
         event_types: [],
@@ -5751,6 +5808,11 @@ document.addEventListener("change", async (event) => {
     const idx = Number(event.target.dataset.eventIndex);
     const pending = ctx?.pendingEvents?.[idx];
     if (pending) ctx.pendingEvents[idx] = { ...pending, viewing_context: { ...pending.viewing_context, format: event.target.value || null } };
+  } else if (event.target.matches("[data-field='ticket-is-3d']")) {
+    const ctx = state.captureContext;
+    const idx = Number(event.target.dataset.eventIndex);
+    const pending = ctx?.pendingEvents?.[idx];
+    if (pending) ctx.pendingEvents[idx] = { ...pending, viewing_context: { ...pending.viewing_context, is_3d: event.target.value === "true" } };
   } else if (event.target.name === "locationType" && event.target.closest("#history-event-form")) {
     // 直接切换字段可见性，不走 render()——避免清空用户已经在其他输入框里打的字。
     const cinemaFields = document.querySelector("[data-testid='history-cinema-fields']");

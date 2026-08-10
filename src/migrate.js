@@ -105,7 +105,20 @@ function emptyScreenedContent() {
 }
 
 function emptyViewingContext() {
-  return { cinema_name: null, city: null, format: null, seats: [], seat_count: 0, ticket_provider: null, event_types: [], bonus_note: null };
+  return {
+    cinema_name: null,
+    auditorium: null,
+    city: null,
+    version: null,
+    format: null,
+    format_note: null,
+    is_3d: false,
+    seats: [],
+    seat_count: 0,
+    ticket_provider: null,
+    event_types: [],
+    bonus_note: null
+  };
 }
 
 /**
