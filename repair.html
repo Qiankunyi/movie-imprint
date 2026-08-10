@@ -57,6 +57,10 @@
     font: inherit; width: 100%; padding: 9px 11px; border: 1px solid var(--line);
     border-radius: 8px; background: #fff; color: var(--ink);
   }
+  .row-inline { display: flex; gap: 8px; align-items: center; }
+  .row-inline input { flex: 1; }
+  .row-inline button { margin-top: 0; white-space: nowrap; }
+  code { background: #ece7dd; padding: 1px 5px; border-radius: 4px; }
   .rec-row { border-top: 1px dashed var(--line); padding: 9px 0; font-size: 13px; }
   .rec-row:first-of-type { border-top: 0; }
   .rec-row code { font-size: 11px; color: var(--ink-soft); word-break: break-all; }
@@ -102,10 +106,23 @@
 </section>
 
 <section id="s5" hidden>
-  <h2><span class="step-no">5</span>复原动画版资料并执行</h2>
-  <p class="note">先为动画版条目重新匹配 Bangumi，确认无误后再一次性写入。写入前会自动存一份回滚快照。</p>
-  <button id="btn-bgm">重新搜索 Bangumi</button>
+  <h2><span class="step-no">5</span>复原原条目资料并执行</h2>
+  <p class="note">
+    条目被改写时，<b>海报引用没有被一起覆盖</b>（applyCandidateToWork 默认不覆盖海报）。
+    所以 <code>poster.subject_id</code> 里往往还留着<b>被覆盖前</b>的原始 Bangumi 条目 ID——
+    下面已经按它预填。按 ID 直取比搜索可靠：搜同名会同时返回多个版本，很容易点错。
+  </p>
+  <div class="row-inline">
+    <input type="text" id="bgm-id" placeholder="Bangumi 条目 ID" />
+    <button id="btn-bgm-id">按 ID 取回</button>
+  </div>
+  <button id="btn-bgm" class="ghost">改用关键词搜索</button>
   <div id="out-bgm"></div>
+
+  <h3 style="font-size:14px;margin:18px 0 0">外部标识的去留</h3>
+  <p class="note">当前条目上的外部标识里，可能混着两部作品各自的。勾选<b>属于保留条目（原作品）</b>的那些，没勾的会被移除。</p>
+  <div id="out-refs"></div>
+
   <div id="out-plan"></div>
 </section>
 
@@ -196,6 +213,7 @@ const S = {
   hits: [],              // 命中的 works
   animeWork: null,       // 动画版条目（被改坏的那个）
   moveRecordIds: new Set(),
+  keepRefs: new Set(),   // 要保留在原条目上的 external_ref（"source:id"）
   bgmPick: null,
   backedUp: false
 };
@@ -347,9 +365,12 @@ $("btn-scan").onclick = () => {
   });
   S.animeWork = withRecords.sort((a, b) => cnt(b) - cnt(a))[0] || S.hits[0];
 
-  html += `<p class="note warn" style="margin-top:12px">推定被改写的条目是 <b>${esc(S.animeWork.title)}</b>（记录最多的那个）。若不对，请告诉我，先不要继续。</p>`;
+  html += `<p class="note warn" style="margin-top:12px">推定被改写的条目是 <b>${esc(S.animeWork.title)}</b>（记录最多的那个）。若不对，先不要继续。</p>`;
   $("out-scan").innerHTML = html;
   renderPick();
+  renderRefs();
+  // 海报没被覆盖，所以 poster.subject_id 往往是被改写前的原始条目 ID
+  $("bgm-id").value = S.animeWork.poster?.subject_id || "";
   show("s4"); show("s5");
 };
 
@@ -397,6 +418,68 @@ function renderPick() {
 }
 
 // ── 5. Bangumi 复原 + 执行 ────────────────────────────────────────
+
+/** 外部标识去留。默认全勾——只有用户明确取消的才移除，不替他猜。 */
+function renderRefs() {
+  const refs = S.animeWork?.external_refs || [];
+  S.keepRefs = new Set(refs.map((r) => `${r.source}:${r.id}`));
+  if (!refs.length) {
+    $("out-refs").innerHTML = `<p class="note">当前条目没有外部标识。</p>`;
+    return;
+  }
+  $("out-refs").innerHTML = refs.map((r) => {
+    const key = `${r.source}:${r.id}`;
+    const url = r.url || (r.source === "bangumi" ? `https://bangumi.tv/subject/${r.id}`
+      : r.source === "tmdb" ? `https://www.themoviedb.org/movie/${r.id}` : null);
+    return `<label class="pick sel" data-ref="${esc(key)}">
+      <input type="checkbox" value="${esc(key)}" checked />
+      <b>${esc(key)}</b>
+      <small>${url ? esc(url) : "无链接"}</small>
+    </label>`;
+  }).join("");
+  $("out-refs").querySelectorAll("input").forEach((box) => {
+    box.onchange = () => {
+      box.closest("label").classList.toggle("sel", box.checked);
+      if (box.checked) S.keepRefs.add(box.value); else S.keepRefs.delete(box.value);
+      renderPlan();
+    };
+  });
+}
+
+/** 按 ID 直取条目。比搜索可靠——同名不同版本靠标题分不出来。 */
+$("btn-bgm-id").onclick = async () => {
+  const id = Number($("bgm-id").value.trim());
+  if (!Number.isInteger(id) || id <= 0) {
+    $("out-bgm").innerHTML = `<p class="danger-text">请填一个正整数 ID。</p>`;
+    return;
+  }
+  $("btn-bgm-id").disabled = true;
+  $("out-bgm").innerHTML = `<p class="note">正在取回 #${id}…</p>`;
+  try {
+    const r = await fetch(`/api/bangumi/subject?id=${id}`, { headers: authHeaders() });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.message || `HTTP ${r.status}`);
+    S.bgmPick = {
+      subjectId: body.subjectId,
+      title: body.title,
+      originalTitle: body.originalTitle,
+      type: body.type || "unknown",
+      releaseDate: body.date || null,
+      summary: body.summary || null
+    };
+    const typeLabel = S.bgmPick.type === "anime" ? "动画" : S.bgmPick.type === "real" ? "真人" : "未知类型";
+    $("out-bgm").innerHTML = `<label class="pick sel">
+      <b>${esc(S.bgmPick.title)}</b>
+      <small>${esc(S.bgmPick.originalTitle || "")} · <b>${esc(typeLabel)}</b> · ${esc(S.bgmPick.releaseDate || "无日期")} · bangumi #${S.bgmPick.subjectId}</small>
+    </label>
+    <p class="note">确认这就是<b>要保留在原条目上</b>的那部作品，再往下走。</p>`;
+    renderPlan();
+  } catch (e) {
+    $("out-bgm").innerHTML = `<p class="danger-text">取回失败：${esc(e.message)}</p>`;
+  }
+  $("btn-bgm-id").disabled = false;
+};
+
 $("btn-bgm").onclick = async () => {
   $("btn-bgm").disabled = true;
   $("out-bgm").innerHTML = `<p class="note">正在搜索…</p>`;
@@ -426,6 +509,19 @@ $("btn-bgm").onclick = async () => {
   $("btn-bgm").disabled = false;
 };
 
+/**
+ * 保留条目最终的 external_refs：用户勾中保留的那些，再叠加本次确认的 Bangumi 条目。
+ * 同一个 source 以确认的条目为准（bangumi:104558 被换成 bangumi:305 就是这么发生的）。
+ */
+function plannedRefs() {
+  const kept = (S.animeWork?.external_refs || [])
+    .filter((r) => S.keepRefs?.has(`${r.source}:${r.id}`));
+  const b = S.bgmPick;
+  if (!b) return kept;
+  const rest = kept.filter((r) => r.source !== "bangumi");
+  return [...rest, { source: "bangumi", id: String(b.subjectId), url: `https://bangumi.tv/subject/${b.subjectId}` }];
+}
+
 function renderPlan() {
   const w = S.animeWork;
   if (!w) return;
@@ -439,11 +535,17 @@ function renderPlan() {
     lines.push(`   标题        ${w.title}  →  ${b.title}`);
     lines.push(`   类型        ${w.work_type}  →  ${b.type === "anime" ? "animation_film" : b.type === "real" ? "live_action_film" : w.work_type}`);
     lines.push(`   年份        ${w.release_year ?? "无"}  →  ${b.releaseDate ? b.releaseDate.slice(0, 4) : "不变"}`);
-    lines.push(`   external    ${(w.external_refs || []).map((r) => r.source + ":" + r.id).join(",") || "无"}  →  bangumi:${b.subjectId}（清掉其余源）`);
     lines.push(`   海报        → bangumi #${b.subjectId}`);
   } else {
-    lines.push(`   （未选 Bangumi 候选，资料保持原样，只做拆分）`);
+    lines.push(`   （未确认 Bangumi 条目，资料保持原样，只做拆分）`);
   }
+  const finalRefs = plannedRefs();
+  lines.push(`   external    ${(w.external_refs || []).map((r) => r.source + ":" + r.id).join(", ") || "无"}`);
+  lines.push(`               →  ${finalRefs.map((r) => r.source + ":" + r.id).join(", ") || "无"}`);
+  const dropped = (w.external_refs || [])
+    .filter((r) => !finalRefs.some((f) => f.source === r.source && String(f.id) === String(r.id)))
+    .map((r) => `${r.source}:${r.id}`);
+  if (dropped.length) lines.push(`               移除：${dropped.join(", ")}`);
   lines.push("");
   if (moving.length) {
     lines.push(`【新建】真人版条目 (${newWorkId})`);
@@ -482,8 +584,8 @@ async function execute(newWorkId) {
     const oldIds = new Set([w.id, ...(w.merged_from || [])]);
     const now = new Date().toISOString();
 
-    // 复原后的动画版条目
-    let keptWork = { ...w };
+    // 复原后的保留条目。即使没确认 Bangumi 条目，外部标识的勾选也要生效。
+    let keptWork = { ...w, external_refs: plannedRefs() };
     if (b) {
       keptWork = {
         ...w,
@@ -496,8 +598,9 @@ async function execute(newWorkId) {
           : (w.release_dates || { jp: null, cn: null, other: [], entries: [] }),
         summary: b.summary || null,
         tagline: null,
-        // 只保留 bangumi —— 被误写进来的 tmdb 真人版标识必须清掉
-        external_refs: [{ source: "bangumi", id: String(b.subjectId), url: `https://bangumi.tv/subject/${b.subjectId}` }],
+        // 按用户在第 5 节的勾选决定去留：属于另一部作品的标识才移除，
+        // 本来就属于这个条目的（比如动画版自己的 TMDB id）必须留下
+        external_refs: plannedRefs(),
         primary_source: "bangumi",
         poster: { source: "bangumi", subject_id: Number(b.subjectId) },
         identity_status: "matched",

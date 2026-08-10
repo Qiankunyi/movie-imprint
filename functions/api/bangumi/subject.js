@@ -41,6 +41,9 @@ export async function onRequest(context) {
       title: String(subject?.name_cn || subject?.name || "").trim(),
       originalTitle: String(subject?.name || "").trim() || null,
       date: subject?.date || null,
+      // 与 src/bangumi.js 的 SUBJECT_TYPES 同一套映射。按 id 直取条目时也要能分辨
+      // 动画/真人——「同名不同版本」（1989 动画版 vs 2014 真人版）只靠标题分不出来。
+      type: subject?.type === 2 ? "anime" : subject?.type === 6 ? "real" : "unknown",
       summary: typeof subject?.summary === "string" ? subject.summary.trim() : ""
     };
     cache.set(id, { data, savedAt: Date.now() });
