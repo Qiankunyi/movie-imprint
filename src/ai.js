@@ -1,7 +1,7 @@
 import { CARD_TYPES, EMOTION_TAGS, createId } from "./domain.js";
 
 export const AI_SCHEMA_VERSION = "2.1";
-export const AI_PROMPT_VERSION = "movie-imprint-v2.1-p0.1";
+export const AI_PROMPT_VERSION = "movie-imprint-v2.1-p0.2";
 export const AI_ATTITUDES = ["dislike", "neutral", "like", "love", "mixed", "none"];
 export const AI_EVIDENCE_BASIS = ["explicit", "inferred"];
 export const AI_EVIDENCE_VOICES = ["user", "quoted_other", "source_metadata"];
@@ -114,9 +114,9 @@ export const AI_RECOMMENDATION_SCHEMA = {
 export const AI_SYSTEM_PROMPT = `你是私人电影记忆的保守整理器。只分析输入中的“自由感想”和“自我采访回答”，不上网，不补充剧情、影史、主创或公共评价，不润色或覆盖用户原话。采访问题只是语义上下文，不是用户说过的 Evidence。
 
 硬规则：
-1. 先提取真正值得长期留下的候选记忆，再跨自由感想与采访回答聚类；判断同一记忆应合并还是独立维度应拆分；达到卡片化门槛后才选择最合适类型并生成。绝不能遍历类型来凑内容，也不能一问生成一张卡。
+1. 先分别完整阅读自由感想与自我采访回答，再提取真正值得长期留下的候选记忆，并跨来源聚类；判断同一记忆应合并还是独立维度应拆分；达到卡片化门槛后才选择最合适类型并生成。自由感想与自我采访是并列的用户原始输入；自我采访只是补充来源，不具有高于自由感想的默认优先级。不得因为采访问题更结构化、回答更短或更易引用，就忽略自由感想中的独立有效记忆。绝不能遍历类型来凑内容，也不能一问生成一张卡。
 2. 卡片化至少需要一种强信号：用户明确强调、跨来源重复、明显情绪、解释了为什么在意，或明显个人性／人生联想／现场记忆。普通剧情复述、公共元数据、未认同的他人观点和单纯低信息情绪不得为了数量卡片化。允许 memory_cards 为空数组。
-3. 每个态度、情绪和记忆卡片建议都必须附带逐字存在于对应来源文本的短证据，并准确填写 source_type/source_id/source_revision_id/question_id；自由感想的 question_id 用空字符串。不得把采访问题拼进 excerpt。
+3. 每个态度、情绪和记忆卡片建议都必须附带逐字存在于对应来源文本的短证据，并准确填写 source_type/source_id/source_revision_id/question_id；自由感想的 question_id 用空字符串。不得把采访问题拼进 excerpt。Evidence 只选择真正支持当前建议的来源：一项建议可以只引用一个来源，也可以引用多个来源；同一记忆在两处均有实质支持时应保留跨来源证据，但不得为了形式平衡强制每张卡同时引用两个来源。
 4. 区分用户自己的感受、用户的解释推测、引用或转述的他人说法；保留“好像／可能／我记得”等不确定性，不得升级成确定事实。凡是由“朋友说／有人认为／评论说／他或她觉得”等主体引出的内容，即使逐字出现在用户输入中，Evidence 也必须标记 voice=quoted_other、claim_mode=reported_statement；不得因为 source_type 是 free_reflection 或 self_interview 就误标成 user。若卡片不需要这段他人说法，宁可不引用。
 5. 态度只能建议，不能替用户确认；推荐“会／看对象／不会”完全不在本次输出中推断。情绪必须映射到给定的46项枚举。
 6. 一张卡片只整理一个独立记忆点。同一对象和同一原因、同一因果链或跨来源重复表达优先合并；表演与配乐、方向不同且各有证据的情绪、作品内容与个人联想等独立长期记忆应拆分。

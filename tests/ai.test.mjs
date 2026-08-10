@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateAiAnalysis, validateAiRecommendation } from "../src/ai.js";
+import { AI_SYSTEM_PROMPT, validateAiAnalysis, validateAiRecommendation } from "../src/ai.js";
 import { listAiProviders, requestAiAnalysis, requestAiRecommendation } from "../src/ai-providers.js";
 
 const rawText = "#测试电影\n我很喜欢雨中的车站，也被最后的告别感动。";
@@ -89,6 +89,91 @@ test("Gemini 适配器把结果转换为统一结构", async () => {
   assert.equal(request.options.headers["x-goog-api-key"], "secret");
   assert.equal(result.metadata.provider, "gemini");
   assert.equal(result.analysis.memory_cards.length, 1);
+});
+
+test("双源请求发送完整自由感想并记录输入与 Evidence 来源诊断", async () => {
+  const reflectionEnding = "自由感想末尾独有的蓝色自动贩卖机";
+  const reflectionText = `${"很长的自由感想。".repeat(530)}${reflectionEnding}`;
+  const dualSources = {
+    free_reflection: {
+      source_type: "free_reflection",
+      source_id: "record_dual",
+      source_revision_id: "record_dual_rawrev_3",
+      text: reflectionText
+    },
+    self_interview: {
+      interview_id: "interview_dual",
+      answers: [{
+        source_type: "self_interview",
+        source_id: "answer_dual_1",
+        source_revision_id: "answer_dual_1_rev_1",
+        question_id: "first_recall",
+        text: "采访只提到河堤晚风"
+      }]
+    }
+  };
+  const dualOutput = {
+    attitude: { suggested: "none", alternative: "none", evidence: [], confidence: 0.5 },
+    emotions: [],
+    memory_cards: [{
+      temporary_id: "memory_dual_1",
+      memory_cluster_id: "cluster_dual_1",
+      type: "场景",
+      title: "蓝色自动贩卖机",
+      content: "自由感想末尾的独立记忆被保留下来。",
+      why_it_matters: "",
+      related_emotion_tag_ids: [],
+      is_core_suggestion: false,
+      evidence: [{
+        source_type: "free_reflection",
+        source_id: "record_dual",
+        source_revision_id: "record_dual_rawrev_3",
+        question_id: "",
+        excerpt: reflectionEnding,
+        basis: "explicit",
+        voice: "user",
+        claim_mode: "observation",
+        explanation: "这是自由感想独有的具体场景",
+        confidence: 0.9
+      }],
+      confidence: 0.9
+    }],
+    warnings: []
+  };
+  let sentBody;
+  const fetchImpl = async (_url, options) => {
+    sentBody = JSON.parse(options.body);
+    return new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(dualOutput) }] } }]
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const result = await requestAiAnalysis({
+    provider: "gemini",
+    title: "双源测试电影",
+    sources: dualSources,
+    env: { GEMINI_API_KEY: "secret", GEMINI_MODEL: "gemini-test" },
+    fetchImpl
+  });
+  const sentInput = JSON.parse(sentBody.contents[0].parts[0].text);
+  assert.equal(sentInput.free_reflection.text, reflectionText);
+  assert.equal(sentInput.free_reflection.source_revision_id, "record_dual_rawrev_3");
+  assert.equal(sentInput.self_interview_answers[0].text, "采访只提到河堤晚风");
+  assert.deepEqual(result.metadata.source_character_counts, {
+    free_reflection: reflectionText.length,
+    self_interview: "采访只提到河堤晚风".length,
+    self_interview_answers: 1,
+    total: reflectionText.length + "采访只提到河堤晚风".length
+  });
+  assert.equal(result.metadata.evidence_source_counts.memory_cards.free_reflection, 1);
+  assert.equal(result.metadata.evidence_source_counts.memory_cards.self_interview, 0);
+  assert.equal(result.metadata.evidence_source_counts.cards_with_source.cross_source, 0);
+  assert.equal(result.metadata.model_response_characters, JSON.stringify(dualOutput).length);
+});
+
+test("双源 Prompt 明确来源并列但不机械要求每张卡双源", () => {
+  assert.match(AI_SYSTEM_PROMPT, /自我采访只是补充来源，不具有高于自由感想的默认优先级/);
+  assert.match(AI_SYSTEM_PROMPT, /不得因为采访问题更结构化.*忽略自由感想中的独立有效记忆/);
+  assert.match(AI_SYSTEM_PROMPT, /不得为了形式平衡强制每张卡同时引用两个来源/);
 });
 
 test("推荐条件只接受用户已选推荐值对应的字段", () => {

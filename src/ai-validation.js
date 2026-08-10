@@ -99,8 +99,29 @@ export function evaluateAiValidationCase(testCase, analysis) {
   for (const [index, rule] of (expectation.evidenceCoverage || []).entries()) {
     checks.push(check(
       `evidence_coverage_${index + 1}`,
-      evidence.some((item) => rule.triggers.some((trigger) => item.excerpt.includes(trigger))),
+      evidence.some((item) => (!rule.sourceType || item.source_type === rule.sourceType)
+        && rule.triggers.some((trigger) => item.excerpt.includes(trigger))),
       null
+    ));
+  }
+
+  if (Array.isArray(expectation.requiredEvidenceSources)) {
+    for (const sourceType of expectation.requiredEvidenceSources) {
+      checks.push(check(
+        `evidence_uses_${sourceType}`,
+        evidence.some((item) => item.source_type === sourceType),
+        evidence.filter((item) => item.source_type === sourceType).length
+      ));
+    }
+  }
+
+  if (Number.isInteger(expectation.minCrossSourceCards)) {
+    const crossSourceCards = cards.filter((card) => new Set((card.evidence || [])
+      .map((item) => item.source_type)).size > 1).length;
+    checks.push(check(
+      "cross_source_memory_clusters",
+      crossSourceCards >= expectation.minCrossSourceCards,
+      crossSourceCards
     ));
   }
 

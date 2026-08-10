@@ -57,6 +57,49 @@ function userPayload({ title, rawText, sources }) {
   });
 }
 
+function sourceCharacterCounts(sources) {
+  const freeReflection = typeof sources?.free_reflection?.text === "string"
+    ? sources.free_reflection.text.length
+    : 0;
+  const interviewAnswers = (sources?.self_interview?.answers || [])
+    .filter((answer) => typeof answer?.text === "string");
+  const selfInterview = interviewAnswers.reduce((sum, answer) => sum + answer.text.length, 0);
+  return {
+    free_reflection: freeReflection,
+    self_interview: selfInterview,
+    self_interview_answers: interviewAnswers.length,
+    total: freeReflection + selfInterview
+  };
+}
+
+function evidenceSourceCounts(analysis) {
+  const allEvidence = [
+    ...(analysis?.attitude?.evidence || []),
+    ...(analysis?.emotions || []).flatMap((emotion) => emotion.evidence || []),
+    ...(analysis?.memory_cards || []).flatMap((card) => card.evidence || [])
+  ];
+  const cardEvidence = (analysis?.memory_cards || []).flatMap((card) => card.evidence || []);
+  const count = (items, sourceType) => items.filter((item) => item.source_type === sourceType).length;
+  const cards = analysis?.memory_cards || [];
+  return {
+    all: {
+      free_reflection: count(allEvidence, "free_reflection"),
+      self_interview: count(allEvidence, "self_interview"),
+      total: allEvidence.length
+    },
+    memory_cards: {
+      free_reflection: count(cardEvidence, "free_reflection"),
+      self_interview: count(cardEvidence, "self_interview"),
+      total: cardEvidence.length
+    },
+    cards_with_source: {
+      free_reflection: cards.filter((card) => card.evidence?.some((item) => item.source_type === "free_reflection")).length,
+      self_interview: cards.filter((card) => card.evidence?.some((item) => item.source_type === "self_interview")).length,
+      cross_source: cards.filter((card) => new Set((card.evidence || []).map((item) => item.source_type)).size > 1).length
+    }
+  };
+}
+
 function contractOptions(options = {}) {
   return {
     systemPrompt: options.systemPrompt || AI_SYSTEM_PROMPT,
@@ -225,6 +268,7 @@ export async function requestAiAnalysis({ provider, title, rawText, sources, env
     },
     self_interview: { interview_id: null, answers: [] }
   };
+  const sourceCounts = sourceCharacterCounts(normalizedSources);
   const sourceTexts = [normalizedSources.free_reflection?.text, ...(normalizedSources.self_interview?.answers || []).map((answer) => answer?.text)]
     .filter((text) => typeof text === "string");
   const totalCharacters = sourceTexts.reduce((sum, text) => sum + text.length, 0);
@@ -249,7 +293,10 @@ export async function requestAiAnalysis({ provider, title, rawText, sources, env
       prompt_version: AI_PROMPT_VERSION,
       schema_version: analysis.schema_version,
       duration_ms: Date.now() - startedAt,
-      usage: result.usage
+      usage: result.usage,
+      source_character_counts: sourceCounts,
+      evidence_source_counts: evidenceSourceCounts(analysis),
+      model_response_characters: typeof result.text === "string" ? result.text.length : null
     }
   };
 }

@@ -132,5 +132,32 @@ export const syntheticAiValidationCases = [
         { triggers: ["下一次沉默之前先开口"] }
       ]
     }
+  },
+  {
+    id: "S10_free_reflection_independent_memories",
+    title: "合成电影：逆风的夏日",
+    rawText: `#逆风的夏日
+河堤上的晚风和不断响起的自行车铃，是我看完最先想起的声音。那段追逐没有对白，却让我重新感觉到少年时相信时间还很多的轻盈。
+
+便利店门口的自动贩卖机一直泛着蓝光。女主角独自站在那里，没有买任何东西，只把硬币握在手心。这个很小的动作让我想起自己每次想给家里打电话却又放下手机的犹豫。
+
+还有一个完全不同的片段：妹妹把拍坏的合照贴回墙上，歪掉的透明胶始终没有扶正。我当时突然很难过，因为修补并不等于事情恢复原样。这个细节比结局本身留得更久。`,
+    interviewAnswers: [
+      { questionId: "first_recall", text: "最先浮现的还是河堤晚风和自行车铃，那段追逐有一种少年感。" },
+      { questionId: "why_it_matters", text: "它让我想到小时候总觉得时间还很多，所以现在回想起来有一点怀念。" }
+    ],
+    expect: {
+      attitudes: ["like", "love", "mixed", null],
+      minCards: 3,
+      minEmotions: 1,
+      minDistinctCardEvidence: 3,
+      requiredEvidenceSources: ["free_reflection", "self_interview"],
+      minCrossSourceCards: 1,
+      evidenceCoverage: [
+        { sourceType: "free_reflection", triggers: ["自动贩卖机一直泛着蓝光", "硬币握在手心"] },
+        { sourceType: "free_reflection", triggers: ["拍坏的合照贴回墙上", "歪掉的透明胶"] },
+        { triggers: ["河堤上的晚风", "河堤晚风", "自行车铃"] }
+      ]
+    }
   }
 ];

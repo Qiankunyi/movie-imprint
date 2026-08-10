@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { CARD_TYPES, EMOTION_TAGS } from "../src/domain.js";
 import { validateAiAnalysis } from "../src/ai.js";
+import { analysisRequestSources, reviseRawText } from "../src/imprint-v2.js";
 
 const sources = {
   free_reflection: {
@@ -110,4 +111,20 @@ test("一次分析最多一个核心建议，也允许没有", () => {
   assert.throws(() => validateAiAnalysis(sources, output(cards)), /multiple_core_suggestions/);
   const none = [card(0), card(1)].map((item) => ({ ...item, is_core_suggestion: false }));
   assert.equal(validateAiAnalysis(sources, output(none)).memory_cards.some((item) => item.is_core), false);
+});
+
+test("AI 请求读取自由感想的当前修订版而不是历史版本", () => {
+  const record = {
+    id: "record_latest",
+    rawText: "旧版自由感想",
+    raw_revision_id: "record_latest_rawrev_1",
+    raw_revision_number: 1,
+    raw_revisions: [],
+    self_interview: { interview_id: "interview_latest", answers: [] }
+  };
+  reviseRawText(record, "新版自由感想里有独立记忆", "2026-08-10T00:00:00.000Z");
+  const requestSources = analysisRequestSources(record);
+  assert.equal(requestSources.free_reflection.text, "新版自由感想里有独立记忆");
+  assert.equal(requestSources.free_reflection.source_revision_id, record.raw_revision_id);
+  assert.equal(record.raw_revisions[0].raw_text, "旧版自由感想");
 });

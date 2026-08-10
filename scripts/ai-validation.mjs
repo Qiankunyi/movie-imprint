@@ -28,7 +28,15 @@ for (const testCase of validationCases) {
     outputTokens += response.metadata.usage.output_tokens || 0;
     durationMs += response.metadata.duration_ms || 0;
     const evaluation = evaluateAiValidationCase(testCase, response.analysis);
-    results.push({ ...evaluation, error: null });
+    results.push({
+      ...evaluation,
+      diagnostics: {
+        source_character_counts: response.metadata.source_character_counts,
+        evidence_source_counts: response.metadata.evidence_source_counts,
+        model_response_characters: response.metadata.model_response_characters
+      },
+      error: null
+    });
     console.log(`${testCase.id}: ${evaluation.passed ? "PASS" : "FAIL"}`);
   } catch (error) {
     results.push({

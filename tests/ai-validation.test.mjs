@@ -55,3 +55,46 @@ test("验证门要求编号感想保留为相互独立的记忆点", () => {
   assert.equal(result.checks.find((item) => item.code === "minimum_cards").passed, false);
   assert.equal(result.checks.find((item) => item.code === "independent_memory_points").passed, false);
 });
+
+test("双源回归门要求保留自由感想独有记忆并聚类重复内容", () => {
+  const testCase = {
+    id: "dual_gate",
+    rawText: "河堤晚风。自动贩卖机的蓝光。",
+    interviewAnswers: [{ questionId: "first_recall", text: "河堤晚风让我想到少年时。" }],
+    expect: {
+      attitudes: ["like"],
+      minCards: 2,
+      requiredEvidenceSources: ["free_reflection", "self_interview"],
+      minCrossSourceCards: 1,
+      evidenceCoverage: [{ sourceType: "free_reflection", triggers: ["自动贩卖机的蓝光"] }]
+    }
+  };
+  const complete = {
+    source_revision_ids: ["dual_gate_reflection_rev_1", "dual_gate_answer_1_rev_1"],
+    attitude: { suggested: "like", evidence: [] },
+    emotions: [],
+    memory_cards: [
+      { evidence: [
+        { source_type: "free_reflection", source_id: "dual_gate_reflection", source_revision_id: "dual_gate_reflection_rev_1", question_id: "", excerpt: "河堤晚风" },
+        { source_type: "self_interview", source_id: "dual_gate_answer_1", source_revision_id: "dual_gate_answer_1_rev_1", question_id: "first_recall", excerpt: "河堤晚风" }
+      ] },
+      { evidence: [
+        { source_type: "free_reflection", source_id: "dual_gate_reflection", source_revision_id: "dual_gate_reflection_rev_1", question_id: "", excerpt: "自动贩卖机的蓝光" }
+      ] }
+    ],
+    warnings: []
+  };
+  const passing = evaluateAiValidationCase(testCase, complete);
+  assert.equal(passing.passed, true);
+
+  const interviewOnly = structuredClone(complete);
+  interviewOnly.memory_cards = [
+    { evidence: [complete.memory_cards[0].evidence[1]] },
+    { evidence: [complete.memory_cards[0].evidence[1]] }
+  ];
+  const failing = evaluateAiValidationCase(testCase, interviewOnly);
+  assert.equal(failing.passed, false);
+  assert.equal(failing.checks.find((item) => item.code === "evidence_uses_free_reflection").passed, false);
+  assert.equal(failing.checks.find((item) => item.code === "cross_source_memory_clusters").passed, false);
+  assert.equal(failing.checks.find((item) => item.code === "evidence_coverage_1").passed, false);
+});
