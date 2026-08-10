@@ -132,7 +132,9 @@ import {
   applyCandidateToWork,
   assignViewingRelations,
   attitudeLabel,
+  candidateIdentityConflict,
   createId,
+  detachRecordsToWork,
   emptyRecommendationDetails,
   isRecommendationAllowed,
   mergeWorks,
@@ -148,7 +150,7 @@ import {
   createWorkFromCandidate,
   recommendationLabel,
   resolveWork
-} from "./domain.js?v=19";
+} from "./domain.js?v=20";
 import {
   MIME_TYPES,
   copyExportText,
@@ -266,6 +268,9 @@ const state = {
   currentWorkEvents: [],       // R4：作品页当前 work 的全部 ViewingEvent（含 merged_from 旧 id 下的）
   currentWorkPublications: [], // 当前作品关联的外部公开内容引用
   editingPublicationId: null,  // 正在新增（null）或编辑的外部发表
+  // 「这是同一部作品，还是另一部？」浮层的上下文。只在 confirmWorkMatch 判定出
+  // 身份冲突、且该 Work 下还挂着别的记录时才被填上，选择完立即清空。
+  workSplitPrompt: null,
   detailReturnView: "home",    // R4："home" | "work" —— 详情页从哪个视图进入，决定返回去哪
   returnScrollY: 0,            // 时间线离开时的滚动位置（R3 已有字段，R4 沿用同一套约定）
   shelfScrollY: 0,             // R4：作品书架离开时的滚动位置
@@ -1636,6 +1641,46 @@ function workMatchPanel(record) {
   </section>`;
 }
 
+/**
+ * 「这是同一部作品，还是另一部？」——在改写 Work 之前拦一道。
+ *
+ * 这个浮层存在的唯一理由，是上一版把两个语义完全不同的操作合并进了同一个按钮：
+ * 「修正这个作品条目的资料」和「我这条记录挂错作品了」。前者会波及同条目下的
+ * 全部记录，后者只该动一条。爆炸半径差这么多的两件事，必须让用户自己选。
+ */
+function workSplitOverlay() {
+  const prompt = state.workSplitPrompt;
+  if (!prompt) return "";
+  return `<div class="overlay" data-testid="work-split-sheet">
+    <button class="overlay-backdrop" type="button" data-action="cancel-work-split" aria-label="取消"></button>
+    <section class="bottom-sheet work-split-sheet" role="dialog" aria-modal="true" aria-labelledby="work-split-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">请确认</span><h2 id="work-split-title">这是同一部作品吗？</h2></div></div>
+      <p class="settings-note">
+        你选的候选是<b>《${escapeHtml(prompt.candidateTitle || "")}》</b>，
+        和当前条目<b>《${escapeHtml(prompt.workTitle || "")}》</b>${escapeHtml(prompt.reason || "")}。
+      </p>
+      <p class="settings-note danger-note">
+        当前条目下还挂着 <b>${prompt.affectedCount}</b> 条其他感想。
+        如果按「同一部作品」处理，这 ${prompt.affectedCount} 条的标题与类型会一起改变。
+      </p>
+      <div class="work-split-choices">
+        <button type="button" class="work-candidate" data-action="work-split-detach" data-testid="work-split-detach">
+          <b>这是另一部作品</b>
+          <span>只把<b>当前这一条</b>感想改挂过去，另外 ${prompt.affectedCount} 条和原条目<b>完全不动</b>。</span>
+          <small>推荐 · 同名重制版、真人版、续作都属于这种</small>
+        </button>
+        <button type="button" class="work-candidate" data-action="work-split-overwrite" data-testid="work-split-overwrite">
+          <b>是同一部作品，用候选资料覆盖</b>
+          <span>把当前条目本身改写成候选的资料，同条目下 ${prompt.affectedCount + 1} 条感想全部跟着变。</span>
+          <small>仅在原条目资料确实录错了的时候选这个</small>
+        </button>
+      </div>
+      <button type="button" class="work-match-secondary" data-action="cancel-work-split">先不改，返回</button>
+    </section>
+  </div>`;
+}
+
 function workMatchOverlay(record) {
   const work = currentWork(record);
   return `<div class="overlay" data-testid="work-match-sheet">
@@ -1643,7 +1688,7 @@ function workMatchOverlay(record) {
     <section class="bottom-sheet work-match-sheet" role="dialog" aria-modal="true" aria-labelledby="work-match-sheet-title">
       <div class="sheet-handle" aria-hidden="true"></div>
       <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work?.title || record.title || "")}》</span><h2 id="work-match-sheet-title">查找正式作品</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
-      <p class="settings-note">用于关联正式作品条目、海报和基础资料，不会改动你的观影信息与感想。</p>
+      <p class="settings-note">用于修正<b>这个作品条目</b>的资料、海报与外部标识。你的原文、记忆卡片与观影信息不会被改动；但条目资料是同条目下所有感想共用的，选到另一部电影时会先向你确认。</p>
       ${workMatchPanel(record)}
     </section>
   </div>`;
@@ -3000,6 +3045,8 @@ function render() {
       ? sidebarDrawer()
     : state.overlay === "attitude" && record
       ? attitudeOverlay(record)
+      : state.overlay === "work-split" && state.workSplitPrompt
+        ? workSplitOverlay()
       : state.overlay === "work-match" && record
         ? workMatchOverlay(record)
       : state.overlay === "analysis-draft" && record?.activeAnalysisDraft
@@ -3366,11 +3413,49 @@ async function requestWorkMatch(recordId, { force = false } = {}) {
   renderPreservingScroll();
 }
 
-async function confirmWorkMatch(candidateIndex) {
+/**
+ * 这个 Work 名下除了当前这条记录，还挂着别的记录吗？
+ *
+ * 用来判断「改写这个 Work」的爆炸半径。只有一条记录时，改写 Work 和改写这条记录的
+ * 归属没有区别，不必打扰用户；一旦还有别人，就必须先问清楚——否则就是线上那个
+ * bug 的现场：改一条感想的关联，把同条目下另外三条动画版感想全改成了真人版。
+ */
+function otherRecordsOnWork(work, exceptRecordId) {
+  const ids = new Set([work.id, ...(work.merged_from || [])]);
+  return state.records.filter(
+    (item) => ids.has(item.work_id || item.workId) && item.id !== exceptRecordId
+  );
+}
+
+async function confirmWorkMatch(candidateIndex, { force = false } = {}) {
   const record = currentRecord();
   const work = currentWork(record);
   const candidate = work?.match?.candidates?.[Number(candidateIndex)];
   if (!record || !work || !candidate) return;
+
+  // 拦截「其实是另一部作品」的情况。
+  //
+  // 这个入口的语义一直是「这个作品条目认错了，用候选的资料把它改对」——它会就地
+  // 改写 Work 的标题、类型、年份、external_refs，而 work.id 不变，于是挂在这个
+  // Work 下的**所有**记录、场次、书架条目全部跟着变。当这个 Work 底下还有别的
+  // 记录、而候选又明显是另一部电影时，用户想要的几乎肯定不是改写，
+  // 而是「把我这条记录挪到那部电影去」。先问清楚，不要替他猜。
+  if (!force) {
+    const { conflict, reason } = candidateIdentityConflict(work, candidate);
+    const others = otherRecordsOnWork(work, record.id);
+    if (conflict && others.length > 0) {
+      state.workSplitPrompt = {
+        candidateIndex: Number(candidateIndex),
+        reason,
+        affectedCount: others.length,
+        workTitle: work.title,
+        candidateTitle: candidate.title
+      };
+      state.overlay = "work-split";
+      render();
+      return;
+    }
+  }
 
   // R6：匹配 Bangumi 只是给这个 Work 增加一条 external_ref，**work.id 不再变更**。
   //
@@ -3459,8 +3544,76 @@ async function confirmWorkMatch(candidateIndex) {
   if (state.view === "work" && state.currentWorkId === finalWork.id) {
     loadWorkPageData(finalWork.id);
   }
+  // 走完覆盖分支后把拦截浮层的上下文清掉，否则下次打开匹配面板会残留上一次的提示。
+  if (state.workSplitPrompt) {
+    state.workSplitPrompt = null;
+    state.overlay = null;
+  }
   render();
   announce(`已确认作品：${finalWork.title}`);
+}
+
+/**
+ * 把当前这条记录从它现在挂着的 Work **拆到**候选代表的那部作品上。
+ *
+ * 与 confirmWorkMatch 的根本区别：**原来那个 Work 一个字段都不改**。
+ * 变的只有这条 record 的 work_id、它名下那场 ViewingEvent 的归属，以及两侧
+ * 各自重排后的初看/重看编号。
+ *
+ * 目标 Work 的取得沿用 resolveOrCreateWorkFromCandidate：候选带的 external id
+ * 已经存在就直接引用，不存在才新建——这样从别的入口搜到同一部片时不会再多出一条。
+ */
+async function detachRecordToCandidate(candidateIndex) {
+  const record = currentRecord();
+  const fromWork = currentWork(record);
+  const candidate = fromWork?.match?.candidates?.[Number(candidateIndex)];
+  if (!record || !fromWork || !candidate) return;
+
+  const toWork = await resolveOrCreateWorkFromCandidate(candidate);
+  if (!toWork || toWork.id === fromWork.id) {
+    // 候选解析回了同一个 Work（标题/别名撞上了）。这时拆分没有意义，也不能
+    // 悄悄退回改写——那正是要避免的行为。如实告诉用户，让他去作品页处理。
+    showToast("这个候选被识别成了同一部作品，无法拆分。请先在作品页修正标题或别名。");
+    state.overlay = null;
+    state.workSplitPrompt = null;
+    render();
+    return;
+  }
+
+  const relatedIds = new Set([fromWork.id, ...(fromWork.merged_from || []), toWork.id]);
+  const relatedRecords = state.records.filter((item) => relatedIds.has(item.work_id || item.workId));
+  const eventGroups = await Promise.all(
+    [...relatedIds].map((id) => db.getViewingEventsByWork(id).catch(() => []))
+  );
+  const relatedEvents = eventGroups.flat();
+
+  const { movedRecords, stayingEvents, movedEvents } = detachRecordsToWork({
+    fromWork,
+    toWork,
+    records: relatedRecords,
+    events: relatedEvents,
+    recordIds: [record.id]
+  });
+
+  for (const item of movedRecords) {
+    item.updatedAt = new Date().toISOString();
+    await db.put("records", item);
+    const index = state.records.findIndex((existing) => existing.id === item.id);
+    if (index >= 0) state.records[index] = item;
+  }
+  const allEvents = [...stayingEvents, ...movedEvents];
+  if (allEvents.length) await db.putViewingEvents(allEvents);
+
+  // fromWork 完全没有被写回——这是这条路径的红线。
+  state.viewingEvents = movedEvents.filter((event) => event.work_id === toWork.id);
+  state.currentWorkId = toWork.id;
+  state.overlay = null;
+  state.workSplitPrompt = null;
+
+  await indexHomeCardData();
+  render();
+  announce(`已把这条记录改挂到《${toWork.title}》，《${fromWork.title}》没有变动`);
+  showToast(`已改挂到《${toWork.title}》。原条目《${fromWork.title}》未受影响。`);
 }
 
 async function dismissWorkMatch() {
@@ -5473,6 +5626,14 @@ document.addEventListener("click", async (event) => {
     goHome();
   } else if (action === "confirm-work-match") {
     await confirmWorkMatch(trigger.dataset.index);
+  } else if (action === "work-split-detach") {
+    await detachRecordToCandidate(state.workSplitPrompt?.candidateIndex);
+  } else if (action === "work-split-overwrite") {
+    await confirmWorkMatch(state.workSplitPrompt?.candidateIndex, { force: true });
+  } else if (action === "cancel-work-split") {
+    state.workSplitPrompt = null;
+    state.overlay = "work-match";
+    render();
   } else if (action === "dismiss-work-match") {
     await dismissWorkMatch();
   } else if (action === "open-work-match") {

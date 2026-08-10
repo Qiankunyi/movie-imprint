@@ -401,6 +401,104 @@ export function applyCandidateToWork(work, candidate = {}, { overwritePoster = f
 }
 
 /**
+ * 把若干条记录从一个 Work **拆到**另一个 Work（`mergeWorks` 的反向操作）。
+ *
+ * 为什么必须有这个函数（线上 bug 复盘）：
+ * 用户新记了一条《魔女宅急便》真人版的感想，被自动挂到了 1989 动画版条目上。
+ * 他去详情页点「作品条目 · 点击修改」，选了 2014 真人版——结果**整个动画版条目
+ * 被就地改写成真人版**，挂在它下面的全部动画版感想跟着一起变了标题与类型。
+ *
+ * 根因是：R1～R6 期间，全项目**没有任何一条代码路径能把单条记录改挂到另一部作品**。
+ * `record.work_id` 只在三处被写：旧数据补链、新建记录、以及 confirmWorkMatch 合并
+ * 时的级联改指——最后那一条方向还是反的（把别人的记录**并进来**）。
+ * 于是「这条记录挂错作品了」这个需求，只能被迫借用「这个作品条目认错了」那个入口，
+ * 而后者的语义是改写 Work 本身。两个语义完全不同的操作共用了一个按钮。
+ *
+ * 这个函数只做一件事，并且**绝不触碰 fromWork**：
+ *   - 命中的 record.work_id / workId 改指 toWork
+ *   - 这些 record 名下的 ViewingEvent 一并改指（含反向 record_id 关联的）
+ *   - 两侧各自重跑 assignViewingRelations —— 搬走一场之后，留下的那批「初看/重看」
+ *     编号必须重算，否则原作品会凭空少一次、或者第 2 次变成永远没有第 1 次
+ *
+ * 纯函数，不落库、不修改入参。调用方负责把返回的三组数据写进去。
+ *
+ * @param {{ fromWork: object, toWork: object, records: object[], events: object[],
+ *           recordIds: string[] }} params
+ *   records / events 只需要传**两个 Work 名下**的那些，不必是全库。
+ * @returns {{ movedRecords: object[], stayingEvents: object[], movedEvents: object[] }}
+ *   movedRecords —— 已改指 toWork 的记录（原样保留其余字段）
+ *   stayingEvents / movedEvents —— 已各自重排 watch_index 的场次
+ */
+export function detachRecordsToWork({ fromWork, toWork, records = [], events = [], recordIds = [] } = {}) {
+  if (!fromWork || !toWork || fromWork.id === toWork.id) {
+    return { movedRecords: [], stayingEvents: [], movedEvents: [] };
+  }
+  const moving = new Set(recordIds);
+  const fromIds = new Set([fromWork.id, ...(fromWork.merged_from || [])]);
+  const belongsToFrom = (id) => fromIds.has(id);
+
+  const movedRecords = records
+    .filter((record) => belongsToFrom(record.work_id || record.workId) && moving.has(record.id))
+    .map((record) => ({ ...record, work_id: toWork.id, workId: toWork.id }));
+
+  // 场次跟着记录走。两个方向都要认：新记录靠 record.viewing_event_id 正向指，
+  // 旧记录只有 ViewingEvent.record_id 反向指（见 work-view.js 的同一处兼容）。
+  const movedEventIds = new Set(movedRecords.map((record) => record.viewing_event_id).filter(Boolean));
+  for (const event of events) {
+    if (belongsToFrom(event.work_id) && event.record_id && moving.has(event.record_id)) {
+      movedEventIds.add(event.id);
+    }
+  }
+
+  const fromEvents = events.filter((event) => belongsToFrom(event.work_id));
+  const toEvents = events.filter((event) => event.work_id === toWork.id);
+
+  const stayingEvents = assignViewingRelations(
+    fromEvents.filter((event) => !movedEventIds.has(event.id))
+  ).map((event) => ({ ...event, work_id: fromWork.id }));
+
+  const movedEvents = assignViewingRelations([
+    ...toEvents,
+    ...fromEvents.filter((event) => movedEventIds.has(event.id)).map((event) => ({ ...event, work_id: toWork.id }))
+  ]).map((event) => ({ ...event, work_id: toWork.id }));
+
+  return { movedRecords, stayingEvents, movedEvents };
+}
+
+/**
+ * 候选与当前 Work 是不是**根本不是同一部作品**。
+ *
+ * 用在 confirmWorkMatch 之前。判断依据只有两条硬信号，都不成立就当作「同一部作品的
+ * 资料补充」放行——这里宁可漏判也不能误判，误判会把正常的匹配流程堵死：
+ *   1. 上映年份都已知且相差 ≥ 2 年
+ *   2. 类型都已确定且一个是动画、一个是真人
+ *
+ * 标题相似度**故意不看**：同一部电影的中日英译名差得很远是常态，拿标题做判据
+ * 会大量误报。
+ *
+ * @param {object} work
+ * @param {object} candidate 统一搜索候选
+ * @returns {{ conflict: boolean, reason: string|null }}
+ */
+export function candidateIdentityConflict(work, candidate = {}) {
+  const workYear = Number(work?.release_year) || null;
+  const candYear = Number(candidate?.year) || null;
+  if (workYear && candYear && Math.abs(workYear - candYear) >= 2) {
+    return { conflict: true, reason: `上映年份不同（当前 ${workYear} / 候选 ${candYear}）` };
+  }
+
+  const known = (type) => type === "animation_film" || type === "live_action_film";
+  const workType = work?.work_type;
+  const candType = candidate?.workType;
+  if (known(workType) && known(candType) && workType !== candType) {
+    const label = (type) => (type === "animation_film" ? "动画" : "真人");
+    return { conflict: true, reason: `作品类型不同（当前${label(workType)} / 候选${label(candType)}）` };
+  }
+
+  return { conflict: false, reason: null };
+}
+
+/**
  * 合并重复 Work。优先保留已匹配 Bangumi 的一方；别名并集去重；
  * first_recorded_at 取最早；release_dates 各字段取非空值，冲突时以已匹配方为准。
  * @param {object} primary

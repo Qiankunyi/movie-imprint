@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>电影印记 · 数据修复</title>
+<style>
+  :root {
+    --ink: #12343b; --ink-soft: #4a6b70; --line: #d6e3e5;
+    --bg: #f4f1ea; --card: #fffdf8; --accent: #0d6e78;
+    --warn: #a8531b; --danger: #9c2f2f; --ok: #2f6d4a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px 14px 64px; background: var(--bg); color: var(--ink);
+    font: 15px/1.7 -apple-system, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 10px; }
+  .sub { color: var(--ink-soft); font-size: 13px; margin: 0 0 20px; }
+  section {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px; margin-bottom: 14px;
+  }
+  section[hidden] { display: none; }
+  .step-no {
+    display: inline-block; min-width: 22px; height: 22px; line-height: 22px; text-align: center;
+    background: var(--accent); color: #fff; border-radius: 11px; font-size: 12px;
+    margin-right: 7px; vertical-align: 1px;
+  }
+  button {
+    font: inherit; font-size: 15px; padding: 11px 16px; border-radius: 9px;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff;
+    cursor: pointer; margin: 6px 6px 0 0;
+  }
+  button.ghost { background: transparent; color: var(--accent); }
+  button.danger { background: var(--danger); border-color: var(--danger); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  pre {
+    background: #f0ece3; border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+    font-size: 12px; line-height: 1.55; overflow-x: auto; white-space: pre-wrap;
+    word-break: break-word; margin: 10px 0 0;
+  }
+  .note { font-size: 13px; color: var(--ink-soft); }
+  .warn { color: var(--warn); }
+  .danger-text { color: var(--danger); font-weight: 600; }
+  .ok { color: var(--ok); }
+  label.pick {
+    display: block; border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px;
+    margin: 8px 0; background: #fff; cursor: pointer;
+  }
+  label.pick.sel { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(13,110,120,.14); }
+  label.pick b { display: block; font-size: 14px; }
+  label.pick small { color: var(--ink-soft); font-size: 12px; }
+  label.pick input { margin-right: 8px; }
+  input[type=text] {
+    font: inherit; width: 100%; padding: 9px 11px; border: 1px solid var(--line);
+    border-radius: 8px; background: #fff; color: var(--ink);
+  }
+  .rec-row { border-top: 1px dashed var(--line); padding: 9px 0; font-size: 13px; }
+  .rec-row:first-of-type { border-top: 0; }
+  .rec-row code { font-size: 11px; color: var(--ink-soft); word-break: break-all; }
+  .tag {
+    display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 9px;
+    background: #e4eff0; color: var(--accent); margin-left: 6px;
+  }
+  .tag.move { background: #fbe6d5; color: var(--warn); }
+</style>
+</head>
+<body>
+
+<h1>电影印记 · 数据修复</h1>
+<p class="sub">用于修复「修改作品条目时，整条作品被就地改写、所有关联感想跟着变」造成的数据错乱。<br>
+按顺序走完 1 → 5。<b>第 2 步的备份不做完，后面的按钮不会解锁。</b></p>
+
+<section id="s1">
+  <h2><span class="step-no">1</span>存储位置检测</h2>
+  <p class="note">App 的 <code>db.js</code> 在云端调用失败时会静默降级到本地，所以数据有可能同时散落在两边。这里对两边分别点算，不做任何假设。</p>
+  <button id="btn-detect">开始检测</button>
+  <pre id="out-detect" hidden></pre>
+</section>
+
+<section id="s2" hidden>
+  <h2><span class="step-no">2</span>完整备份（必做）</h2>
+  <p class="note">把两边全部 store 原样导出成一个 JSON 文件。后面每一步写入前都会再存一份快照到本地，但这一份请你自己下载保存好。</p>
+  <button id="btn-backup">导出并下载备份</button>
+  <pre id="out-backup" hidden></pre>
+</section>
+
+<section id="s3" hidden>
+  <h2><span class="step-no">3</span>核对受影响的条目</h2>
+  <p class="note">下面列出关键词命中的全部作品条目，以及挂在它们下面的感想与观影场次。<b>请先确认这里显示的和你在 App 里看到的一致</b>，再往下走。</p>
+  <input type="text" id="kw" value="魔女宅急便" />
+  <button id="btn-scan">扫描</button>
+  <div id="out-scan"></div>
+</section>
+
+<section id="s4" hidden>
+  <h2><span class="step-no">4</span>选择要拆出去的感想</h2>
+  <p class="note">勾选<b>属于真人版</b>的感想。没有勾选的一律留在原动画版条目上，不会被碰。</p>
+  <div id="out-pick"></div>
+</section>
+
+<section id="s5" hidden>
+  <h2><span class="step-no">5</span>复原动画版资料并执行</h2>
+  <p class="note">先为动画版条目重新匹配 Bangumi，确认无误后再一次性写入。写入前会自动存一份回滚快照。</p>
+  <button id="btn-bgm">重新搜索 Bangumi</button>
+  <div id="out-bgm"></div>
+  <div id="out-plan"></div>
+</section>
+
+<section id="s6" hidden>
+  <h2>回滚</h2>
+  <p class="note">如果执行后结果不对，可以用这里回滚到执行前那一刻的快照。</p>
+  <button id="btn-rollback" class="ghost">回滚到执行前</button>
+  <pre id="out-rollback" hidden></pre>
+</section>
+
+<script type="module">
+// 初看/重看推定直接复用 App 自己的实现，绝不在这里抄一份 —— 抄的那份一旦与
+// domain.js 分叉，修复结果就会和 App 重新计算出来的不一致。
+import { assignViewingRelations } from "./src/domain.js";
+
+const STORES = ["drafts", "records", "works", "meta", "viewingEvents", "series", "collections", "externalPublications"];
+const DB_NAME = "movie-imprint-local";
+const DB_VERSION = 5;
+const PW_KEY = "mi_access_password";
+const SNAPSHOT_KEY = "mi_repair_snapshot";
+
+const $ = (id) => document.getElementById(id);
+const show = (id) => { $(id).hidden = false; };
+const put = (id, text, cls) => {
+  const el = $(id); el.hidden = false; el.textContent = text;
+  if (cls) el.className = cls;
+};
+
+// ── 本地 IndexedDB ────────────────────────────────────────────────
+let dbp;
+function openDB() {
+  if (!dbp) dbp = new Promise((res, rej) => {
+    const r = indexedDB.open(DB_NAME, DB_VERSION);
+    r.onupgradeneeded = () => {
+      const d = r.result;
+      for (const s of STORES) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: "id" });
+    };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  return dbp;
+}
+async function idbAll(store) {
+  const d = await openDB();
+  return new Promise((res, rej) => {
+    const rq = d.transaction(store, "readonly").objectStore(store).getAll();
+    rq.onsuccess = () => res(rq.result || []);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+async function idbPut(store, value) {
+  const d = await openDB();
+  return new Promise((res, rej) => {
+    const tx = d.transaction(store, "readwrite");
+    tx.objectStore(store).put(value);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+    tx.onabort = () => rej(tx.error);
+  });
+}
+
+// ── 云端 D1 ───────────────────────────────────────────────────────
+function authHeaders() {
+  const pw = localStorage.getItem(PW_KEY) || "";
+  return pw ? { authorization: `Bearer ${pw}` } : {};
+}
+async function cloudAll(store) {
+  const r = await fetch(`/api/sync/${store}`, { headers: authHeaders() });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+async function cloudPut(store, value) {
+  const r = await fetch(`/api/sync/${store}/${encodeURIComponent(value.id)}`, {
+    method: "PUT",
+    headers: { ...authHeaders(), "content-type": "application/json" },
+    body: JSON.stringify(value)
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+}
+
+// ── 状态 ──────────────────────────────────────────────────────────
+const S = {
+  cloudLive: false,      // 云端可读写
+  localLive: false,      // 本地有数据
+  targets: [],           // 要写入的目标："cloud" / "local"
+  data: {},              // target -> { store -> items[] }
+  primary: null,         // 以哪一侧为准做展示
+  hits: [],              // 命中的 works
+  animeWork: null,       // 动画版条目（被改坏的那个）
+  moveRecordIds: new Set(),
+  bgmPick: null,
+  backedUp: false
+};
+
+// ── 1. 检测 ───────────────────────────────────────────────────────
+$("btn-detect").onclick = async () => {
+  $("btn-detect").disabled = true;
+  const lines = [];
+  const pw = localStorage.getItem(PW_KEY);
+  lines.push(`App 的判断依据：localStorage["${PW_KEY}"] ${pw ? "存在 → 云端模式" : "不存在 → 本地模式"}`);
+  lines.push("");
+
+  // 云端
+  try {
+    const st = await fetch("/api/sync/status", { headers: authHeaders() });
+    if (st.status === 401) throw new Error("401 需要访问密码，但 localStorage 里没有或不正确");
+    const body = await st.json().catch(() => ({}));
+    if (!st.ok || body.ok !== true) throw new Error(body.error || `status ${st.status}`);
+    const counts = {};
+    S.data.cloud = {};
+    for (const s of STORES) {
+      const items = await cloudAll(s).catch(() => null);
+      if (items === null) { counts[s] = "读取失败"; S.data.cloud[s] = []; }
+      else { counts[s] = items.length; S.data.cloud[s] = items; }
+    }
+    S.cloudLive = true;
+    lines.push("【云端 D1】可读写 ✓");
+    for (const s of STORES) lines.push(`    ${s.padEnd(22)} ${counts[s]}`);
+  } catch (e) {
+    lines.push(`【云端 D1】不可用：${e.message}`);
+    S.data.cloud = null;
+  }
+  lines.push("");
+
+  // 本地
+  try {
+    S.data.local = {};
+    let total = 0;
+    for (const s of STORES) {
+      const items = await idbAll(s).catch(() => []);
+      S.data.local[s] = items;
+      total += items.length;
+    }
+    S.localLive = total > 0;
+    lines.push(S.localLive ? "【本地 IndexedDB】有数据 ✓" : "【本地 IndexedDB】空");
+    for (const s of STORES) lines.push(`    ${s.padEnd(22)} ${S.data.local[s].length}`);
+  } catch (e) {
+    lines.push(`【本地 IndexedDB】读取失败：${e.message}`);
+    S.data.local = null;
+  }
+  lines.push("");
+
+  const cw = S.data.cloud?.works?.length || 0;
+  const lw = S.data.local?.works?.length || 0;
+  S.targets = [];
+  if (S.cloudLive && cw > 0) S.targets.push("cloud");
+  if (S.localLive && lw > 0) S.targets.push("local");
+
+  if (S.targets.length === 0) {
+    lines.push("⚠ 两边都没读到作品条目。请确认你是在平时使用 App 的同一个浏览器/同一个域名下打开这个页面的。");
+  } else if (S.targets.length === 2) {
+    lines.push(`⚠ 两边都有数据（云端 ${cw} 个作品 / 本地 ${lw} 个作品）。`);
+    lines.push("  这通常意味着某次云端写入失败后降级到了本地。修复会对两边都执行，保持一致。");
+    S.primary = cw >= lw ? "cloud" : "local";
+  } else {
+    S.primary = S.targets[0];
+    lines.push(`→ 修复将写入：${S.primary === "cloud" ? "云端 D1" : "本地 IndexedDB"}`);
+  }
+  put("out-detect", lines.join("\n"));
+  if (S.targets.length) show("s2");
+  $("btn-detect").disabled = false;
+};
+
+// ── 2. 备份 ───────────────────────────────────────────────────────
+$("btn-backup").onclick = async () => {
+  const payload = {
+    exported_at: new Date().toISOString(),
+    tool: "repair.html",
+    cloud: S.data.cloud,
+    local: S.data.local
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `movie-imprint-backup-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  S.backedUp = true;
+  put("out-backup", "备份已生成并触发下载。请到「下载」里确认文件确实存在、能打开，再继续。", "ok");
+  show("s3");
+};
+
+// ── 3. 扫描 ───────────────────────────────────────────────────────
+const norm = (s) => String(s || "").replace(/[\s　]/g, "").toLowerCase();
+
+$("btn-scan").onclick = () => {
+  const kw = norm($("kw").value);
+  if (!kw) return;
+  const src = S.data[S.primary];
+  const works = src.works || [];
+  const records = src.records || [];
+  const events = src.viewingEvents || [];
+
+  S.hits = works.filter((w) => {
+    const names = [w.title, w.original_title, ...(w.aliases || [])].filter(Boolean);
+    return names.some((n) => norm(n).includes(kw) || kw.includes(norm(n)));
+  });
+
+  if (!S.hits.length) {
+    $("out-scan").innerHTML = `<p class="danger-text">没有命中任何条目。换个关键词试试，比如「魔女」。</p>`;
+    return;
+  }
+
+  let html = "";
+  for (const w of S.hits) {
+    const ids = new Set([w.id, ...(w.merged_from || [])]);
+    const rs = records.filter((r) => ids.has(r.work_id || r.workId));
+    const es = events.filter((e) => ids.has(e.work_id));
+    const refs = (w.external_refs || []).map((r) => `${r.source}:${r.id}`).join(", ") || "无";
+    html += `<section style="margin:12px 0 0;background:#fff">
+      <b>${esc(w.title || "(无标题)")}</b>
+      <span class="tag">${esc(w.work_type || "unspecified")}</span>
+      <span class="tag">${w.release_year || "无年份"}</span>
+      <div class="note" style="margin:6px 0">
+        外部标识：${esc(refs)}<br>
+        海报来源：${esc(w.poster?.source || "无")}${w.poster?.subject_id ? " #" + w.poster.subject_id : ""}${w.poster?.path ? " " + esc(w.poster.path) : ""}<br>
+        别名：${esc((w.aliases || []).join(" / ") || "无")}<br>
+        <code>${esc(w.id)}</code>
+      </div>
+      <div class="note"><b>感想 ${rs.length} 条 · 观影场次 ${es.length} 场</b></div>
+      ${rs.map((r) => {
+        const ev = es.find((e) => e.id === r.viewing_event_id) || es.find((e) => e.record_id === r.id);
+        return `<div class="rec-row">
+          ${esc(dateOf(ev, r))} · ${esc(r.record_kind || "viewing")}
+          ${ev ? `<span class="tag">${esc(ev.viewing_relation || "?")} 第${ev.watch_index ?? "?"}次</span>` : `<span class="tag">无场次</span>`}
+          <br><span class="note">${esc((r.rawText || "").slice(0, 44) || "(无原文)")}…</span>
+          <br><code>${esc(r.id)}</code>
+        </div>`;
+      }).join("")}
+    </section>`;
+  }
+
+  // 猜测被改坏的那个：有记录、且海报源与外部标识对不上（典型指纹）
+  const src2 = S.data[S.primary];
+  const withRecords = S.hits.filter((w) => {
+    const ids = new Set([w.id, ...(w.merged_from || [])]);
+    return (src2.records || []).some((r) => ids.has(r.work_id || r.workId));
+  });
+  S.animeWork = withRecords.sort((a, b) => cnt(b) - cnt(a))[0] || S.hits[0];
+
+  html += `<p class="note warn" style="margin-top:12px">推定被改写的条目是 <b>${esc(S.animeWork.title)}</b>（记录最多的那个）。若不对，请告诉我，先不要继续。</p>`;
+  $("out-scan").innerHTML = html;
+  renderPick();
+  show("s4"); show("s5");
+};
+
+function cnt(w) {
+  const ids = new Set([w.id, ...(w.merged_from || [])]);
+  return (S.data[S.primary].records || []).filter((r) => ids.has(r.work_id || r.workId)).length;
+}
+
+function dateOf(ev, r) {
+  const raw = ev?.screening_at || (ev?.viewed_on ? ev.viewed_on + "T12:00:00+09:00" : null) || r?.createdAt;
+  if (!raw) return "无日期";
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? "无日期"
+    : new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo" }).format(d).replace(/-/g, "/");
+}
+function esc(v) {
+  return String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// ── 4. 勾选要搬走的记录 ────────────────────────────────────────────
+function renderPick() {
+  const w = S.animeWork;
+  const src = S.data[S.primary];
+  const ids = new Set([w.id, ...(w.merged_from || [])]);
+  const rs = (src.records || []).filter((r) => ids.has(r.work_id || r.workId));
+  const es = (src.viewingEvents || []).filter((e) => ids.has(e.work_id));
+
+  $("out-pick").innerHTML = rs.map((r) => {
+    const ev = es.find((e) => e.id === r.viewing_event_id) || es.find((e) => e.record_id === r.id);
+    return `<label class="pick" data-rid="${esc(r.id)}">
+      <input type="checkbox" value="${esc(r.id)}" />
+      <b>${esc(dateOf(ev, r))}${ev ? "" : "（无观影场次）"}</b>
+      <small>${esc((r.rawText || "").slice(0, 60) || "(无原文)")}</small>
+      <small><code>${esc(r.id)}</code></small>
+    </label>`;
+  }).join("") || `<p class="danger-text">这个条目下没有感想记录。</p>`;
+
+  $("out-pick").querySelectorAll("input").forEach((box) => {
+    box.onchange = () => {
+      box.closest("label").classList.toggle("sel", box.checked);
+      if (box.checked) S.moveRecordIds.add(box.value); else S.moveRecordIds.delete(box.value);
+      renderPlan();
+    };
+  });
+}
+
+// ── 5. Bangumi 复原 + 执行 ────────────────────────────────────────
+$("btn-bgm").onclick = async () => {
+  $("btn-bgm").disabled = true;
+  $("out-bgm").innerHTML = `<p class="note">正在搜索…</p>`;
+  try {
+    const q = $("kw").value.trim();
+    const r = await fetch(`/api/bangumi/search?q=${encodeURIComponent(q)}`, { headers: authHeaders() });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.message || `HTTP ${r.status}`);
+    const list = body.candidates || [];
+    if (!list.length) throw new Error("没有候选");
+    $("out-bgm").innerHTML = list.map((c, i) => `<label class="pick" data-i="${i}">
+      <input type="radio" name="bgm" value="${i}" />
+      <b>${esc(c.title)}</b>
+      <small>${esc(c.originalTitle || "")} · ${esc(c.type)} · ${esc(c.releaseDate || "无日期")} · bangumi #${c.subjectId}</small>
+    </label>`).join("") + `<p class="note">选中 <b>1989 年的动画版</b>（type 应为 anime）。</p>`;
+    $("out-bgm").querySelectorAll("input").forEach((box) => {
+      box.onchange = () => {
+        $("out-bgm").querySelectorAll("label").forEach((l) => l.classList.remove("sel"));
+        box.closest("label").classList.add("sel");
+        S.bgmPick = list[Number(box.value)];
+        renderPlan();
+      };
+    });
+  } catch (e) {
+    $("out-bgm").innerHTML = `<p class="danger-text">搜索失败：${esc(e.message)}。可以跳过这步，只做拆分。</p>`;
+  }
+  $("btn-bgm").disabled = false;
+};
+
+function renderPlan() {
+  const w = S.animeWork;
+  if (!w) return;
+  const moving = [...S.moveRecordIds];
+  const b = S.bgmPick;
+  const newWorkId = `work_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+  const lines = [];
+  lines.push(`【保留】条目 ${w.title} (${w.id})`);
+  if (b) {
+    lines.push(`   标题        ${w.title}  →  ${b.title}`);
+    lines.push(`   类型        ${w.work_type}  →  ${b.type === "anime" ? "animation_film" : b.type === "real" ? "live_action_film" : w.work_type}`);
+    lines.push(`   年份        ${w.release_year ?? "无"}  →  ${b.releaseDate ? b.releaseDate.slice(0, 4) : "不变"}`);
+    lines.push(`   external    ${(w.external_refs || []).map((r) => r.source + ":" + r.id).join(",") || "无"}  →  bangumi:${b.subjectId}（清掉其余源）`);
+    lines.push(`   海报        → bangumi #${b.subjectId}`);
+  } else {
+    lines.push(`   （未选 Bangumi 候选，资料保持原样，只做拆分）`);
+  }
+  lines.push("");
+  if (moving.length) {
+    lines.push(`【新建】真人版条目 (${newWorkId})`);
+    lines.push(`   将迁入 ${moving.length} 条感想及其观影场次`);
+    lines.push(`   标题、类型、年份留空 → 之后在 App 里点「查找作品」匹配 2014 真人版`);
+    moving.forEach((id) => lines.push(`     · ${id}`));
+  } else {
+    lines.push(`【新建】无 —— 你还没有勾选任何要拆出去的感想`);
+  }
+  lines.push("");
+  lines.push(`两侧的 watch_index / 初看重看 都会重新推定。`);
+  lines.push(`写入目标：${S.targets.map((t) => t === "cloud" ? "云端 D1" : "本地 IndexedDB").join(" + ")}`);
+
+  $("out-plan").innerHTML = `<pre>${esc(lines.join("\n"))}</pre>
+    <button id="btn-exec" class="danger">确认无误，执行修复</button>
+    <p class="note">执行前会把当前状态存成回滚快照。</p>`;
+  $("btn-exec").onclick = () => execute(newWorkId);
+}
+
+async function execute(newWorkId) {
+  const btn = $("btn-exec");
+  btn.disabled = true;
+  btn.textContent = "执行中…";
+
+  try {
+    // 回滚快照
+    try {
+      localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({
+        at: new Date().toISOString(), cloud: S.data.cloud, local: S.data.local
+      }));
+    } catch (_) { /* 快照太大时不阻断，已有下载备份 */ }
+
+    const w = S.animeWork;
+    const b = S.bgmPick;
+    const moving = new Set(S.moveRecordIds);
+    const oldIds = new Set([w.id, ...(w.merged_from || [])]);
+    const now = new Date().toISOString();
+
+    // 复原后的动画版条目
+    let keptWork = { ...w };
+    if (b) {
+      keptWork = {
+        ...w,
+        title: b.title,
+        original_title: b.originalTitle || w.original_title || null,
+        work_type: b.type === "anime" ? "animation_film" : b.type === "real" ? "live_action_film" : (w.work_type || "unspecified"),
+        release_year: b.releaseDate ? Number(b.releaseDate.slice(0, 4)) : w.release_year ?? null,
+        release_dates: b.releaseDate
+          ? { jp: null, cn: null, other: [], entries: [{ region: "unknown", date: b.releaseDate, source: "bangumi" }] }
+          : (w.release_dates || { jp: null, cn: null, other: [], entries: [] }),
+        summary: b.summary || null,
+        tagline: null,
+        // 只保留 bangumi —— 被误写进来的 tmdb 真人版标识必须清掉
+        external_refs: [{ source: "bangumi", id: String(b.subjectId), url: `https://bangumi.tv/subject/${b.subjectId}` }],
+        primary_source: "bangumi",
+        poster: { source: "bangumi", subject_id: Number(b.subjectId) },
+        identity_status: "matched",
+        aliases: [...new Set([b.title, b.originalTitle].filter(Boolean))],
+        match: { status: "confirmed", query: b.title, candidates: [], message: null, confirmedSubjectId: Number(b.subjectId) }
+      };
+    }
+
+    // 新的真人版条目（干净的本地条目，之后在 App 里匹配）
+    const newWork = moving.size ? {
+      id: newWorkId,
+      title: $("kw").value.trim() + " 真人版",
+      original_title: null,
+      work_type: "unspecified",
+      aliases: [$("kw").value.trim() + " 真人版"],
+      release_year: null,
+      release_dates: { jp: null, cn: null, other: [], entries: [] },
+      external_refs: [],
+      primary_source: null,
+      poster: null,
+      stills: [],
+      runtime_minutes: null,
+      genres: [],
+      related_refs: [],
+      tagline: null,
+      identity_status: "local_only",
+      merged_from: [],
+      first_recorded_at: now,
+      match: { status: "idle", query: null, candidates: [], message: null }
+    } : null;
+
+    /**
+     * 按目标各自计算要写的内容。
+     *
+     * 不能只算一次然后往两边都写：云端和本地的记录集合可能并不相同（cloudOp 在
+     * 云端失败时会静默降级到本地，两边因此会分叉）。拿云端算出来的结果去覆盖本地，
+     * 等于用一边的状态抹掉另一边——那是在修 bug 的过程中制造新的数据丢失。
+     * 所以每个目标都只依据它自己那份数据来算。
+     */
+    function planFor(target) {
+      const src = S.data[target];
+      if (!src) return null;
+      const allRecords = src.records || [];
+      const allEvents = src.viewingEvents || [];
+      // 这一侧根本没有这个 work，就不要凭空写进去
+      if (!(src.works || []).some((item) => item.id === w.id)) return null;
+
+      const writes = { works: [keptWork], records: [], viewingEvents: [] };
+      if (newWork) writes.works.push(newWork);
+
+      const movedEventIds = new Set();
+      for (const r of allRecords) {
+        if (!oldIds.has(r.work_id || r.workId)) continue;
+        if (!moving.has(r.id)) continue;
+        writes.records.push({ ...r, work_id: newWorkId, workId: newWorkId, updatedAt: now });
+        if (r.viewing_event_id) movedEventIds.add(r.viewing_event_id);
+      }
+      // 场次两个方向都认：新记录靠 record.viewing_event_id 正向指，
+      // 旧记录只有 ViewingEvent.record_id 反向指
+      for (const e of allEvents) {
+        if (!oldIds.has(e.work_id)) continue;
+        if (movedEventIds.has(e.id) || (e.record_id && moving.has(e.record_id))) movedEventIds.add(e.id);
+      }
+
+      const stayEvents = allEvents.filter((e) => oldIds.has(e.work_id) && !movedEventIds.has(e.id));
+      const goEvents = allEvents.filter((e) => movedEventIds.has(e.id)).map((e) => ({ ...e, work_id: newWorkId }));
+
+      writes.viewingEvents.push(
+        ...assignViewingRelations(stayEvents).map((e) => ({ ...e, work_id: keptWork.id })),
+        ...assignViewingRelations(goEvents).map((e) => ({ ...e, work_id: newWorkId }))
+      );
+      return { writes, stayEvents, goEvents, allRecords };
+    }
+
+    // 落库
+    const report = [];
+    let summary = null;
+    for (const target of S.targets) {
+      const plan = planFor(target);
+      if (!plan) {
+        report.push(`${target === "cloud" ? "云端 D1" : "本地 IndexedDB"}：跳过（这一侧没有这个作品条目）`);
+        continue;
+      }
+      if (target === S.primary) summary = plan;
+      let n = 0;
+      for (const store of ["works", "records", "viewingEvents"]) {
+        for (const item of plan.writes[store]) {
+          if (target === "cloud") await cloudPut(store, item);
+          else await idbPut(store, item);
+          n++;
+        }
+      }
+      report.push(`${target === "cloud" ? "云端 D1" : "本地 IndexedDB"}：写入 ${n} 条`);
+    }
+    const stayEvents = summary?.stayEvents || [];
+    const goEvents = summary?.goEvents || [];
+    const allRecords = summary?.allRecords || [];
+
+    $("out-plan").innerHTML = `<pre class="ok">修复完成。
+
+${esc(report.join("\n"))}
+
+保留条目：${esc(keptWork.title)}（感想 ${allRecords.filter((r) => oldIds.has(r.work_id || r.workId) && !moving.has(r.id)).length} 条 · 场次 ${stayEvents.length} 场）
+新建条目：${newWork ? esc(newWork.title) + `（感想 ${moving.size} 条 · 场次 ${goEvents.length} 场）` : "无"}
+
+接下来：
+1. 回到 App，强制刷新一次（下拉刷新或关掉重开）
+2. 确认时间线上的标题、次数都对了
+3. 进新建的真人版条目，用「查找作品」匹配 2014 年真人版
+   —— 修好代码之前，不要对已有记录的条目用这个功能</pre>`;
+    show("s6");
+  } catch (e) {
+    $("out-plan").innerHTML += `<pre class="danger-text">执行失败：${esc(e.message)}
+数据可能只写了一部分。请用第 6 节回滚，或用第 2 步下载的备份恢复。</pre>`;
+  }
+  btn.disabled = false;
+  btn.textContent = "确认无误，执行修复";
+}
+
+// ── 回滚 ──────────────────────────────────────────────────────────
+$("btn-rollback").onclick = async () => {
+  const raw = localStorage.getItem(SNAPSHOT_KEY);
+  if (!raw) { put("out-rollback", "没有找到快照。请用第 2 步下载的备份文件手工恢复。", "danger-text"); return; }
+  if (!confirm("回滚会把作品、感想、观影场次写回执行前的状态。继续？")) return;
+  try {
+    const snap = JSON.parse(raw);
+    let n = 0;
+    for (const target of S.targets) {
+      const data = snap[target];
+      if (!data) continue;
+      for (const store of ["works", "records", "viewingEvents"]) {
+        for (const item of data[store] || []) {
+          if (target === "cloud") await cloudPut(store, item);
+          else await idbPut(store, item);
+          n++;
+        }
+      }
+    }
+    put("out-rollback", `已回滚，写回 ${n} 条。注意：修复中新建的真人版条目不会被删除，需要你在 App 里手动删掉。`, "ok");
+  } catch (e) {
+    put("out-rollback", `回滚失败：${e.message}`, "danger-text");
+  }
+};
+</script>
+</body>
+</html>

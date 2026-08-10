@@ -5614,3 +5614,35 @@ svg {
   max-height: min(68vh, 680px);
   overflow-y: auto;
 }
+
+/* ── 「这是同一部作品，还是另一部？」拦截浮层 ──────────────────────────────
+   起因是一个数据破坏 bug：详情页「作品条目 · 点击修改」的语义是就地改写整个
+   Work，而用户拿它当「我这条记录挂错作品了」用，结果同条目下其他感想全被改掉。
+   现在冲突时先弹这一层，两个选项的爆炸半径必须一眼看得出差别，所以推荐项
+   （只动一条）给正常描边，破坏性项（动全部）给警示色描边。 */
+.work-split-choices {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.work-split-choices .work-candidate {
+  min-height: 84px;
+}
+
+.work-split-choices .work-candidate:first-child {
+  border-color: var(--accent);
+  background: var(--accent-container);
+}
+
+.work-split-choices [data-action="work-split-overwrite"] {
+  border-color: var(--danger, #9c2f2f);
+}
+
+.work-split-choices [data-action="work-split-overwrite"] b {
+  color: var(--danger, #9c2f2f);
+}
+
+.work-split-sheet .danger-note {
+  color: var(--danger, #9c2f2f);
+}
