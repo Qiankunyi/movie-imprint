@@ -1,4 +1,4 @@
-import { db, clearAllData, migrateLocalToCloud } from "./db.js?v=15";
+import { db, clearAllData, migrateLocalToCloud } from "./db.js?v=16";
 import { interpretTmdbStatus } from "./tmdb.js?v=2";
 import {
   MAX_WORK_STILLS,
@@ -13,7 +13,7 @@ import {
 import { selectDailySidebarStill } from "./sidebar-artwork.js?v=1";
 import { SIDEBAR_STILLS, SIDEBAR_STILL_EXTENSIONS } from "../public/assets/sidebar-stills/manifest.js?v=1";
 import { parseTicketText, draftViewingEvent } from "./ticket.js?v=4";
-import { buildWorkSearchQuery } from "./bangumi.js?v=13";
+import { buildWorkSearchQuery } from "./bangumi.js?v=14";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
 import { runMigrationIfNeeded } from "./migrate.js?v=5";
 import { EVENT_TYPES, normalizeCinemaFormat } from "./event-types.js?v=3";
@@ -148,9 +148,31 @@ import {
   upsertExternalRef,
   findWorkByExternalRef,
   createWorkFromCandidate,
+  extractHashtags,
   recommendationLabel,
   resolveWork
 } from "./domain.js?v=20";
+import {
+  deleteTag as deleteTagEntity,
+  displayTagName,
+  ensureUserTag,
+  assignmentsForTarget,
+  mergeTags,
+  pruneOrphanUserTags,
+  rankTags,
+  searchTags,
+  setTagHidden,
+  setTagPinned,
+  syncViewingTags,
+  tagOverview,
+  taggedWorkEntries,
+  tagsForTarget,
+  tagUsageCount,
+  unlinkTag,
+  upsertAssignment,
+  upsertBangumiDirectorAssignments
+} from "./tags.js?v=1";
+import { normalizeTagLocale, tagT } from "./tag-i18n.js?v=1";
 import {
   MIME_TYPES,
   copyExportText,
@@ -165,7 +187,7 @@ import {
   exportJSON,
   exportMarkdown,
   exportTXT
-} from "./export.js?v=4";
+} from "./export.js?v=5";
 
 const app = document.querySelector("#app");
 // 浮层与 FAB 各自有独立的挂载点（见 index.html 的注释）：只有它们变化时不去动 #app，
@@ -186,6 +208,8 @@ const RESET_CONFIRM_PHRASE = "清空";
 // 数据源在界面上的显示名。work-search.js 里的 SOURCE_LABELS 是同一套，
 // 这里再放一份是为了 app.js 不必为一个字符串表额外 import。
 const SOURCE_DISPLAY = { bangumi: "Bangumi", tmdb: "TMDB", local: "已在库中" };
+const tagLocale = normalizeTagLocale(localStorage.getItem("movie-imprint-locale") || document.documentElement.lang || navigator.language);
+const tt = (key) => tagT(tagLocale, key);
 
 // R6 补丁 11：输入法组合状态。
 // 中文/日文输入时，每按一个字母都会触发 input 事件（"j" → "ju" → …），
@@ -200,6 +224,9 @@ document.addEventListener("compositionend", (event) => {
     scheduleCaptureTitleMatch(event.target.value);
   } else if (event.target?.id === "work-search-input") {
     handleWorkSearchInput(event.target.value);
+  } else if (event.target?.id === "tag-search-input") {
+    state.tagSearchQuery = event.target.value;
+    render();
   }
 });
 
@@ -275,6 +302,7 @@ const state = {
   returnScrollY: 0,            // 时间线离开时的滚动位置（R3 已有字段，R4 沿用同一套约定）
   shelfScrollY: 0,             // R4：作品书架离开时的滚动位置
   workScrollY: 0,              // R4：作品页离开时的滚动位置
+  workReturnView: "shelf",
   // R4 起是书架筛选/排序的运行时状态（不持久化）。
   // R6 新增 watchStatus：书架现在是「App 中所有 Work 的统一总库」，观影前从片单
   // 建的 Work 同样在这里，靠这个维度区分。默认 watched——总库归总库，日常打开
@@ -308,6 +336,11 @@ const state = {
   // 片单描述"我出于自己的用途把哪些作品归在一起"（一部作品可属于多个），两者正交。
   series: [],
   collections: [],
+  tags: [],
+  tagAssignments: [],
+  currentTagId: null,
+  tagSearchQuery: "",
+  tagSort: "attitude",
   currentSeriesId: null,      // R5：系列页当前显示的系列
   currentCollectionId: null,  // R5：片单详情页当前显示的片单
   editingEntryWorkId: null,   // R6：正在编辑「想看理由」的片单条目对应的 work id
@@ -417,6 +450,8 @@ const icons = {
   library: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14"/><path d="M3 9.5h4M3 14.5h4M17 9.5h4M17 14.5h4"/>',
   // 候场片单 = 书签（还没看、排队等着的）
   watchlist: '<path d="M6 4h12v17l-6-4.2L6 21z"/><path d="M9.5 9.5h5"/>',
+  tag: '<path d="M4 5v6.2L12.8 20 20 12.8 11.2 4H5a1 1 0 0 0-1 1Z"/><circle cx="8" cy="8" r="1.3"/>',
+  pin: '<path d="m9 3 6 6-2 2 3 4-2 2-4-3-2 2-1-1 2-2-3-4z"/><path d="m7 17-3 3"/>',
   photo: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m5 17 4.5-4.5 3 3 2-2 4.5 3.5"/>',
   star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/>',
   sentiment_very_satisfied: '<circle cx="12" cy="12" r="9"/><path d="M7.5 9c.8-1 2.2-1 3 0M13.5 9c.8-1 2.2-1 3 0M7.5 14c1.2 2 2.7 3 4.5 3s3.3-1 4.5-3"/>',
@@ -515,6 +550,80 @@ async function ensureWorkLinks(records) {
   }
 }
 
+function viewingTagNames(record) {
+  const names = extractHashtags(record?.rawText || "");
+  const work = state.worksById.get(record?.work_id || record?.workId)
+    || state.works.find((item) => item.id === (record?.work_id || record?.workId));
+  const titleKeys = new Set([record?.title, work?.title, work?.original_title]
+    .filter(Boolean)
+    .map((value) => String(value).normalize("NFKC").trim().toLocaleLowerCase("und")));
+  // 旧版用正文第一个 #片名 识别作品；新捕获流程的片名在 captureContext 中，正文里的
+  // # 都是用户真正写下的标签。这里只过滤与作品标题完全相同的旧式片名标签。
+  return [...new Set(names.filter((name) => !titleKeys.has(String(name).normalize("NFKC").trim().toLocaleLowerCase("und"))))];
+}
+
+async function persistTagState(nextTags, nextAssignments) {
+  const previousTagIds = new Set(state.tags.map((item) => item.id));
+  const nextTagIds = new Set(nextTags.map((item) => item.id));
+  const previousAssignmentIds = new Set(state.tagAssignments.map((item) => item.id));
+  const nextAssignmentIds = new Set(nextAssignments.map((item) => item.id));
+  await Promise.all([
+    ...nextTags.map((item) => db.put("tags", item)),
+    ...nextAssignments.map((item) => db.put("tagAssignments", item)),
+    ...[...previousTagIds].filter((id) => !nextTagIds.has(id)).map((id) => db.delete("tags", id)),
+    ...[...previousAssignmentIds].filter((id) => !nextAssignmentIds.has(id)).map((id) => db.delete("tagAssignments", id))
+  ]);
+  state.tags = nextTags;
+  state.tagAssignments = nextAssignments;
+}
+
+async function syncViewingRecordTags(record) {
+  if (!record?.id) return;
+  const result = syncViewingTags(state.tags, state.tagAssignments, {
+    ...record,
+    tags: viewingTagNames(record)
+  }, { locale: tagLocale });
+  await persistTagState(result.tags, result.assignments);
+}
+
+async function migrateLegacyViewingTags() {
+  let nextTags = [...state.tags];
+  let nextAssignments = [...state.tagAssignments];
+  for (const record of state.records) {
+    if (!record?.id || nextAssignments.some((item) => item.target_type === "viewing" && item.target_id === record.id)) continue;
+    const result = syncViewingTags(nextTags, nextAssignments, { ...record, tags: viewingTagNames(record) }, { locale: tagLocale });
+    nextTags = result.tags;
+    nextAssignments = result.assignments;
+  }
+  if (nextTags.length !== state.tags.length || nextAssignments.length !== state.tagAssignments.length) {
+    await persistTagState(nextTags, nextAssignments);
+  }
+}
+
+async function syncBangumiDirectorsForWork(work) {
+  const subjectId = externalRefId(work, "bangumi");
+  if (!work?.id || !subjectId) return;
+  try {
+    const response = await apiFetch(`/api/bangumi/persons?subjectId=${encodeURIComponent(subjectId)}`, { headers: { accept: "application/json" } });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !Array.isArray(payload?.directors)) return;
+    const result = upsertBangumiDirectorAssignments(state.tags, state.tagAssignments, work.id, payload.directors);
+    await persistTagState(result.tags, result.assignments);
+    if (state.view === "work" || state.view === "tags" || state.view === "tag") renderPreservingScroll();
+  } catch (error) {
+    console.error("[bangumi-director-tags]", error);
+  }
+}
+
+async function backfillBangumiDirectorTags() {
+  for (const work of state.works) {
+    if (!externalRefId(work, "bangumi")) continue;
+    const assignedTagIds = new Set(assignmentsForTarget(state.tagAssignments, "work", work.id).map((item) => item.tag_id));
+    const alreadyLinked = state.tags.some((tag) => assignedTagIds.has(tag.id) && tag.category === "director" && tag.source === "metadata_bangumi");
+    if (!alreadyLinked) await syncBangumiDirectorsForWork(work);
+  }
+}
+
 async function loadState() {
   [state.records, state.draft, state.recordingPreference, state.aiPreference, state.aiProviders] = await Promise.all([
     db.getAll("records"),
@@ -534,12 +643,17 @@ async function loadState() {
   await ensureWorkLinks(state.records);
   state.works = await db.getAll("works");
   // R5：系列与片单。两个 store 都是 R5 才建的，老库/旧云端可能还没有，读失败一律当空。
-  [state.series, state.collections] = await Promise.all([
+  [state.series, state.collections, state.tags, state.tagAssignments] = await Promise.all([
     db.getAll("series").catch(() => []),
-    db.getAll("collections").catch(() => [])
+    db.getAll("collections").catch(() => []),
+    db.getAll("tags").catch(() => []),
+    db.getAll("tagAssignments").catch(() => [])
   ]);
   state.series ||= [];
   state.collections ||= [];
+  state.tags ||= [];
+  state.tagAssignments ||= [];
+  await migrateLegacyViewingTags();
   await indexHomeCardData();
   // R2：草稿必须连同 captureContext 一起恢复——Step 3 中断后再打开 App，
   // 应该能直接从"继续写"回到 Step 3，而不是重走 Step 1/2。
@@ -552,6 +666,18 @@ async function loadState() {
     // 刷新详情页不会触发 openRecord()。必须在首次 render 前主动恢复正式观影事件，
     // 否则首屏会把空的 state.viewingEvents 当成“观影信息待确认”。
     await hydrateRecordViewingEvents(targetId, { renderAfter: false });
+    return;
+  }
+  if (location.hash === "#tags") {
+    state.view = "tags";
+    return;
+  }
+  if (location.hash.startsWith("#tag=")) {
+    const tagId = decodeURIComponent(location.hash.slice(5));
+    if (state.tags.some((tag) => tag.id === tagId)) {
+      state.view = "tag";
+      state.currentTagId = tagId;
+    }
   }
 }
 
@@ -719,6 +845,12 @@ function fabActionsFor() {
       { action: "open-collections", icon: "back", label: "返回候场片单", testId: "collection-back" }
     ];
   }
+  if (state.view === "tags") {
+    return [themeItem, { action: "go-home", icon: "back", label: "返回观影轨迹" }];
+  }
+  if (state.view === "tag") {
+    return [themeItem, { action: "manage-tag", icon: "more", label: tt("edit") }, { action: "open-tags", icon: "back", label: tt("index") }];
+  }
   return [themeItem, searchItem, { action: "start-viewing-capture", icon: "edit", label: "开始记录", testId: "add-record" }];
 }
 
@@ -803,6 +935,9 @@ function sidebarDrawer() {
       </button>
       <button type="button" class="sidebar-item ${state.view === "collections" || state.view === "collection" ? "active" : ""}" data-action="open-collections" data-testid="sidebar-collections">
         <span class="sidebar-item-icon" aria-hidden="true">${icon("watchlist")}</span><span>候场片单</span>
+      </button>
+      <button type="button" class="sidebar-item ${state.view === "tags" || state.view === "tag" ? "active" : ""}" data-action="open-tags" data-testid="sidebar-tags">
+        <span class="sidebar-item-icon" aria-hidden="true">${icon("tag")}</span><span>${escapeHtml(tt("index"))}</span>
       </button>
       <div class="sidebar-divider" role="separator"></div>
       <button type="button" class="sidebar-item" data-action="open-settings" data-testid="sidebar-settings">
@@ -1273,6 +1408,22 @@ function externalPublicationsMarkup(publications) {
   </section>`;
 }
 
+function tagChipMarkup(tag, { removable = false } = {}) {
+  const name = displayTagName(tag, tagLocale);
+  const count = tagUsageCount(state.tagAssignments, tag.id);
+  return `<button type="button" class="tag-chip ${tag.category === "director" ? "structured" : ""}" data-action="open-tag" data-tag-id="${escapeHtml(tag.id)}" data-testid="tag-${escapeHtml(tag.id)}">
+    <span>#${escapeHtml(name)}</span>${count > 1 && !removable ? `<small>${count}</small>` : ""}
+  </button>`;
+}
+
+function workTagsRow(work) {
+  const tags = tagsForTarget(state.tags, state.tagAssignments, "work", work.id);
+  return `<section class="work-tags" data-testid="work-tags" aria-label="作品标签">
+    <div class="work-tag-list">${tags.map((tag) => tagChipMarkup(tag)).join("")}</div>
+    <button type="button" class="work-tag-edit" data-action="edit-work-tags" aria-label="${escapeHtml(tags.length ? tt("edit") : tt("add"))}">${tags.length ? icon("edit") : "＋"}</button>
+  </section>`;
+}
+
 function renderWork() {
   const work = findWorkById(state.works, state.currentWorkId);
   if (!work) return renderShelf();
@@ -1293,6 +1444,7 @@ function renderWork() {
     </div>
     <article class="work-content">
       <section class="work-facts" data-testid="work-facts">
+        ${workTagsRow(work)}
         ${releaseDateRow(work)}
         ${seriesRow(work)}
         ${collectionsRow(work)}
@@ -3010,6 +3162,112 @@ function hydrateExternalPublicationEmbeds() {
   xWidgetsPromise.then(loadWidgets).catch(() => {});
 }
 
+function workTagEditorOverlay(work) {
+  const tags = tagsForTarget(state.tags, state.tagAssignments, "work", work.id, { includeHidden: true });
+  const value = tags.map((tag) => displayTagName(tag, tagLocale)).join("，");
+  return `<div class="overlay" data-testid="work-tag-editor">
+    <button class="overlay-scrim" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet tag-editor-sheet" role="dialog" aria-modal="true" aria-labelledby="work-tag-editor-title">
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="work-tag-editor-title">${escapeHtml(tt("edit"))}</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <form id="work-tag-form">
+        <label><span>${escapeHtml(tt("add"))}</span><textarea name="tags" rows="4" placeholder="${escapeHtml(tt("namePlaceholder"))}" data-testid="work-tag-input">${escapeHtml(value)}</textarea></label>
+        ${tags.length ? `<div class="tag-editor-existing">${tags.map((tag) => `<span><b>#${escapeHtml(displayTagName(tag, tagLocale))}</b><small>${tag.source === "metadata_bangumi" ? "Bangumi · 导演" : "个人标签"}</small></span>`).join("")}</div>` : ""}
+        <p class="settings-note">从输入框移除名称只会取消这部作品的关联，不会影响其他作品或观影记录。</p>
+        <button class="sheet-done" type="submit">${escapeHtml(tt("save"))}</button>
+      </form>
+    </section>
+  </div>`;
+}
+
+function tagManagerOverlay(tag) {
+  const candidates = state.tags.filter((item) => item.id !== tag.id);
+  return `<div class="overlay" data-testid="tag-manager">
+    <button class="overlay-scrim" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet tag-manager-sheet" role="dialog" aria-modal="true" aria-labelledby="tag-manager-title">
+      <div class="sheet-title-row"><div><span class="sheet-kicker">#${escapeHtml(displayTagName(tag, tagLocale))}</span><h2 id="tag-manager-title">${escapeHtml(tt("edit"))}</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <div class="tag-manager-actions">
+        <button type="button" data-action="toggle-tag-pin" data-tag-id="${escapeHtml(tag.id)}">${icon("pin")} ${escapeHtml(tag.is_pinned ? "取消固定" : tt("pinned"))}</button>
+        <button type="button" data-action="toggle-tag-hidden" data-tag-id="${escapeHtml(tag.id)}">${escapeHtml(tag.is_hidden ? "取消隐藏" : tt("hidden"))}</button>
+      </div>
+      ${candidates.length ? `<form id="tag-merge-form"><label><span>${escapeHtml(tt("merge"))}</span><select name="targetTagId">${candidates.map((item) => `<option value="${escapeHtml(item.id)}">#${escapeHtml(displayTagName(item, tagLocale))}</option>`).join("")}</select></label><button type="submit">${escapeHtml(tt("merge"))}</button></form>` : ""}
+      <button type="button" class="danger-action" data-action="delete-tag" data-tag-id="${escapeHtml(tag.id)}">${escapeHtml(tt("delete"))}</button>
+    </section>
+  </div>`;
+}
+
+function tagSectionMarkup(title, tags, testId) {
+  if (!tags.length) return "";
+  return `<section class="tag-index-section" data-testid="${testId}"><h2>${escapeHtml(title)}</h2><div class="tag-cloud">${tags.map((tag) => tagChipMarkup(tag)).join("")}</div></section>`;
+}
+
+function renderTags() {
+  const query = state.tagSearchQuery.trim();
+  const visible = state.tags.filter((tag) => !tag.is_hidden);
+  const results = searchTags(visible, query);
+  const frequent = rankTags(visible, state.tagAssignments, { limit: 10 });
+  const creators = visible.filter((tag) => tag.category === "director").sort((a, b) => tagUsageCount(state.tagAssignments, b.id) - tagUsageCount(state.tagAssignments, a.id));
+  const personal = visible.filter((tag) => tag.category === "custom").sort((a, b) => tagUsageCount(state.tagAssignments, b.id) - tagUsageCount(state.tagAssignments, a.id));
+  const body = query
+    ? tagSectionMarkup(`${tt("search")} · ${results.length}`, results, "tag-search-results") || `<p class="tag-index-empty">${escapeHtml(tt("noResults"))}</p>`
+    : visible.length
+      ? [tagSectionMarkup(tt("frequent"), frequent, "tag-frequent"), tagSectionMarkup(tt("creators"), creators, "tag-creators"), tagSectionMarkup(tt("personal"), personal, "tag-personal")].join("")
+      : `<p class="tag-index-empty">${escapeHtml(tt("empty"))}</p>`;
+  return `<main class="tag-index-view" data-testid="tags">
+    ${topBar()}
+    <article class="tag-index-content">
+      <header class="tag-index-header"><span class="page-eyebrow">RELATION INDEX</span><h1>${escapeHtml(tt("index"))}</h1><p>把作品与每一次观看之间的共同线索，收进自己的电影关系目录。</p></header>
+      <label class="tag-search">${icon("search")}<input id="tag-search-input" type="search" value="${escapeHtml(state.tagSearchQuery)}" placeholder="${escapeHtml(tt("search"))}" autocomplete="off" /></label>
+      ${body}
+    </article>
+  </main>`;
+}
+
+function attitudeDistributionMarkup(entries) {
+  const counts = new Map(["love", "like", "neutral", "dislike", "mixed", "unrated"].map((key) => [key, 0]));
+  for (const entry of entries) counts.set(entry.attitude, (counts.get(entry.attitude) || 0) + 1);
+  return `<div class="tag-attitude-grid">${["love", "like", "neutral", "dislike", "mixed"].map((key) => `<span><i>${attitudeIcon(key)}</i><b>${escapeHtml(attitudeLabel(key))}</b><strong>${counts.get(key) || 0}</strong></span>`).join("")}</div>`;
+}
+
+function taggedWorksMarkup(tag) {
+  const entries = taggedWorkEntries(tag.id, state.tags, state.tagAssignments, state.works, state.records, state.allViewingEvents, state.tagSort);
+  if (!entries.length) return "";
+  const rows = entries.map((entry) => `<button type="button" class="tag-work-row" data-action="open-work" data-work-id="${escapeHtml(entry.work.id)}">
+    <span><b>《${escapeHtml(entry.work.title || "未命名作品")}》</b><small>${entry.releaseYear || "—"}</small></span>
+    <span class="tag-work-attitude">${entry.attitude === "unrated" ? "未形成态度" : `${attitudeIcon(entry.attitude)}${escapeHtml(attitudeLabel(entry.attitude))}`}</span>
+  </button>`).join("");
+  return `<section class="tag-detail-section"><div class="tag-detail-section-title"><h2>${escapeHtml(tt("works"))}</h2><select id="tag-sort" aria-label="排序方式"><option value="attitude" ${state.tagSort === "attitude" ? "selected" : ""}>${escapeHtml(tt("sortAttitude"))}</option><option value="recent" ${state.tagSort === "recent" ? "selected" : ""}>${escapeHtml(tt("sortRecent"))}</option><option value="release" ${state.tagSort === "release" ? "selected" : ""}>${escapeHtml(tt("sortRelease"))}</option></select></div><div class="tag-work-list">${rows}</div></section>`;
+}
+
+function taggedViewingsMarkup(tag) {
+  const recordIds = new Set(state.tagAssignments.filter((item) => item.tag_id === tag.id && item.target_type === "viewing").map((item) => item.target_id));
+  const records = state.records.filter((record) => recordIds.has(record.id));
+  if (!records.length) return "";
+  return `<section class="tag-detail-section"><h2>${escapeHtml(tt("viewings"))}</h2><div class="tag-viewing-list">${records.map((record) => {
+    const work = currentWork(record);
+    const event = state.recordEventById.get(record.id);
+    const date = event?.screening_at || event?.viewed_on || record.createdAt;
+    return `<button type="button" data-action="open-record" data-record-id="${escapeHtml(record.id)}"><span><b>《${escapeHtml(work?.title || record.title || "未命名作品")}》</b><small>${date ? escapeHtml(String(date).slice(0, 10)) : ""}</small></span><p>${escapeHtml(String(record.rawText || "").replace(/\s+/gu, " ").slice(0, 90))}</p></button>`;
+  }).join("")}</div></section>`;
+}
+
+function renderTagDetail() {
+  const tag = state.tags.find((item) => item.id === state.currentTagId);
+  if (!tag) return renderTags();
+  const overview = tagOverview(tag.id, state.tagAssignments);
+  const entries = taggedWorkEntries(tag.id, state.tags, state.tagAssignments, state.works, state.records, state.allViewingEvents, "attitude");
+  const otherNames = [...new Set(Object.values(tag.names || {}).filter((name) => name && name !== displayTagName(tag, tagLocale)))];
+  return `<main class="tag-detail-view" data-testid="tag-detail">
+    ${topBar()}
+    <article class="tag-detail-content">
+      <header class="tag-identity"><div><span class="page-eyebrow">${tag.category === "director" ? escapeHtml(tt("director")) : "PERSONAL TAG"}</span><h1>#${escapeHtml(displayTagName(tag, tagLocale))}</h1>${otherNames.length ? `<p>${otherNames.map(escapeHtml).join(" · ")}</p>` : ""}${tag.source === "metadata_bangumi" ? `<small>${escapeHtml(tt("sourceBangumi"))}</small>` : ""}</div><button type="button" class="icon-button" data-action="manage-tag" aria-label="${escapeHtml(tt("edit"))}">${icon("more")}</button></header>
+      <section class="tag-overview"><div><strong>${overview.workCount}</strong><span>${escapeHtml(tt("works"))}</span></div><div><strong>${overview.viewingCount}</strong><span>${escapeHtml(tt("viewings"))}</span></div></section>
+      ${entries.length ? `<section class="tag-detail-section"><h2>${escapeHtml(tt("attitude"))}</h2>${attitudeDistributionMarkup(entries)}</section>` : ""}
+      ${taggedWorksMarkup(tag)}
+      ${taggedViewingsMarkup(tag)}
+    </article>
+  </main>`;
+}
+
 function render() {
   const base = state.view === "detail" ? renderDetail()
     : state.view === "shelf" ? renderShelf()
@@ -3017,6 +3275,8 @@ function render() {
     : state.view === "series" ? renderSeries()
     : state.view === "collections" ? renderCollections()
     : state.view === "collection" ? renderCollection()
+    : state.view === "tags" ? renderTags()
+    : state.view === "tag" ? renderTagDetail()
     : renderHome();
   const record = currentRecord();
   const currentWorkForOverlay = state.view === "work" ? findWorkById(state.works, state.currentWorkId) : null;
@@ -3089,6 +3349,10 @@ function render() {
         ? createCollectionOverlay()
       : state.overlay === "entry-menu" && currentCollectionForOverlay
         ? entryMenuOverlay(currentCollectionForOverlay)
+      : state.overlay === "work-tags" && currentWorkForOverlay
+        ? workTagEditorOverlay(currentWorkForOverlay)
+      : state.overlay === "tag-manager" && state.tags.find((item) => item.id === state.currentTagId)
+        ? tagManagerOverlay(state.tags.find((item) => item.id === state.currentTagId))
         : "";
 
   // 三块分别挂载，各自只在自己变化时重写：
@@ -3250,6 +3514,7 @@ async function finishCompose() {
   state.records.unshift(record);
   if (!state.works.some((item) => item.id === work.id)) state.works.push(work);
   await indexHomeCardData();
+  await syncViewingRecordTags(record);
   await openRecord(record.id);
   state.overlay = "interview-invite";
   render();
@@ -3485,6 +3750,17 @@ async function confirmWorkMatch(candidateIndex, { force = false } = {}) {
 
   const staleIds = [...new Set([oldId, conflictingWork?.id].filter((id) => id && id !== finalWork.id))];
   if (staleIds.length) {
+    let nextTagAssignments = state.tagAssignments.filter((item) => !(item.target_type === "work" && staleIds.includes(item.target_id)));
+    for (const assignment of state.tagAssignments.filter((item) => item.target_type === "work" && staleIds.includes(item.target_id))) {
+      nextTagAssignments = upsertAssignment(nextTagAssignments, {
+        tagId: assignment.tag_id,
+        targetType: "work",
+        targetId: finalWork.id,
+        source: assignment.source,
+        now: assignment.created_at
+      }).assignments;
+    }
+    await persistTagState(state.tags, nextTagAssignments);
     for (const item of state.records) {
       if (staleIds.includes(item.work_id || item.workId)) {
         item.work_id = finalWork.id;
@@ -3549,6 +3825,7 @@ async function confirmWorkMatch(candidateIndex, { force = false } = {}) {
     state.workSplitPrompt = null;
     state.overlay = null;
   }
+  await syncBangumiDirectorsForWork(finalWork);
   render();
   announce(`已确认作品：${finalWork.title}`);
 }
@@ -3951,6 +4228,8 @@ async function deleteRecord(record) {
     if (workId === state.currentWorkId) state.currentWorkEvents = state.currentWorkEvents.filter((event) => event.id !== record.viewing_event_id);
   }
   state.records = state.records.filter((item) => item.id !== record.id);
+  const remainingTagAssignments = state.tagAssignments.filter((item) => !(item.target_type === "viewing" && item.target_id === record.id));
+  await persistTagState(pruneOrphanUserTags(state.tags, remainingTagAssignments), remainingTagAssignments);
   await indexHomeCardData();
   state.overlay = null;
   // R4：删除记录后回到"从哪进来的"，而不是无条件回时间线——从作品页删记录应该回作品页。
@@ -4057,6 +4336,7 @@ function closeShelf() {
 
 /** R4：作品书架 → 作品页。 */
 function openWork(workId) {
+  state.workReturnView = state.view === "tag" ? "tag" : "shelf";
   applyRoute(routeEnterWork(routeSnapshot(), workId, { scrollY }));
   state.currentWorkEvents = [];
   state.currentWorkPublications = [];
@@ -4068,6 +4348,13 @@ function openWork(workId) {
 
 /** R4：作品页 → 作品书架（本窗口里作品页只能从书架进入，所以固定回书架）。 */
 function closeWork() {
+  if (state.workReturnView === "tag" && state.currentTagId) {
+    state.view = "tag";
+    state.currentWorkId = null;
+    history.replaceState({ view: "tag", tagId: state.currentTagId }, "", `#tag=${encodeURIComponent(state.currentTagId)}`);
+    render();
+    return;
+  }
   applyRoute(routeExitWork(routeSnapshot()));
   history.replaceState({ view: "shelf" }, "", "#shelf");
   render();
@@ -4118,6 +4405,30 @@ function openCollection(collectionId) {
   state.view = "collection";
   state.overlay = null;
   history.pushState({ view: "collection", collectionId }, "", `#collection=${encodeURIComponent(collectionId)}`);
+  render();
+  scrollTo(0, 0);
+}
+
+function openTags({ replace = false } = {}) {
+  state.view = "tags";
+  state.overlay = null;
+  state.currentTagId = null;
+  const payload = { view: "tags" };
+  if (replace) history.replaceState(payload, "", "#tags");
+  else history.pushState(payload, "", "#tags");
+  render();
+  scrollTo(0, 0);
+}
+
+function openTag(tagId, { replace = false } = {}) {
+  if (!state.tags.some((tag) => tag.id === tagId)) return;
+  state.view = "tag";
+  state.currentTagId = tagId;
+  state.overlay = null;
+  state.tagSort = "attitude";
+  const payload = { view: "tag", tagId };
+  if (replace) history.replaceState(payload, "", `#tag=${encodeURIComponent(tagId)}`);
+  else history.pushState(payload, "", `#tag=${encodeURIComponent(tagId)}`);
   render();
   scrollTo(0, 0);
 }
@@ -4385,6 +4696,7 @@ async function refreshWorkMetadata() {
     await db.put("works", updated);
     state.works = state.works.map((item) => (item.id === updated.id ? updated : item));
     state.worksById.set(updated.id, updated);
+    await syncBangumiDirectorsForWork(updated);
     state.workRefreshBusy = false;
     renderPreservingScroll();
     showToast("作品资料已刷新");
@@ -4453,6 +4765,9 @@ async function performWorkDeletion() {
   for (const publication of storedPublications.filter((item) => ids.includes(item.work_id))) {
     await db.delete("externalPublications", publication.id).catch(() => {});
   }
+
+  const remainingTagAssignments = state.tagAssignments.filter((item) => !(item.target_type === "work" && ids.includes(item.target_id)));
+  await persistTagState(pruneOrphanUserTags(state.tags, remainingTagAssignments), remainingTagAssignments);
 
   await db.delete("works", work.id).catch(() => {});
   for (const id of work.merged_from || []) await db.delete("works", id).catch(() => {});
@@ -4777,6 +5092,7 @@ async function resolveOrCreateWorkFromCandidate(candidate) {
       state.works = state.works.map((item) => (item.id === merged.id ? merged : item));
       state.worksById.set(merged.id, merged);
     }
+    await syncBangumiDirectorsForWork(merged);
     return merged;
   }
 
@@ -4786,6 +5102,7 @@ async function resolveOrCreateWorkFromCandidate(candidate) {
   await db.put("works", created);
   state.works = [...state.works, created];
   state.worksById.set(created.id, created);
+  await syncBangumiDirectorsForWork(created);
   return created;
 }
 
@@ -5096,6 +5413,10 @@ document.addEventListener("click", async (event) => {
     render();
   } else if (action === "open-shelf") {
     openShelf();
+  } else if (action === "open-tags") {
+    openTags({ replace: state.view === "tag" });
+  } else if (action === "open-tag") {
+    openTag(trigger.dataset.tagId);
   } else if (action === "close-shelf") {
     closeShelf();
   } else if (action === "open-work") {
@@ -5103,6 +5424,28 @@ document.addEventListener("click", async (event) => {
     if (workId) openWork(workId);
   } else if (action === "close-work") {
     closeWork();
+  } else if (action === "edit-work-tags") {
+    state.overlay = "work-tags";
+    render();
+  } else if (action === "manage-tag") {
+    state.overlay = "tag-manager";
+    render();
+  } else if (action === "toggle-tag-pin") {
+    const next = setTagPinned(state.tags, trigger.dataset.tagId, !state.tags.find((tag) => tag.id === trigger.dataset.tagId)?.is_pinned);
+    await persistTagState(next, state.tagAssignments);
+    render();
+  } else if (action === "toggle-tag-hidden") {
+    const next = setTagHidden(state.tags, trigger.dataset.tagId, !state.tags.find((tag) => tag.id === trigger.dataset.tagId)?.is_hidden);
+    await persistTagState(next, state.tagAssignments);
+    render();
+  } else if (action === "delete-tag") {
+    const tag = state.tags.find((item) => item.id === trigger.dataset.tagId);
+    if (!tag || !window.confirm(`要删除 #${displayTagName(tag, tagLocale)} 吗？\n它与所有作品和观影记录的关联都会一起删除。`)) return;
+    const result = deleteTagEntity(state.tags, state.tagAssignments, tag.id);
+    await persistTagState(result.tags, result.assignments);
+    state.overlay = null;
+    openTags({ replace: true });
+    notify("标签已删除");
   } else if (action === "close-detail") {
     leaveDetail();
   } else if (action === "set-shelf-type-filter") {
@@ -5929,7 +6272,9 @@ document.addEventListener("click", async (event) => {
       exportAllJSON(
         entries,
         buildCollectionsExport(state.collections, state.works, isWorkWatched),
-        buildExternalPublicationsExport(publications, state.works)
+        buildExternalPublicationsExport(publications, state.works),
+        state.tags,
+        state.tagAssignments
       ),
       exportAllFilename("json"),
       MIME_TYPES.json
@@ -5948,6 +6293,17 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("input", (event) => {
+  if (event.target.id === "tag-search-input") {
+    state.tagSearchQuery = event.target.value;
+    if (event.isComposing || imeComposing) return;
+    render();
+    requestAnimationFrame(() => {
+      const input = document.querySelector("#tag-search-input");
+      input?.focus({ preventScroll: true });
+      input?.setSelectionRange(input.value.length, input.value.length);
+    });
+    return;
+  }
   if (event.target.id === "external-publication-url") {
     const label = document.querySelector("#external-publication-platform");
     if (label) label.textContent = publicationPlatformLabel(detectPublicationPlatform(event.target.value));
@@ -6111,7 +6467,11 @@ document.addEventListener("error", (event) => {
 }, true);
 
 document.addEventListener("change", async (event) => {
-  if (event.target.id === "shelf-watch-status") {
+  if (event.target.id === "tag-sort") {
+    state.tagSort = event.target.value;
+    renderPreservingScroll();
+    return;
+  } else if (event.target.id === "shelf-watch-status") {
     // R6：书架观看状态。切到「想看」时排序下拉会被收起来，但 state.shelfFilter.sort
     // 保持原值不动——切回「已看」应该回到用户原来选的排序，而不是被重置。
     state.shelfFilter.watchStatus = event.target.value;
@@ -6213,6 +6573,50 @@ document.addEventListener("change", async (event) => {
 });
 
 document.addEventListener("submit", async (event) => {
+  if (event.target.id === "work-tag-form") {
+    event.preventDefault();
+    const work = findWorkById(state.works, state.currentWorkId);
+    if (!work) return;
+    const input = String(new FormData(event.target).get("tags") || "");
+    const names = [...new Set(input.split(/[，,\n]+/u).map((name) => name.trim().replace(/^#+/u, "")).filter(Boolean))];
+    let nextTags = [...state.tags];
+    let nextAssignments = state.tagAssignments.filter((item) => !(item.target_type === "work" && item.target_id === work.id));
+    for (const name of names) {
+      const ensured = ensureUserTag(nextTags, name, { locale: tagLocale });
+      nextTags = ensured.tags;
+      if (!ensured.tag) continue;
+      nextAssignments = upsertAssignment(nextAssignments, {
+        tagId: ensured.tag.id,
+        targetType: "work",
+        targetId: work.id,
+        source: ensured.tag.source
+      }).assignments;
+    }
+    nextTags = pruneOrphanUserTags(nextTags, nextAssignments);
+    await persistTagState(nextTags, nextAssignments);
+    state.overlay = null;
+    renderPreservingScroll();
+    notify("作品标签已保存");
+    return;
+  }
+
+  if (event.target.id === "tag-merge-form") {
+    event.preventDefault();
+    const targetTagId = String(new FormData(event.target).get("targetTagId") || "");
+    const sourceTagId = state.currentTagId;
+    if (!sourceTagId || !targetTagId) return;
+    const sourceName = displayTagName(state.tags.find((item) => item.id === sourceTagId), tagLocale);
+    const targetName = displayTagName(state.tags.find((item) => item.id === targetTagId), tagLocale);
+    if (!window.confirm(`把 #${sourceName} 合并到 #${targetName} 吗？\n所有关联都会迁移到目标标签。`)) return;
+    const result = mergeTags(state.tags, state.tagAssignments, { sourceTagId, targetTagId });
+    await persistTagState(result.tags, result.assignments);
+    state.currentTagId = targetTagId;
+    state.overlay = null;
+    history.replaceState({ view: "tag", tagId: targetTagId }, "", `#tag=${encodeURIComponent(targetTagId)}`);
+    render();
+    notify("标签已合并");
+    return;
+  }
   if (event.target.id === "external-publication-form") {
     event.preventDefault();
     const work = findWorkById(state.works, state.currentWorkId);
@@ -6324,7 +6728,11 @@ document.addEventListener("submit", async (event) => {
     const data = new FormData(event.target);
     const rawText = String(data.get("rawText") || "").trim();
     if (!rawText) return;
-    await updateRecord((record) => { reviseRawText(record, rawText); });
+    await updateRecord((record) => {
+      reviseRawText(record, rawText);
+      record.tags = extractHashtags(rawText);
+    });
+    await syncViewingRecordTags(currentRecord());
     state.overlay = null;
     renderPreservingScroll();
     announce("原文已更新");
@@ -6570,6 +6978,28 @@ window.addEventListener("popstate", (event) => {
     state.view = "collections";
     state.currentCollectionId = null;
     history.replaceState({ view: "collections" }, "", "#collections");
+    render();
+    return;
+  }
+  if (hash === "#tags") {
+    state.view = "tags";
+    state.currentTagId = null;
+    render();
+    scrollTo(0, 0);
+    return;
+  }
+  if (hash.startsWith("#tag=")) {
+    const tagId = decodeURIComponent(hash.slice(5));
+    if (state.tags.some((tag) => tag.id === tagId)) {
+      state.view = "tag";
+      state.currentTagId = tagId;
+      render();
+      scrollTo(0, 0);
+      return;
+    }
+    state.view = "tags";
+    state.currentTagId = null;
+    history.replaceState({ view: "tags" }, "", "#tags");
     render();
     return;
   }
@@ -6964,6 +7394,7 @@ try {
 
   await loadState();
   render();
+  void backfillBangumiDirectorTags();
 } catch (error) {
   app.innerHTML = `<main class="fatal-error"><h1>无法打开本地记录</h1><p>${escapeHtml(error.message)}</p><p>请确认浏览器允许使用本地存储后再重试。</p></main>`;
 }

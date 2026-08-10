@@ -6,6 +6,7 @@ import {
   buildBangumiImageRequest,
   buildBangumiSearchRequest,
   isAllowedBangumiImageUrl,
+  normalizeBangumiDirectors,
   normalizeBangumiSubjects
 } from "./src/bangumi.js";
 import {
@@ -24,6 +25,7 @@ const root = process.cwd();
 const bangumiSearchCache = new Map();
 const bangumiImageCache = new Map();
 const bangumiSubjectCache = new Map();
+const bangumiPersonsCache = new Map();
 const BANGUMI_CACHE_TTL = 24 * 60 * 60 * 1000;
 const BANGUMI_IMAGE_CACHE_TTL = 24 * 60 * 60 * 1000;
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -170,6 +172,37 @@ async function handleBangumiSubject(requestUrl, response) {
     respondJson(response, 200, { ...data, source: "bangumi" });
   } catch {
     respondJson(response, 502, { error: "bangumi_unavailable", message: "暂时拿不到这部作品的简介" });
+  }
+}
+
+async function handleBangumiPersons(requestUrl, response) {
+  const subjectId = Number(requestUrl.searchParams.get("subjectId"));
+  if (!Number.isInteger(subjectId) || subjectId <= 0) {
+    respondJson(response, 400, { error: "invalid_subject_id", message: "条目 id 不合法" });
+    return;
+  }
+  const cached = bangumiPersonsCache.get(subjectId);
+  if (cached && Date.now() - cached.savedAt < BANGUMI_CACHE_TTL) {
+    respondJson(response, 200, { subjectId, directors: cached.directors, source: "cache" });
+    return;
+  }
+  const headers = {
+    accept: "application/json",
+    "user-agent": process.env.BANGUMI_USER_AGENT?.trim() || DEFAULT_BANGUMI_USER_AGENT
+  };
+  const token = process.env.BANGUMI_ACCESS_TOKEN?.trim();
+  if (token) headers.authorization = `Bearer ${token}`;
+  try {
+    const upstream = await fetch(`https://api.bgm.tv/v0/subjects/${subjectId}/persons`, {
+      headers,
+      signal: AbortSignal.timeout(6000)
+    });
+    if (!upstream.ok) throw new Error(`Bangumi ${upstream.status}`);
+    const directors = normalizeBangumiDirectors(await upstream.json());
+    bangumiPersonsCache.set(subjectId, { directors, savedAt: Date.now() });
+    respondJson(response, 200, { subjectId, directors, source: "bangumi" });
+  } catch {
+    respondJson(response, 502, { error: "bangumi_unavailable", message: "暂时拿不到导演信息" });
   }
 }
 
@@ -508,6 +541,10 @@ createServer((request, response) => {
   }
   if (request.method === "GET" && requestPath === "/api/bangumi/subject") {
     void handleBangumiSubject(requestUrl, response);
+    return;
+  }
+  if (request.method === "GET" && requestPath === "/api/bangumi/persons") {
+    void handleBangumiPersons(requestUrl, response);
     return;
   }
   if (request.method === "GET" && requestPath === "/api/tmdb/status") {

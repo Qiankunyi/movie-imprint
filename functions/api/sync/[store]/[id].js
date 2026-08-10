@@ -1,6 +1,6 @@
 export async function onRequest(context) {
   const { store, id } = context.params;
-  const ALLOWED = ["records", "works", "drafts", "meta", "viewingEvents", "series", "collections", "externalPublications"];
+  const ALLOWED = ["records", "works", "drafts", "meta", "viewingEvents", "series", "collections", "externalPublications", "tags", "tagAssignments"];
   if (!ALLOWED.includes(store)) return json(400, { error: "unknown_store" });
 
   if (context.request.method === "GET") {

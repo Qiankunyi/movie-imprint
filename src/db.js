@@ -11,9 +11,9 @@
 // ─── IndexedDB（本地） ────────────────────────────────────────────────────────
 
 const DB_NAME = "movie-imprint-local";
-// v5：新增 externalPublications，独立保存「作品 → 外部公开内容」引用。
-const DB_VERSION = 5;
-const STORES = ["drafts", "records", "works", "meta", "viewingEvents", "series", "collections", "externalPublications"];
+// v6：标签实体与统一关联独立存储；作品标签和观影记录标签共用同一套身份。
+const DB_VERSION = 6;
+const STORES = ["drafts", "records", "works", "meta", "viewingEvents", "series", "collections", "externalPublications", "tags", "tagAssignments"];
 
 let databasePromise;
 

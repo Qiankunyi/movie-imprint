@@ -63,3 +63,36 @@ export function normalizeBangumiSubjects(payload) {
     }];
   });
 }
+
+function valueList(value) {
+  if (Array.isArray(value)) return value.flatMap(valueList);
+  if (value && typeof value === "object") return [value.v, value.k].flatMap(valueList);
+  return typeof value === "string" ? [value.trim()] : [];
+}
+
+/** Normalize `/v0/subjects/:id/persons` into stable director identities. */
+export function normalizeBangumiDirectors(payload) {
+  const people = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : [];
+  return people.flatMap((person) => {
+    const relation = String(person?.relation || person?.job || "").trim();
+    const careers = Array.isArray(person?.career) ? person.career.map(String) : [];
+    if (!(/导演|監督|director/iu.test(relation) || careers.some((item) => /director/iu.test(item)))) return [];
+    const personId = Number(person?.id);
+    if (!Number.isInteger(personId) || personId <= 0) return [];
+    const original = String(person?.name || "").trim();
+    const simplified = String(person?.name_cn || "").trim();
+    const rawAliases = [
+      ...(Array.isArray(person?.aliases) ? person.aliases : []),
+      ...valueList(person?.infobox)
+    ].map(String).map((item) => item.trim()).filter(Boolean);
+    const english = rawAliases.find((item) => /^[A-Za-z][A-Za-z .'-]+$/u.test(item)) || "";
+    const names = {
+      ...(simplified ? { "zh-Hans": simplified } : {}),
+      ...(original ? { ja: original, "zh-Hant": original } : {}),
+      ...(english ? { en: english } : {})
+    };
+    const name = simplified || original || english;
+    if (!name) return [];
+    return [{ personId, name, names, aliases: [...new Set([original, simplified, ...rawAliases].filter(Boolean))] }];
+  });
+}

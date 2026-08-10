@@ -1,4 +1,4 @@
-const CACHE = "movie-imprint-shell-v62";
+const CACHE = "movie-imprint-shell-v63";
 // R3：这个缓存原名 WALLPAPER_CACHE，是 C2 为「每日壁纸」建立的图片缓存策略。
 // 壁纸功能已在 R3 移除，但同一个 /api/bangumi/image 端点现在被海报复用（R6 起
 // 还包括 /api/tmdb/image），
@@ -16,19 +16,21 @@ const SHELL = [
   "/public/icon-maskable-512.png",
   "/public/icon-character-v2-flat.png",
   "/docs/design/tokens-v2.css?v=17",
-  "/styles/app.css?v=55",
-  "/src/app.js?v=61",
+  "/styles/app.css?v=56",
+  "/src/app.js?v=62",
   "/src/sidebar-artwork.js?v=1",
   "/public/assets/sidebar-stills/manifest.js?v=1",
   "/src/stills.js?v=1",
   "/src/editor.js?v=8",
-  "/src/db.js?v=15",
+  "/src/db.js?v=16",
   "/src/external-publications.js?v=1",
   "/src/domain.js?v=20",
-  "/src/export.js?v=4",
+  "/src/export.js?v=5",
   "/src/self-interview.js?v=1",
   "/src/imprint-v2.js?v=1",
-  "/src/bangumi.js?v=13"
+  "/src/bangumi.js?v=14",
+  "/src/tags.js?v=1",
+  "/src/tag-i18n.js?v=1"
 ];
 
 self.addEventListener("install", (event) => {

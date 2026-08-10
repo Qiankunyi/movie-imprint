@@ -243,14 +243,16 @@ export function buildExternalPublicationsExport(publications = [], works = []) {
   }));
 }
 
-export function exportAllJSON(entries = [], collections = [], externalPublications = []) {
+export function exportAllJSON(entries = [], collections = [], externalPublications = [], tags = [], tagAssignments = []) {
   return JSON.stringify({
-    schema_version: "movie-imprint-export-all-0.3",
+    schema_version: "movie-imprint-export-all-0.4",
     exported_at: new Date().toISOString(),
     count: entries.length,
     records: entries.map(({ record, work, viewingEvents }) => buildExportPayload(record, work, viewingEvents)),
     collections,
-    external_publications: externalPublications
+    external_publications: externalPublications,
+    tags,
+    tag_assignments: tagAssignments
   }, null, 2);
 }
 

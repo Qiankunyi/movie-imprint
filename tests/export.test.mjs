@@ -402,7 +402,7 @@ test("R6：条目指向被合并掉的旧 work id 时，通过 merged_from 回�
 
 test("R6：exportAllJSON 带上片单，且 schema 版本号跟着升", () => {
   const payload = JSON.parse(exportAllJSON([], buildCollectionsExport(R6_COLLECTIONS, R6_WORKS, () => false)));
-  assert.equal(payload.schema_version, "movie-imprint-export-all-0.3");
+  assert.equal(payload.schema_version, "movie-imprint-export-all-0.4");
   assert.equal(payload.collections.length, 1);
   assert.equal(payload.collections[0].entries[0].reason, "重看《蜘蛛侠：英雄归来》后觉得他的秃鹫非常不错");
 });
@@ -439,4 +439,12 @@ test("R6：没有片单时不留一个空的「# 片单」标题", () => {
   assert.equal(exportCollectionsMarkdown([]), "");
   const md = exportAllMarkdown([], []);
   assert.doesNotMatch(md, /# 片单/);
+});
+
+test("标签实体与关联进入全量 JSON 备份", () => {
+  const tags = [{ id: "tag_1", default_name: "夏天", category: "custom", source: "user" }];
+  const assignments = [{ id: "work:w1:tag_1", tag_id: "tag_1", target_type: "work", target_id: "w1" }];
+  const payload = JSON.parse(exportAllJSON([], [], [], tags, assignments));
+  assert.deepEqual(payload.tags, tags);
+  assert.deepEqual(payload.tag_assignments, assignments);
 });
