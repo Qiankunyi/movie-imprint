@@ -11,7 +11,13 @@
  * 二维码令牌、会员登录 URL、支付方式与卡号仍然强制移除。票价不得进入 AI 请求体。
  */
 
-import { classifyBracketContent, extractEventTypes, normalizeCinemaFormat } from "./event-types.js";
+import {
+  classifyBracketContent,
+  extractCinemaFormatCandidates,
+  extractEventTypes,
+  normalizeCinemaFormat,
+  splitVersionFromTitle
+} from "./event-types.js";
 
 // ─── 1. 敏感信息模式 ────────────────────────────────────────────────────────
 
@@ -155,17 +161,6 @@ const SMT_HEADER_RE_G = /松竹マルチプレックスシアターズ|SMT\b|smt
  */
 const BRACKET_TOKEN_RE = /【([^】]*)】|\[([^\]]*)\]/gu;
 
-/** 仅拆分明确位于标题末尾、且与片名有空格边界的版本词。 */
-function extractVersionSuffix(title) {
-  const value = String(title || "").trim();
-  const match = value.match(/[\s　]+((?:4K\s*)?デジタルリマスター(?:版)?|4K\s*リマスター(?:版)?|完全版|修復版)$/i);
-  if (!match) return { movieTitle: value, version: null };
-  return {
-    movieTitle: value.slice(0, match.index).trim(),
-    version: match[1].replace(/\s+/g, "").trim()
-  };
-}
-
 /**
  * 从邮件中提取的原始片名中分离制式前缀、活动前缀与片名。
  *
@@ -199,7 +194,7 @@ export function extractFormatAndTitle(raw) {
   for (const token of removableTokens) cleanedTitle = cleanedTitle.replace(token, " ");
   cleanedTitle = cleanedTitle.replace(/[\s　]+/g, " ").trim();
 
-  const suffix = extractVersionSuffix(cleanedTitle);
+  const suffix = splitVersionFromTitle(cleanedTitle);
   version ||= suffix.version;
   const normalizedFormats = rawFormats.map(normalizeCinemaFormat);
   const normalized = normalizedFormats.find((item) => item.format && item.format !== "普通")
@@ -279,6 +274,92 @@ function computeDurationMinutes(startIso, endIso) {
   return Math.round((end - start) / 60000);
 }
 
+// ─── 字段候选识别 ────────────────────────────────────────────────────────────
+
+/**
+ * 同一语义允许不同影院使用不同标签和分隔符；这里仅识别字段，不在这一层解释字段内容。
+ * priority 越小越明确，例如「上映作品」优先于泛化的「作品」。
+ */
+const TICKET_FIELD_DEFINITIONS = [
+  { key: "title", labels: [["上映作品", 0], ["作品名", 1], ["映画名", 1], ["タイトル", 1], ["作品", 2]] },
+  { key: "auditorium", labels: [["上映スクリーン", 0], ["上映劇場", 0], ["シアター名", 1], ["スクリーン名", 1]] },
+  { key: "cinema", labels: [["劇場名", 0], ["映画館", 1], ["劇場", 2]] },
+  { key: "datetime", labels: [["日時", 0]] },
+  { key: "date", labels: [["上映日", 0], ["観賞日", 1], ["鑑賞日", 1]] },
+  { key: "time_range", labels: [["上映時間", 0]] },
+  { key: "start_time", labels: [["開映時間", 0], ["開映", 1]] },
+  { key: "end_time", labels: [["終映時間", 0], ["終映", 1]] },
+  { key: "seat", labels: [["座席番号", 0], ["お座席", 1], ["席番", 1], ["座席", 2]] },
+  { key: "ticket", labels: [["チケット", 0], ["券種", 1]] },
+  { key: "format", labels: [["上映方式", 0], ["放映方式", 0], ["制式", 1]] },
+  { key: "price", labels: [["購入金額", 0], ["料金", 1], ["金額", 1], ["合計", 2]] }
+];
+
+function stripFieldMarker(line) {
+  return String(line || "").replace(/^[ \t　]*[▼▽■◆◇●○・▶►][ \t　]*/u, "").trim();
+}
+
+function matchTicketFieldLine(line) {
+  const clean = stripFieldMarker(line);
+  for (const definition of TICKET_FIELD_DEFINITIONS) {
+    const labels = definition.labels.slice().sort((a, b) => b[0].length - a[0].length);
+    for (const [label, priority] of labels) {
+      if (!clean.startsWith(label)) continue;
+      const remainder = clean.slice(label.length);
+      const match = remainder.match(/^(?:[ \t　]*[：:][ \t　]*|[ \t　]+)(.+)$/u);
+      if (match?.[1]?.trim()) return { key: definition.key, label, priority, value: match[1].trim() };
+    }
+  }
+  return null;
+}
+
+function extractTicketFields(segment) {
+  const fields = {};
+  String(segment || "").split(/\r?\n/).forEach((line, lineIndex) => {
+    const match = matchTicketFieldLine(line);
+    if (!match) return;
+    fields[match.key] ||= [];
+    fields[match.key].push({ ...match, lineIndex });
+  });
+  return fields;
+}
+
+function pickTicketField(fields, key) {
+  return (fields[key] || [])
+    .slice()
+    .sort((a, b) => a.priority - b.priority || a.lineIndex - b.lineIndex)[0]?.value || null;
+}
+
+function normalizeFormatCandidates(detailsCandidates) {
+  const candidates = detailsCandidates.filter(Boolean);
+  const selected = candidates.find((item) => item.format && item.format !== "普通")
+    || candidates.find((item) => item.format)
+    || normalizeCinemaFormat(null);
+  return {
+    format: selected.format,
+    formatNote: selected.formatNote,
+    is3D: candidates.some((item) => item.is3D)
+  };
+}
+
+function cleanCinemaField(value) {
+  let cinema = String(value || "").trim();
+  for (const candidate of extractCinemaFormatCandidates(cinema)) {
+    const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    cinema = cinema.replace(new RegExp(`[ \\t　]*(?:【|\\[)?${escaped}(?:】|\\])?[ \\t　]*$`, "i"), "").trim();
+  }
+  return cinema || null;
+}
+
+function parseTicketType(value) {
+  if (!value) return null;
+  return String(value)
+    .trim()
+    .replace(/[ \t　]+[¥￥]?[\d,]+(?:\.\d+)?\s*(?:円|日元|JPY|元|CNY|RMB)(?:\s*[/／]\s*\d+\s*枚)?\s*$/i, "")
+    .replace(/[ \t　]+\d+\s*枚\s*$/, "")
+    .trim() || null;
+}
+
 // ─── 4. 单段邮件字段解析 ─────────────────────────────────────────────────────
 
 /**
@@ -292,22 +373,16 @@ function computeDurationMinutes(startIso, endIso) {
  * @returns {ScreeningDraft | null}
  */
 export function parseScreeningSegment(segment) {
+  const fields = extractTicketFields(segment);
+
   // ── 片名 ──────────────────────────────────────────────────────────────────
   // 明确字段必须先于任何 heuristic；「上映作品」是影院票据中最高优先级的作品字段。
-  const explicitTitlePatterns = [
-    /(?:^|\n)[ \t　]*上映作品[ \t　]*[：:][ \t　]*([^\n]+)/im,
-    /(?:^|\n)[ \t　]*(?:作品名|作品|映画名|タイトル)[ \t　]*[：:][ \t　]*([^\n]+)/im
-  ];
   const heuristicTitlePatterns = [
     /(?:^|\n)[ \t　]*((?:【[^】]*】|\[[^\]]*\])+[ \t　]*[^\n]+)/m,
     /(?:^|\n)(劇場版[^\n]+)/m,
     /(?:^|\n)([^\n]*(?:劇場版|THE MOVIE|movie)[^\n]*)/im
   ];
-  let rawTitle = null;
-  for (const pattern of explicitTitlePatterns) {
-    const m = segment.match(pattern);
-    if (m) { rawTitle = m[1].trim(); break; }
-  }
+  let rawTitle = pickTicketField(fields, "title");
   if (!rawTitle) {
     for (const pattern of heuristicTitlePatterns) {
       const m = segment.match(pattern);
@@ -321,6 +396,7 @@ export function parseScreeningSegment(segment) {
       !l.match(/^\d{4}[\\/\-年]/) &&
       !l.match(/[席座]/) &&
       !l.match(/REDACTED/) &&
+      !matchTicketFieldLine(l) &&
       !l.match(/^(?:購入番号|予約番号|注文番号|申込番号|受付番号|劇場名|上映劇場|劇場|映画館|シアター名|スクリーン名|上映日|観賞日|鑑賞日|日時|上映時間|開映時間|終映時間|券種|購入枚数|枚数|合計|購入金額|料金|金額|決済方法|支払方法|座席|席番|お座席)[ \t　]*[：:]/i) &&
       !l.match(/^(?:合計)?[¥￥]?[\d,]+\s*(?:円|元|JPY|CNY)?$/i) &&
       !/^https?:\/\//i.test(l) &&
@@ -374,26 +450,24 @@ export function parseScreeningSegment(segment) {
 
   // ── 影院 ──────────────────────────────────────────────────────────────────
   // 注意：先用带标签的精确模式，避免匹配到「劇場版」「シアターズ」等非影院名
+  const rawCinemaField = pickTicketField(fields, "cinema");
   const cinemaPatterns = [
-    /(?:^|\n)[ \t　]*(?:劇場名|映画館)[ \t　]*[：:][ \t　]*([^\n]+)/im,
-    /(?:^|\n)[ \t　]*劇場[ \t　]*[：:][ \t　]*([^\n]+)/im, // 「劇場：MOVIX京都」，不匹配「上映劇場」
     /(MOVIX\S+)/i,
     /(TOHOシネマズ\S+)/i,
     /(イオンシネマ\S+)/i,
     /(ユナイテッド・シネマ\S+)/i,
     /([^\n]*(?:シネマ|シアター)[^\n]*(?:京都|大阪|東京|名古屋|福岡|仙台|札幌)[^\n]*)/i
   ];
-  let cinemaName = null;
-  for (const pattern of cinemaPatterns) {
-    const m = segment.match(pattern);
-    if (m) { cinemaName = m[1].trim(); break; }
+  let cinemaName = cleanCinemaField(rawCinemaField);
+  if (!cinemaName) {
+    for (const pattern of cinemaPatterns) {
+      const m = segment.match(pattern);
+      if (m) { cinemaName = m[1].trim(); break; }
+    }
   }
 
   // 「上映劇場」在 109 シネマズ等票据中表示具体影厅，不能与「劇場名」混用。
-  const auditoriumMatch = segment.match(
-    /(?:^|\n)[ \t　]*(?:上映劇場|シアター名|スクリーン名|上映スクリーン)[ \t　]*[：:][ \t　]*([^\n]+)/im
-  );
-  const auditorium = auditoriumMatch ? auditoriumMatch[1].trim() : null;
+  const auditorium = pickTicketField(fields, "auditorium");
 
   // 城市：从影院名推断
   let city = null;
@@ -406,28 +480,17 @@ export function parseScreeningSegment(segment) {
   // 具体的银幕／放映规格排在前面，裸的 "Dolby"（可能只是 Dolby Atmos 音响系统，不代表
   // Dolby Cinema 银幕规格）放最后兜底，避免它在同一段文本里抢在 ScreenX/IMAX 等真正的
   // 银幕规格前面被误判（参见 src/event-types.js 顶部注释里的真实票务案例）。
-  const formatPatterns = [
-    /(?:上映方式|放映方式|制式)[ \t　]*[：:][ \t　]*([^\n]+)/i,
-    /(IMAX\s*(?:(?:レーザー|LASER|with\s*Laser)\s*)?GT)/i,
-    /(IMAX(?:\s*(?:レーザー|Laser|デジタル))?(?:\s*3D)?)/i,
-    /(ScreenX)/i,
-    /(4DX(?:SCREEN)?(?:\s*3D)?)/i,
-    /(MX4D(?:\s*3D)?)/i,
-    /(TCX)/i,
-    /(BESTIA)/i,
-    /(Dolby\s*Cinema)/i,
-    /(Dolby\s*(?:Atmos|Vision)?)/i
-  ];
-  let rawScreeningFormat = null;
-  if (!formatFromTitle) {
-    for (const pattern of formatPatterns) {
-      const m = segment.match(pattern);
-      if (m) { rawScreeningFormat = m[1].trim(); break; }
+  const formatDetailsCandidates = [];
+  if (formatFromTitle) {
+    formatDetailsCandidates.push({ format: formatFromTitle, formatNote: formatNoteFromTitle, is3D: is3DFromTitle });
+  }
+  const rawFormatSources = [pickTicketField(fields, "format"), rawCinemaField, segment];
+  for (const source of rawFormatSources) {
+    for (const candidate of extractCinemaFormatCandidates(source)) {
+      formatDetailsCandidates.push(normalizeCinemaFormat(candidate));
     }
   }
-  const normalizedFormat = formatFromTitle
-    ? { format: formatFromTitle, formatNote: formatNoteFromTitle, is3D: is3DFromTitle }
-    : normalizeCinemaFormat(rawScreeningFormat);
+  const normalizedFormat = normalizeFormatCandidates(formatDetailsCandidates);
 
   // ── 座位 ──────────────────────────────────────────────────────────────────
   // 格式：J-11、J-12 或 J11 J12 或 「J-11・J-12」
@@ -444,6 +507,7 @@ export function parseScreeningSegment(segment) {
   // ── 票务提供商 ────────────────────────────────────────────────────────────
   let ticketProvider = null;
   if (SMT_HEADER_RE.test(segment)) ticketProvider = "SMT";
+  else if (/\bMOVIX/i.test(segment)) ticketProvider = "SMT";
   else if (/toho-cinemas\.com|TOHOシネマズ/i.test(segment)) ticketProvider = "TOHO";
   else if (/aeoncinema\.com|イオンシネマ/i.test(segment)) ticketProvider = "AEON";
   else if (/KINEZO|kinezo\.jp/i.test(segment)) ticketProvider = "KINEZO";
@@ -455,6 +519,7 @@ export function parseScreeningSegment(segment) {
 
   // ── 票价（R1 红线变更：不再脱敏，正常解析保留）────────────────────────────
   const ticketPrice = parseTicketPrice(segment);
+  const ticketType = parseTicketType(pickTicketField(fields, "ticket"));
 
   return {
     movieTitle,
@@ -473,7 +538,8 @@ export function parseScreeningSegment(segment) {
     seats,
     seatCount: seats.length,
     ticketProvider,
-    ticketPrice
+    ticketPrice,
+    ticketType
   };
 }
 
@@ -498,6 +564,7 @@ export function parseScreeningSegment(segment) {
  * @property {number}        seatCount        座位数
  * @property {string|null}   ticketProvider   票务提供商标识
  * @property {{amount:number,currency:"JPY"|"CNY",count?:number}|null} ticketPrice 票价（R1 起不再脱敏）
+ * @property {string|null}   ticketType       票种
  */
 
 /**
@@ -587,6 +654,7 @@ export function draftViewingEvent(draft, workId, recordId = null) {
       seats: draft.seats,
       seat_count: draft.seatCount,
       ticket_provider: draft.ticketProvider,
+      ticket_type: draft.ticketType || null,
       event_types: draft.eventTypes || [],
       bonus_note: null   // 特典描述格式过于自由，R1 只建字段，留给 R2 确认卡手填
     },

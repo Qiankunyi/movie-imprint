@@ -116,6 +116,7 @@ function emptyViewingContext() {
     seats: [],
     seat_count: 0,
     ticket_provider: null,
+    ticket_type: null,
     event_types: [],
     bonus_note: null
   };

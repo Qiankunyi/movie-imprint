@@ -61,12 +61,8 @@ const FORMAT_EXTRACT_PATTERNS = [
 ];
 
 /** 只识别足够明确的版本词；不对普通标题做泛化删词。 */
-const VERSION_PATTERNS = [
-  /^(?:4K\s*)?デジタルリマスター(?:版)?$/i,
-  /^4K\s*リマスター(?:版)?$/i,
-  /^完全版$/,
-  /^修復版$/
-];
+const VERSION_LABEL_PATTERN = /^(?:4K\s*リマスタリング版|(?:4K\s*)?デジタルリマスター(?:版)?|4K\s*リマスター(?:版)?|リマスター版|完全版|修復版)$/i;
+const VERSION_SUFFIX_PATTERN = /[\s　]+(4K\s*リマスタリング版|(?:4K\s*)?デジタルリマスター(?:版)?|4K\s*リマスター(?:版)?|リマスター版|完全版|修復版)$/i;
 
 function extractPrimaryFormat(value) {
   for (const pattern of FORMAT_EXTRACT_PATTERNS) {
@@ -90,7 +86,7 @@ export function classifyBracketContent(content) {
     return { kind: "format", value: extractPrimaryFormat(value) };
   }
 
-  if (VERSION_PATTERNS.some((pattern) => pattern.test(value))) {
+  if (VERSION_LABEL_PATTERN.test(value)) {
     return { kind: "version", value };
   }
 
@@ -101,6 +97,49 @@ export function classifyBracketContent(content) {
   }
 
   return { kind: "unknown", value };
+}
+
+/**
+ * 从标题末尾保守拆出明确版本。必须有空白边界，避免误删正式标题的一部分。
+ * @param {string|null|undefined} title
+ * @returns {{ movieTitle: string, version: string|null }}
+ */
+export function splitVersionFromTitle(title) {
+  const value = String(title || "").trim();
+  const match = value.match(VERSION_SUFFIX_PATTERN);
+  if (!match) return { movieTitle: value, version: null };
+  return {
+    movieTitle: value.slice(0, match.index).trim(),
+    version: match[1].replace(/^4K\s+/i, "4K").trim()
+  };
+}
+
+/**
+ * 从任意候选文本中提取明确放映规格词。这里只产生候选，不负责最终分类。
+ * @param {string|null|undefined} text
+ * @returns {string[]}
+ */
+export function extractCinemaFormatCandidates(text) {
+  const value = String(text || "");
+  if (!value) return [];
+  const patterns = [
+    /IMAX\s*(?:(?:レーザー|LASER|with\s*Laser)\s*)?GT/gi,
+    /IMAX(?:\s*(?:レーザー|Laser|デジタル)|\s+with\s+Laser)?(?:\s*3D)?/gi,
+    /ドルビーシネマ|Dolby\s*Cinema/gi,
+    /MX4D(?:\s*3D)?/gi,
+    /4DX(?:\s*SCREEN)?(?:\s*3D)?/gi,
+    /ScreenX/gi,
+    /\b(?:TCX|BESTIA)\b/gi,
+    /(?:^|[\s　【[])([23]D)(?=$|[\s　】\]])/gi
+  ];
+  const found = [];
+  for (const pattern of patterns) {
+    for (const match of value.matchAll(pattern)) {
+      const candidate = (match[1] || match[0]).trim();
+      if (candidate && !found.some((item) => item.toLowerCase() === candidate.toLowerCase())) found.push(candidate);
+    }
+  }
+  return found;
 }
 
 /**

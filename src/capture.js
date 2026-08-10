@@ -260,6 +260,7 @@ export function buildPendingViewingEvent() {
       seats: [],
       seat_count: 0,
       ticket_provider: null,
+      ticket_type: null,
       event_types: [],
       bonus_note: null
     },
@@ -316,6 +317,7 @@ export function buildManualViewingEvent({ viewedOn, locationType, cinemaName = n
       seats: [],
       seat_count: 0,
       ticket_provider: null,
+      ticket_type: null,
       event_types: normalizedEventTypes,
       bonus_note: isCinema ? syncBonusNote(normalizedEventTypes, bonusNote) : null
     },

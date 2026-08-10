@@ -12,11 +12,11 @@ import {
 } from "./stills.js?v=1";
 import { selectDailySidebarStill } from "./sidebar-artwork.js?v=1";
 import { SIDEBAR_STILLS, SIDEBAR_STILL_EXTENSIONS } from "../public/assets/sidebar-stills/manifest.js?v=1";
-import { parseTicketText, draftViewingEvent } from "./ticket.js?v=3";
+import { parseTicketText, draftViewingEvent } from "./ticket.js?v=4";
 import { buildWorkSearchQuery } from "./bangumi.js?v=13";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
-import { runMigrationIfNeeded } from "./migrate.js?v=4";
-import { EVENT_TYPES, normalizeCinemaFormat } from "./event-types.js?v=2";
+import { runMigrationIfNeeded } from "./migrate.js?v=5";
+import { EVENT_TYPES, normalizeCinemaFormat } from "./event-types.js?v=3";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
 import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=9";
 import { memoryListMarkup } from "./memory-list.js?v=1";
@@ -110,7 +110,7 @@ import {
   toggleEventSelection,
   selectAllEvents,
   selectedPendingEvents
-} from "./capture.js?v=7";
+} from "./capture.js?v=8";
 import {
   ATTITUDES,
   ATTITUDE_DESCRIPTIONS,
@@ -1128,6 +1128,7 @@ function workHistoryRow(item, index) {
     ctx.auditorium || "",
     normalizedSpec.formatNote || "",
     normalizedSpec.is3D ? "3D" : "",
+    ctx.ticket_type || "",
     item.duration_minutes ? `${item.duration_minutes}分` : "",
     ctx.seats?.length ? `座位 ${ctx.seats.join("、")}` : "",
     ticketPriceLabel(item)
@@ -1592,6 +1593,7 @@ function viewingEventsSection(events) {
         ${normalizedSpec.format ? `<span>${escapeHtml(normalizedSpec.format)}</span>` : ""}
         ${normalizedSpec.formatNote ? `<span>${escapeHtml(normalizedSpec.formatNote)}</span>` : ""}
         ${normalizedSpec.is3D ? `<span>3D</span>` : ""}
+        ${ctx.ticket_type ? `<span>${escapeHtml(ctx.ticket_type)}</span>` : ""}
         ${seats ? `<span>座位 ${escapeHtml(seats)}</span>` : ""}
         ${ticketPrice ? `<span>${escapeHtml(ticketPrice)}</span>` : ""}
       </div>
@@ -2158,6 +2160,7 @@ function ticketConfirmOverlay() {
       <div class="ticket-confirm-meta secondary">
         ${ec.version ? `<span>${escapeHtml(ec.version)}</span>` : ""}
         ${normalizedSpec.format ? `<span>${escapeHtml(normalizedSpec.format)}${normalizedSpec.is3D ? " · 3D" : ""}</span>` : ""}
+        ${ec.ticket_type ? `<span>${escapeHtml(ec.ticket_type)}</span>` : ""}
         ${event.duration_minutes ? `<span>${event.duration_minutes}分</span>` : ""}
         ${seatsStr ? `<span>座位 ${escapeHtml(seatsStr)}</span>` : ""}
         ${priceStr ? `<span>${escapeHtml(priceStr)}</span>` : ""}
@@ -3871,6 +3874,7 @@ async function saveHistoryEventForm(form) {
       seats: locationType === "cinema" ? (target.viewing_context?.seats || []) : [],
       seat_count: locationType === "cinema" ? (target.viewing_context?.seat_count || 0) : 0,
       ticket_provider: locationType === "cinema" ? (target.viewing_context?.ticket_provider || null) : null,
+      ticket_type: locationType === "cinema" ? (target.viewing_context?.ticket_type || null) : null,
       event_types: eventTypes,
       bonus_note: eventTypes.includes("bonus_distribution") ? bonusNoteInput : null
     },
@@ -5788,6 +5792,7 @@ document.addEventListener("change", async (event) => {
         is_3d: false,
         seats: [],
         seat_count: 0,
+        ticket_type: null,
         event_types: [],
         bonus_note: null
       }

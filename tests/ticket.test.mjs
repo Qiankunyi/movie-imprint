@@ -170,6 +170,12 @@ const REAL_109_TICKET = `購入番号：290198
 　　　　　合計2,300円
 座席　　：H -19`;
 
+const REAL_MOVIX_KYOTO_TICKET = `▼劇場　MOVIX京都　Dolby Cinema
+▼作品名　【DolbyCinema】魔女の宅急便 4Kリマスタリング版
+▼日時　2026/7/8(水)　16:30～18:25
+▼座席番号　L-11
+▼チケット　水曜サービスデイ（大学生）　2,100円/1枚`;
+
 describe("parseTicketText — 109シネマズ真实票据回归", () => {
   const result = parseTicketText(REAL_109_TICKET);
   const screening = result.screenings[0];
@@ -206,6 +212,39 @@ describe("parseTicketText — 109シネマズ真实票据回归", () => {
     assert.equal(event.viewing_context.format, "IMAX GT");
     assert.equal(event.viewing_context.format_note, null);
     assert.equal(event.viewing_context.is_3d, false);
+  });
+});
+
+describe("parseTicketText — MOVIX京都真实票据回归", () => {
+  const result = parseTicketText(REAL_MOVIX_KYOTO_TICKET);
+  const screening = result.screenings[0];
+
+  it("支持 ▼ 标签 + 空白分隔字段，并完成作品/版本/规格拆分", () => {
+    assert.equal(screening.movieTitle, "魔女の宅急便");
+    assert.equal(screening.version, "4Kリマスタリング版");
+    assert.equal(screening.format, "Dolby Cinema");
+    assert.equal(screening.formatNote, null);
+  });
+
+  it("剧场字段同时含影院与规格时只保留真实影院名", () => {
+    assert.equal(screening.cinemaName, "MOVIX京都");
+    assert.equal(screening.auditorium, null, "原文没有影厅编号时必须保持为空");
+  });
+
+  it("日期时间、座位、票种、票价、币种与张数正确", () => {
+    assert.equal(screening.viewedOn, "2026-07-08");
+    assert.equal(screening.screeningAt, "2026-07-08T16:30:00+09:00");
+    assert.equal(screening.screeningEndsAt, "2026-07-08T18:25:00+09:00");
+    assert.deepEqual(screening.seats, ["L-11"]);
+    assert.equal(screening.ticketType, "水曜サービスデイ（大学生）");
+    assert.deepEqual(screening.ticketPrice, { amount: 2100, currency: "JPY", count: 1 });
+  });
+
+  it("ViewingEvent 草稿保留票种，且不编造影厅", () => {
+    const event = draftViewingEvent(screening, "work_kiki");
+    assert.equal(event.viewing_context.ticket_type, "水曜サービスデイ（大学生）");
+    assert.equal(event.viewing_context.auditorium, null);
+    assert.equal(event.duration_minutes, 115);
   });
 });
 

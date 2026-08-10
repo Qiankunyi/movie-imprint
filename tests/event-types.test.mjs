@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyBracketContent, extractEventTypes, normalizeCinemaFormat } from "../src/event-types.js";
+import { classifyBracketContent, extractEventTypes, normalizeCinemaFormat, splitVersionFromTitle } from "../src/event-types.js";
 import { extractFormatAndTitle } from "../src/ticket.js";
 
 test("classifyBracketContent 识别制式关键词", () => {
@@ -33,6 +33,24 @@ test("明确版本【】内容 → 写入 version，不再冒充 format", () => 
   assert.equal(version, "デジタルリマスター版");
   assert.equal(format, null);
   assert.deepEqual(eventTypes, []);
+});
+
+test("常见日文版本后缀被保守拆分，正式标题没有空白边界时不动", () => {
+  for (const version of [
+    "4Kリマスタリング版",
+    "4Kリマスター",
+    "4Kリマスター版",
+    "4Kデジタルリマスター",
+    "4Kデジタルリマスター版",
+    "デジタルリマスター",
+    "デジタルリマスター版",
+    "リマスター版",
+    "修復版",
+    "完全版"
+  ]) {
+    assert.deepEqual(splitVersionFromTitle(`魔女の宅急便 ${version}`), { movieTitle: "魔女の宅急便", version });
+  }
+  assert.deepEqual(splitVersionFromTitle("完全版"), { movieTitle: "完全版", version: null });
 });
 
 test("放映规格标准化保留 IMAX / IMAX GT 差异，并把 3D 作为附加属性", () => {
