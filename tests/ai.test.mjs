@@ -57,9 +57,32 @@ test("统一 AI 结构只接受原文中真实存在的证据", () => {
 });
 
 test("统一 AI 结构拒绝模型补造的证据片段", () => {
+  // 行为变更（不是放宽）：不合格的那一条被丢弃，其余照常交付。
+  // 要守住的性质没变——补造的内容绝不能出现在结果里。
   const invalid = structuredClone(providerOutput);
   invalid.memory_cards[0].evidence[0].excerpt = "原文从来没有出现的剧情";
-  assert.throws(() => validateAiAnalysis(rawText, invalid), /evidence_not_in_source/);
+  const result = validateAiAnalysis(rawText, invalid);
+
+  const allEvidence = [
+    ...result.attitude.evidence,
+    ...result.emotions.flatMap((item) => item.evidence),
+    ...result.memory_cards.flatMap((item) => item.evidence)
+  ];
+  assert.equal(
+    allEvidence.some((item) => item.excerpt.includes("原文从来没有出现的剧情")),
+    false,
+    "补造的证据进入了结果"
+  );
+  assert.ok(result.warnings.some((line) => line.includes("引文不在原文里")));
+});
+
+test("整份证据全部不合格时仍然当作失败，不假装成功", () => {
+  const invalid = structuredClone(providerOutput);
+  const poison = (list) => (list || []).map((item) => ({ ...item, excerpt: "原文从来没有出现的剧情" }));
+  invalid.attitude.evidence = poison(invalid.attitude.evidence);
+  invalid.emotions = (invalid.emotions || []).map((item) => ({ ...item, evidence: poison(item.evidence) }));
+  invalid.memory_cards = (invalid.memory_cards || []).map((item) => ({ ...item, evidence: poison(item.evidence) }));
+  assert.throws(() => validateAiAnalysis(rawText, invalid), /evidence_all_rejected/);
 });
 
 test("供应商列表只暴露配置状态而不暴露密钥", () => {

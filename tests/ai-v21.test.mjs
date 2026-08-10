@@ -87,6 +87,8 @@ test("V2.1 双源 Evidence 精确关联来源与源版本", () => {
 });
 
 test("采访问题文案不能冒充用户 Evidence", () => {
+  // 行为变更（不是放宽）：单条不合格的证据现在被**丢弃**，不再让整份整理作废。
+  // 要守住的性质没变——问题文案绝不能作为用户证据出现在结果里。
   const invalid = output([{ ...card(0), evidence: [evidence({
     source_type: "self_interview",
     source_id: "answer_q3",
@@ -94,7 +96,21 @@ test("采访问题文案不能冒充用户 Evidence", () => {
     question_id: "memorable_scene",
     excerpt: "印象最深的场景是什么？"
   })] }]);
-  assert.throws(() => validateAiAnalysis(sources, invalid), /evidence_not_in_source/);
+  const result = validateAiAnalysis(sources, invalid);
+
+  const allEvidence = [
+    ...result.attitude.evidence,
+    ...result.emotions.flatMap((item) => item.evidence),
+    ...result.memory_cards.flatMap((item) => item.evidence)
+  ];
+  assert.equal(
+    allEvidence.some((item) => item.excerpt.includes("印象最深的场景是什么")),
+    false,
+    "采访问题混进了用户证据"
+  );
+  // 这张卡唯一的证据被丢掉，卡片本身也不该留下
+  assert.equal(result.memory_cards.length, 0);
+  assert.ok(result.warnings.some((line) => line.includes("引文不在原文里")), "没有把丢弃原因告诉用户");
 });
 
 test("0张卡片是合法结果", () => {
