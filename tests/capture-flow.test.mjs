@@ -142,6 +142,17 @@ describe("buildManualViewingEvent（手动填写观影信息）", () => {
     assert.equal(event.viewing_context.format, "IMAX");
   });
 
+  it("手填影院票价时金额、币种、张数独立保存", () => {
+    const event = buildManualViewingEvent({
+      viewedOn: "2017-09-10",
+      locationType: "cinema",
+      ticketPrice: { amount: 45, currency: "CNY", count: 2 }
+    });
+    assert.deepEqual(event.ticket_price, { amount: 45, currency: "CNY", count: 2 });
+    const home = buildManualViewingEvent({ locationType: "home", ticketPrice: { amount: 1800, currency: "JPY" } });
+    assert.equal(home.ticket_price, null, "在家观看不保存影院票价");
+  });
+
   it("在影院 + 选中活动 + 特典备注", () => {
     const event = buildManualViewingEvent({
       locationType: "cinema",
@@ -212,7 +223,7 @@ describe("updateEventTicketTags / updateBonusNote（票务确认卡编辑）", (
     seats: ["K-11", "K-12"],
     seatCount: 2,
     ticketProvider: "TOHO",
-    ticketPrice: { amount: 4000, currency: "JPY" }
+    ticketPrice: { amount: 4000, currency: "CNY", count: 2 }
   };
 
   it("解析出的 event_types 在确认卡预选", () => {

@@ -87,6 +87,9 @@ export function createViewingCaptureContext({ work = null, subjectId = null, vie
     cinemaName: null,
     auditorium: null,
     format: null,
+    ticketAmount: null,
+    ticketCurrency: "JPY",
+    ticketCount: 1,
     eventTypes: [],
     bonusNote: null,
     workMatch: { status: "idle", candidates: [], sources: null },
@@ -270,7 +273,7 @@ export function buildPendingViewingEvent() {
  *   eventTypes?: string[], bonusNote?: string|null }} input
  * @returns {object}
  */
-export function buildManualViewingEvent({ viewedOn, locationType, cinemaName = null, auditorium = null, format = null, eventTypes = [], bonusNote = null } = {}) {
+export function buildManualViewingEvent({ viewedOn, locationType, cinemaName = null, auditorium = null, format = null, ticketPrice = null, eventTypes = [], bonusNote = null } = {}) {
   const id = newEventId();
   const isCinema = locationType === "cinema";
   const normalizedEventTypes = isCinema ? [...new Set(eventTypes)] : [];
@@ -286,7 +289,13 @@ export function buildManualViewingEvent({ viewedOn, locationType, cinemaName = n
     viewing_relation: null,
     watch_index: null,
     location_type: isCinema ? "cinema" : "home",
-    ticket_price: null,
+    ticket_price: isCinema && Number(ticketPrice?.amount) > 0
+      ? {
+          amount: Number(ticketPrice.amount),
+          currency: ticketPrice.currency === "CNY" ? "CNY" : "JPY",
+          count: Math.max(1, Number(ticketPrice.count) || 1)
+        }
+      : null,
     source: "manual",
     screened_content: { kind: "full_movie", episode_start: null, episode_end: null, display_label: null },
     viewing_context: {

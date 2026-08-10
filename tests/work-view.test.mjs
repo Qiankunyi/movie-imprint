@@ -12,6 +12,7 @@ import {
   indexEventsByRecord,
   viewingEventsForRecord,
   summarizeWorksForShelf,
+  availableShelfDecades,
   filterShelfEntries,
   sortShelfEntries
 } from "../src/work-view.js";
@@ -363,6 +364,31 @@ test("R6：观看状态与作品类型两个维度正交", () => {
   ];
   const got = filterShelfEntries(entries, { watchStatus: "want", workType: "animation_film" });
   assert.deepEqual(got.map((e) => e.work.id), ["a"]);
+});
+
+test("上映年代选项从库中年份动态生成，无有效年份的作品不会报错", () => {
+  const works = [
+    shelfWork("w2014", { release_year: 2014 }),
+    shelfWork("w2017", { release_year: 2017 }),
+    shelfWork("w2025", { release_dates: { entries: [{ date: "2025-03-01" }] } }),
+    shelfWork("legacy2012", { release_year: null, release_dates: { jp: "2012-07-14", cn: null, other: [] } }),
+    shelfWork("unknown", { release_year: null })
+  ];
+  const entries = summarizeWorksForShelf(works, [], { records: works.map((work) => ({ work_id: work.id })) });
+  assert.deepEqual(availableShelfDecades(entries), [2010, 2020]);
+  assert.deepEqual(filterShelfEntries(entries, { watchStatus: "all", decade: 2010 }).map((entry) => entry.work.id), ["w2014", "w2017", "legacy2012"]);
+  assert.deepEqual(filterShelfEntries(entries, { watchStatus: "all", decade: 2020 }).map((entry) => entry.work.id), ["w2025"]);
+  assert.equal(filterShelfEntries(entries, { watchStatus: "all", decade: "all" }).length, 5, "全部年代仍应包含年份未知的作品");
+});
+
+test("年代筛选与已看、作品类型、特别场次保持正交", () => {
+  const entries = [
+    { work: shelfWork("hit", { work_type: "animation_film", release_year: 2017 }), releaseYear: 2017, hasEvents: true, isWatched: true, inCollection: false },
+    { work: shelfWork("wrong-status", { work_type: "animation_film", release_year: 2018 }), releaseYear: 2018, hasEvents: false, isWatched: false, inCollection: true },
+    { work: shelfWork("wrong-decade", { work_type: "animation_film", release_year: 2025 }), releaseYear: 2025, hasEvents: true, isWatched: true, inCollection: false }
+  ];
+  const result = filterShelfEntries(entries, { watchStatus: "watched", workType: "animation_film", eventsOnly: true, decade: 2010 });
+  assert.deepEqual(result.map((entry) => entry.work.id), ["hit"]);
 });
 
 test("R6：想看状态下「特别场次」筛选被短路（没有观影事件就不可能有舞台挨拶）", () => {

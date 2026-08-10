@@ -425,10 +425,20 @@ describe("parseTicketText — KINEZO 单封邮件（含内部分隔线）", () =
 });
 
 describe("parseTicketPrice", () => {
-  it("支持 ￥2,000 / 2000円 / ¥2000 等常见写法", () => {
+  it("支持明确的日元写法，并用日文票务上下文判断 ￥", () => {
     assert.deepEqual(parseTicketPrice("料金：￥2,000"), { amount: 2000, currency: "JPY", count: 1 });
     assert.deepEqual(parseTicketPrice("2000円"), { amount: 2000, currency: "JPY", count: 1 });
-    assert.deepEqual(parseTicketPrice("¥2000"), { amount: 2000, currency: "JPY", count: 1 });
+    assert.deepEqual(parseTicketPrice("JPY 2000"), { amount: 2000, currency: "JPY", count: 1 });
+  });
+
+  it("支持人民币元 / CNY，并且金额与币种分开", () => {
+    assert.deepEqual(parseTicketPrice("票价：45元"), { amount: 45, currency: "CNY", count: 1 });
+    assert.deepEqual(parseTicketPrice("订单金额：￥45"), { amount: 45, currency: "CNY", count: 1 });
+    assert.deepEqual(parseTicketPrice("CNY 45"), { amount: 45, currency: "CNY", count: 1 });
+  });
+
+  it("只有 ¥/￥ 且没有票务语言上下文时不擅自判成日元", () => {
+    assert.equal(parseTicketPrice("¥2000"), null);
   });
 
   it("多笔金额（双人购票）→ 金额合计 + 张数，UI 据此写明「· N 张」", () => {

@@ -11,6 +11,8 @@
  *   补充记录（supplement）没有对应的 ViewingEvent，标"重看"是错的。
  */
 
+import { releaseYearOf } from "./library.js";
+
 function eventSortKey(event) {
   return event?.screening_at || event?.viewed_on || event?.createdAt || "";
 }
@@ -27,6 +29,11 @@ function ascending(keyFn) {
     if (ka > kb) return 1;
     return 0;
   };
+}
+
+function shelfReleaseYear(work) {
+  const year = releaseYearOf(work);
+  return Number.isInteger(year) && year > 1800 && year < 3000 ? year : null;
 }
 
 /**
@@ -282,6 +289,7 @@ export function summarizeWorksForShelf(works, viewingEvents, { records = [], col
       watchCount: ownEvents.length,
       lastWatchedAt,
       hasEvents,
+      releaseYear: shelfReleaseYear(work),
       isWatched: ownEvents.length > 0 || recordCount > 0,
       inCollection: ids.some((id) => collectedWorkIds.has(id))
     };
@@ -318,12 +326,25 @@ export const SHELF_WATCH_STATUSES = ["watched", "want", "all"];
  * @param {{ work: object, hasEvents: boolean, isWatched: boolean, inCollection: boolean }[]} entries
  * @param {{ workType?: string, eventsOnly?: boolean, watchStatus?: "watched"|"want"|"all" }} [filter]
  */
-export function filterShelfEntries(entries, { workType = "all", eventsOnly = false, watchStatus = "all" } = {}) {
+export function availableShelfDecades(entries) {
+  return [...new Set((Array.isArray(entries) ? entries : [])
+    .map((entry) => Number.isInteger(entry?.releaseYear) ? entry.releaseYear : shelfReleaseYear(entry?.work))
+    .filter(Number.isInteger)
+    .map((year) => Math.floor(year / 10) * 10))]
+    .sort((a, b) => a - b);
+}
+
+export function filterShelfEntries(entries, { workType = "all", eventsOnly = false, watchStatus = "all", decade = "all" } = {}) {
   const list = Array.isArray(entries) ? entries : [];
   return list.filter((entry) => {
     if (watchStatus === "watched" && !entry.isWatched) return false;
     if (watchStatus === "want" && (entry.isWatched || !entry.inCollection)) return false;
     if (eventsOnly && watchStatus !== "want" && !entry.hasEvents) return false;
+    if (decade !== "all") {
+      const decadeStart = Number(decade);
+      const year = Number.isInteger(entry.releaseYear) ? entry.releaseYear : shelfReleaseYear(entry.work);
+      if (!Number.isInteger(decadeStart) || !Number.isInteger(year) || year < decadeStart || year > decadeStart + 9) return false;
+    }
     if (workType === "all") return true;
     const type = entry.work.work_type || "unspecified";
     if (workType === "unspecified") return type === "unspecified" || type === "other";

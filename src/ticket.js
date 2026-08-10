@@ -184,7 +184,8 @@ export function extractFormatAndTitle(raw) {
 }
 
 /**
- * 从一段文本中解析票价。支持「￥2,000」「2000円」「¥2000」等常见写法。
+ * 从一段文本中解析票价。金额与币种分开返回；明确的「円 / JPY」和
+ * 「元 / CNY / RMB」直接判定，只有 ¥/￥ 时再根据票务文本语言判断。
  * 多个数值时取各项之和；只有一个数值时即为合计。
  *
  * R5 补丁 6：额外返回 `count`（原文里出现了几笔金额）。
@@ -193,18 +194,45 @@ export function extractFormatAndTitle(raw) {
  * 有了 count，UI 就能明确写成「￥4,500 · 2 张」。
  *
  * @param {string} segment
- * @returns {{ amount: number, currency: "JPY", count: number } | null}
+ * @returns {{ amount: number, currency: "JPY"|"CNY", count: number } | null}
  */
 export function parseTicketPrice(segment) {
   if (!segment) return null;
-  const matches = [...segment.matchAll(/[¥￥]\s?([\d,]+)|([\d,]+)\s*円/g)];
+  const text = String(segment);
+  let currency = null;
+  if (/(?:\d[\d,]*(?:\.\d+)?)\s*(?:円|日元|JPY\b)|\bJPY\s*[\d,]/i.test(text)) currency = "JPY";
+  if (/(?:\d[\d,]*(?:\.\d+)?)\s*(?:元|人民币|CNY\b|RMB\b)|\b(?:CNY|RMB)\s*[\d,]/i.test(text)) currency = "CNY";
+
+  // 同一段出现两种明确币种时无法安全合计，交给用户手动填写。
+  const hasJpy = /円|日元|\bJPY\b/i.test(text);
+  const hasCny = /人民币|\bCNY\b|\bRMB\b|\d[\d,]*(?:\.\d+)?\s*元/i.test(text);
+  if (hasJpy && hasCny) return null;
+
+  if (!currency && /[¥￥]/.test(text)) {
+    const japaneseTicketContext = /料金|金額|大人|小人|劇場|上映|座席|購入|ご予約|KINEZO|シネマ|チケット|松竹/i.test(text);
+    const chineseTicketContext = /票价|金额|人民币|影城|影院|场次|座位|订单|购票/i.test(text);
+    if (japaneseTicketContext && !chineseTicketContext) currency = "JPY";
+    else if (chineseTicketContext && !japaneseTicketContext) currency = "CNY";
+  }
+  // ¥/￥ 本身同时用于人民币和日元；没有上下文就不擅自猜。
+  if (!currency) return null;
+
+  const pattern = currency === "JPY"
+    ? /(?:JPY\s*|[¥￥]\s*)?([\d,]+(?:\.\d+)?)\s*(?:円|日元|JPY\b)?/gi
+    : /(?:CNY\s*|RMB\s*|[¥￥]\s*)?([\d,]+(?:\.\d+)?)\s*(?:元|人民币|CNY\b|RMB\b)?/gi;
+  const matches = [...text.matchAll(pattern)].filter((match) => {
+    const raw = match[0];
+    return currency === "JPY"
+      ? /円|日元|JPY|[¥￥]/i.test(raw)
+      : /元|人民币|CNY|RMB|[¥￥]/i.test(raw);
+  });
   if (!matches.length) return null;
   const amounts = matches
-    .map((m) => Number((m[1] || m[2]).replace(/,/g, "")))
+    .map((m) => Number(m[1].replace(/,/g, "")))
     .filter((n) => Number.isFinite(n) && n > 0);
   if (!amounts.length) return null;
   const amount = amounts.length === 1 ? amounts[0] : amounts.reduce((sum, n) => sum + n, 0);
-  return { amount, currency: "JPY", count: amounts.length };
+  return { amount, currency, count: amounts.length };
 }
 
 function computeDurationMinutes(startIso, endIso) {
@@ -397,7 +425,7 @@ export function parseScreeningSegment(segment) {
  * @property {string[]}      seats            座位列表
  * @property {number}        seatCount        座位数
  * @property {string|null}   ticketProvider   票务提供商标识
- * @property {{amount:number,currency:"JPY"}|null} ticketPrice 票价（R1 起不再脱敏）
+ * @property {{amount:number,currency:"JPY"|"CNY",count?:number}|null} ticketPrice 票价（R1 起不再脱敏）
  */
 
 /**

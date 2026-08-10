@@ -12,7 +12,7 @@ import {
 } from "./stills.js?v=1";
 import { selectDailySidebarStill } from "./sidebar-artwork.js?v=1";
 import { SIDEBAR_STILLS, SIDEBAR_STILL_EXTENSIONS } from "../public/assets/sidebar-stills/manifest.js?v=1";
-import { parseTicketText, draftViewingEvent } from "./ticket.js";
+import { parseTicketText, draftViewingEvent } from "./ticket.js?v=2";
 import { buildWorkSearchQuery } from "./bangumi.js?v=13";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
 import { runMigrationIfNeeded } from "./migrate.js?v=3";
@@ -58,11 +58,12 @@ import {
   buildWorkView,
   findWorkById,
   summarizeWorksForShelf,
+  availableShelfDecades,
   filterShelfEntries,
   sortShelfEntries,
   indexEventsByRecord,
   viewingEventsForRecord
-} from "./work-view.js?v=5";
+} from "./work-view.js?v=6";
 import {
   RELEASE_REGIONS,
   SERIES_RELATION_TYPES,
@@ -109,7 +110,7 @@ import {
   toggleEventSelection,
   selectAllEvents,
   selectedPendingEvents
-} from "./capture.js?v=5";
+} from "./capture.js?v=6";
 import {
   ATTITUDES,
   ATTITUDE_DESCRIPTIONS,
@@ -259,7 +260,7 @@ const state = {
   // R6 新增 watchStatus：书架现在是「App 中所有 Work 的统一总库」，观影前从片单
   // 建的 Work 同样在这里，靠这个维度区分。默认 watched——总库归总库，日常打开
   // 书架想看到的仍然是自己的观影收藏。
-  shelfFilter: { workType: "all", eventsOnly: false, sort: "recent", watchStatus: "watched" },
+  shelfFilter: { workType: "all", eventsOnly: false, sort: "recent", watchStatus: "watched", decade: "all" },
   editingHistoryEventId: null, // R4：正在编辑/补充信息的 ViewingEvent id
   recordingPreference: null,
   aiPreference: null,
@@ -315,6 +316,7 @@ const state = {
   taglineSummary: "",         // R5：当前作品抓回来的完整简介原文（AI 概括的输入）
   taglineSummaryState: "idle", // "idle" | "loading" | "ready" | "missing"
   stillCandidates: { workId: null, status: "idle", items: [], error: null },
+  tmdbStillLink: { workId: null, status: "idle", query: "", candidates: [], error: null },
   fabOpen: false,             // R5 补丁 4：右下角 FAB 二级菜单是否展开
   fabClosing: false,          // R5 补丁 6：正在播收起动画（播完才从 DOM 移除）
   sidebarSkipEntryAnimation: false, // 由手势提交时渲染的抽屉不播入场动画（见 finishSidebarGesture）
@@ -867,6 +869,8 @@ function renderShelf() {
     records: state.records,
     collections: state.collections
   });
+  const availableDecades = availableShelfDecades(summaries);
+  if (filter.decade !== "all" && !availableDecades.includes(Number(filter.decade))) filter.decade = "all";
   const entries = sortShelfEntries(
     filterShelfEntries(summaries, filter),
     filter.sort,
@@ -903,13 +907,18 @@ function renderShelf() {
       <div class="shelf-chip-row" role="group" aria-label="按作品类型筛选">
         ${SHELF_TYPE_FILTERS.map(([value, label]) => `<button type="button" class="shelf-chip ${filter.workType === value ? "selected" : ""}" data-action="set-shelf-type-filter" data-value="${value}" aria-pressed="${filter.workType === value}">${label}</button>`).join("")}
       </div>
-      <div class="shelf-sort-row" role="group" aria-label="观看状态、排序与特别场次筛选">
+      <div class="shelf-sort-row" role="group" aria-label="观看状态、排序、上映年代与特别场次筛选">
         <select class="shelf-select" id="shelf-watch-status" aria-label="观看状态" data-testid="shelf-watch-status">
           ${SHELF_WATCH_STATUS_OPTIONS.map(([value, label]) => `<option value="${value}" ${filter.watchStatus === value ? "selected" : ""}>${label}</option>`).join("")}
         </select>
         ${wantMode ? "" : `<select class="shelf-select" id="shelf-sort" aria-label="排序方式" data-testid="shelf-sort">
           ${SHELF_SORTS.map(([value, label]) => `<option value="${value}" ${filter.sort === value ? "selected" : ""}>${label}</option>`).join("")}
+        </select>`}
+        <select class="shelf-select" id="shelf-decade" aria-label="上映年代" data-testid="shelf-decade">
+          <option value="all" ${filter.decade === "all" ? "selected" : ""}>全部年代</option>
+          ${availableDecades.map((decade) => `<option value="${decade}" ${Number(filter.decade) === decade ? "selected" : ""}>${decade}年代</option>`).join("")}
         </select>
+        ${wantMode ? "" : `
         <span class="shelf-row-divider" aria-hidden="true"></span>
         <button type="button" class="shelf-sort ${filter.eventsOnly ? "selected" : ""}" data-action="toggle-shelf-events-filter" aria-pressed="${filter.eventsOnly}" data-testid="shelf-events-only">特别场次</button>`}
       </div>
@@ -1086,11 +1095,21 @@ function workStillsMarkup(work) {
  * 如果只显示这个总额，看起来就像"这部电影一张票就要这么多"，会误导票价认知。
  * 所以张数大于 1 时必须显式写出来。张数优先取解析到的金额笔数，其次取座位数。
  */
+function normalizedTicketCurrency(ticketPrice) {
+  if (ticketPrice?.currency === "CNY") return "CNY";
+  if (ticketPrice?.currency === "JPY") return "JPY";
+  // 旧版只存数字时沿用应用原有的日本票务默认值，仅用于兼容展示，不回写旧数据。
+  return "JPY";
+}
+
 function ticketPriceLabel(event) {
-  const amount = event?.ticket_price?.amount;
+  const amount = Number(event?.ticket_price?.amount);
   if (!Number.isFinite(amount) || amount <= 0) return "";
   const count = Number(event.ticket_price?.count) || Number(event.viewing_context?.seat_count) || 1;
-  const money = `￥${Number(amount).toLocaleString("ja-JP")}`;
+  const currency = normalizedTicketCurrency(event.ticket_price);
+  const money = currency === "CNY"
+    ? `${amount.toLocaleString("zh-CN")}元`
+    : `${amount.toLocaleString("ja-JP")}円`;
   return count > 1 ? `${money} · ${count} 张` : money;
 }
 
@@ -1555,6 +1574,7 @@ function viewingEventsSection(events) {
     const endStr = e.screening_ends_at ? timeFmt.format(new Date(e.screening_ends_at)) : "";
     const timeRange = startStr && endStr ? `${startStr}–${endStr}` : startStr;
     const seats = ctx.seats?.length ? ctx.seats.join("、") : "";
+    const ticketPrice = ticketPriceLabel(e);
     const locationLabel = pending ? "观影信息待确认" : e.location_type === "cinema" ? (ctx.cinema_name || "电影院观看") : "在家／线上观看";
     return `<div class="viewing-event-card ${pending ? "pending" : ""}">
       <div class="ve-heading"><div class="ve-cinema">${escapeHtml(locationLabel)}</div><button type="button" class="icon-button small ve-edit" data-action="edit-history-event" data-event-id="${escapeHtml(e.id)}" aria-label="修改观影信息" data-testid="edit-record-viewing-info">${icon("edit")}</button></div>
@@ -1565,6 +1585,7 @@ function viewingEventsSection(events) {
         ${ctx.auditorium ? `<span>${escapeHtml(ctx.auditorium)}</span>` : ""}
         ${ctx.format ? `<span>${escapeHtml(ctx.format)}</span>` : ""}
         ${seats ? `<span>座位 ${escapeHtml(seats)}</span>` : ""}
+        ${ticketPrice ? `<span>${escapeHtml(ticketPrice)}</span>` : ""}
       </div>
     </div>`;
   }).join("");
@@ -2131,7 +2152,15 @@ function ticketConfirmOverlay() {
         </select></label>
         ${event.location_type === "cinema" ? `<label><span>影院</span><input type="text" data-field="ticket-cinema-name" data-event-index="${index}" value="${escapeHtml(ec.cinema_name || "")}" /></label>
         <label><span>影厅</span><input type="text" data-field="ticket-auditorium" data-event-index="${index}" value="${escapeHtml(ec.auditorium || "")}" /></label>
-        <label><span>制式</span><select data-field="ticket-format" data-event-index="${index}"><option value="">未填写</option>${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${ec.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}</select></label>` : ""}
+        <label><span>制式</span><select data-field="ticket-format" data-event-index="${index}"><option value="">未填写</option>${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${ec.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}</select></label>
+        <div class="price-fields ticket-price-fields">
+          <label><span>票价合计</span><input type="number" min="0" step="0.01" inputmode="decimal" data-field="ticket-price-amount" data-event-index="${index}" value="${event.ticket_price?.amount ?? ""}" placeholder="未填写" /></label>
+          <label><span>币种</span><select data-field="ticket-price-currency" data-event-index="${index}">
+            <option value="JPY" ${normalizedTicketCurrency(event.ticket_price) === "JPY" ? "selected" : ""}>JPY（日元）</option>
+            <option value="CNY" ${normalizedTicketCurrency(event.ticket_price) === "CNY" ? "selected" : ""}>CNY（人民币）</option>
+          </select></label>
+          <label><span>张数</span><input type="number" min="1" step="1" inputmode="numeric" data-field="ticket-price-count" data-event-index="${index}" value="${event.ticket_price?.count || ec.seat_count || 1}" /></label>
+        </div>` : ""}
       </div>
       ${eventTypeTagsRow(ec.event_types || [], `event-${index}`)}
       ${(ec.event_types || []).includes("bonus_distribution") ? `<label class="bonus-note-input"><span>特典</span><input type="text" data-field="bonus-note" data-event-index="${index}" value="${escapeHtml(ec.bonus_note || "")}" placeholder="如：第3週 色紙" /></label>` : ""}
@@ -2197,6 +2226,14 @@ function sceneChoiceOverlay() {
           <option value="">未填写</option>
           ${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${ctx.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}
         </select></label>
+        <div class="price-fields ticket-price-fields">
+          <label><span>票价合计</span><input type="number" min="0" step="0.01" inputmode="decimal" id="scene-ticket-amount-input" value="${ctx.ticketAmount ?? ""}" placeholder="未填写" /></label>
+          <label><span>币种</span><select id="scene-ticket-currency-select">
+            <option value="JPY" ${ctx.ticketCurrency !== "CNY" ? "selected" : ""}>JPY（日元）</option>
+            <option value="CNY" ${ctx.ticketCurrency === "CNY" ? "selected" : ""}>CNY（人民币）</option>
+          </select></label>
+          <label><span>张数</span><input type="number" min="1" step="1" inputmode="numeric" id="scene-ticket-count-input" value="${ctx.ticketCount || 1}" /></label>
+        </div>
         ${eventTypeTagsRow(eventTypes, "scene")}
         ${eventTypes.includes("bonus_distribution") ? `<label class="bonus-note-input"><span>特典</span><input type="text" data-field="bonus-note" data-event-index="scene" value="${escapeHtml(ctx.bonusNote || "")}" placeholder="如：第3週 色紙" /></label>` : ""}
       </div>` : ""}
@@ -2284,7 +2321,11 @@ function historyEventEditorOverlay(event) {
         <!-- R5 补丁 6：票价与张数可手动修正。票据格式五花八门，解析难免有抓不到
              （蜘蛛侠那张就没抓到）或把双人票加总成一个数的情况，得留人工订正的口子。 -->
         <div class="price-fields">
-          <label><span>票价合计</span><input type="number" name="ticketAmount" min="0" step="1" inputmode="numeric" value="${event.ticket_price?.amount ?? ""}" placeholder="未填写" data-testid="history-ticket-amount" /></label>
+          <label><span>票价合计</span><input type="number" name="ticketAmount" min="0" step="0.01" inputmode="decimal" value="${event.ticket_price?.amount ?? ""}" placeholder="未填写" data-testid="history-ticket-amount" /></label>
+          <label><span>币种</span><select name="ticketCurrency" data-testid="history-ticket-currency">
+            <option value="JPY" ${normalizedTicketCurrency(event.ticket_price) === "JPY" ? "selected" : ""}>JPY（日元）</option>
+            <option value="CNY" ${normalizedTicketCurrency(event.ticket_price) === "CNY" ? "selected" : ""}>CNY（人民币）</option>
+          </select></label>
           <label><span>张数</span><input type="number" name="ticketCount" min="1" step="1" inputmode="numeric" value="${event.ticket_price?.count || event.viewing_context?.seat_count || 1}" data-testid="history-ticket-count" /></label>
         </div>
         <div class="relation-toggle" role="group" aria-label="初看或重看">
@@ -2444,6 +2485,9 @@ function stillsEditorOverlay(work) {
   const full = stills.length >= MAX_WORK_STILLS;
   const savedTmdbPaths = new Set(stills.filter((item) => item.source === "tmdb").map((item) => item.path));
   const candidates = state.stillCandidates.workId === work.id ? state.stillCandidates : { status: "idle", items: [], error: null };
+  const linkState = state.tmdbStillLink.workId === work.id
+    ? state.tmdbStillLink
+    : { status: "idle", query: work.title || "", candidates: [], error: null };
   const tmdbId = externalRefId(work, "tmdb");
 
   const storedRows = stills.map((still, index) => `<li class="still-manager-row" data-testid="still-manager-${escapeHtml(still.id)}">
@@ -2462,7 +2506,23 @@ function stillsEditorOverlay(work) {
 
   let tmdbBlock;
   if (!tmdbId) {
-    tmdbBlock = `<p class="stills-source-state">这部作品还没有关联 TMDB 条目，仍可使用上方的图片链接。</p>`;
+    const linkResults = linkState.candidates.length
+      ? `<div class="tmdb-link-candidates" data-testid="tmdb-still-link-results">${linkState.candidates.map((candidate, index) => `<button type="button" class="tmdb-link-candidate" data-action="link-tmdb-for-stills" data-index="${index}" data-testid="tmdb-still-link-${index}">
+          <span><b>${escapeHtml(candidate.title || "未命名作品")}</b>${candidate.originalTitle ? `<small>${escapeHtml(candidate.originalTitle)}</small>` : ""}</span>
+          <span class="tmdb-link-year">${candidate.year || "年份未知"}</span>
+        </button>`).join("")}</div>`
+      : "";
+    const status = linkState.status === "loading"
+      ? `<p class="stills-source-state">正在搜索 TMDB…</p>`
+      : linkState.status === "error"
+        ? `<p class="stills-source-state error">${escapeHtml(linkState.error || "搜索失败，请稍后重试")}</p>`
+        : linkState.status === "ready" && !linkState.candidates.length
+          ? `<p class="stills-source-state">没有找到对应条目，可以换原名或英文名再试。</p>`
+          : `<p class="stills-source-state">当前保留 Bangumi 关联；确认 TMDB 条目后会追加第二关联，不会替换原信息。</p>`;
+    tmdbBlock = `<form id="tmdb-still-link-form" class="tmdb-still-link-form">
+      <label><span>搜索 TMDB 条目</span><input type="search" name="query" value="${escapeHtml(linkState.query || work.title || "")}" placeholder="作品名、原名或英文名" required data-testid="tmdb-still-link-query" /></label>
+      <button type="submit" class="sheet-done" ${linkState.status === "loading" ? "disabled" : ""}>搜索</button>
+    </form>${status}${linkResults}`;
   } else if (candidates.status === "loading" || candidates.status === "idle") {
     tmdbBlock = `<p class="stills-source-state">正在读取 TMDB 候选剧照…</p>`;
   } else if (candidates.status === "error") {
@@ -3747,9 +3807,10 @@ async function saveHistoryEventForm(form) {
   // R5 补丁 6：票价与张数。留空表示"没有票价信息"，写 null 而不是 0。
   const amountRaw = String(data.get("ticketAmount") || "").trim();
   const amountNum = amountRaw === "" ? null : Number(amountRaw);
+  const ticketCurrency = data.get("ticketCurrency") === "CNY" ? "CNY" : "JPY";
   const countNum = Math.max(1, Number(data.get("ticketCount")) || 1);
   const ticketPrice = locationType === "cinema" && Number.isFinite(amountNum) && amountNum > 0
-    ? { ...(target.ticket_price || {}), amount: amountNum, currency: target.ticket_price?.currency || "JPY", count: countNum }
+    ? { amount: amountNum, currency: ticketCurrency, count: countNum }
     : null;
 
   const updatedUnlocked = {
@@ -3830,6 +3891,29 @@ async function loadTmdbStillCandidates({ force = false } = {}) {
     };
   } catch (error) {
     state.stillCandidates = { workId: work.id, status: "error", items: [], error: String(error.message || "暂时拿不到候选剧照") };
+  }
+  if (state.overlay === "stills" && state.currentWorkId === work.id) render();
+}
+
+async function searchTmdbForStills(query) {
+  const work = findWorkById(state.works, state.currentWorkId);
+  const normalizedQuery = String(query || "").trim();
+  if (!work || !normalizedQuery || externalRefId(work, "tmdb")) return;
+  state.tmdbStillLink = { workId: work.id, status: "loading", query: normalizedQuery, candidates: [], error: null };
+  render();
+  try {
+    const result = await fetchSearchSource(`/api/tmdb/search?q=${encodeURIComponent(normalizedQuery)}`);
+    if (result.state === "unconfigured") throw new Error("TMDB 尚未配置");
+    if (result.state !== "ok") throw new Error(result.error || "搜索失败，请稍后重试");
+    state.tmdbStillLink = {
+      workId: work.id,
+      status: "ready",
+      query: normalizedQuery,
+      candidates: result.candidates,
+      error: null
+    };
+  } catch (error) {
+    state.tmdbStillLink = { workId: work.id, status: "error", query: normalizedQuery, candidates: [], error: String(error.message || error) };
   }
   if (state.overlay === "stills" && state.currentWorkId === work.id) render();
 }
@@ -4708,10 +4792,34 @@ document.addEventListener("click", async (event) => {
     state.overlay = "collections";
     render();
   } else if (action === "edit-stills") {
+    const work = findWorkById(state.works, state.currentWorkId);
+    if (work && !externalRefId(work, "tmdb")) {
+      state.tmdbStillLink = { workId: work.id, status: "idle", query: work.title || "", candidates: [], error: null };
+    }
     state.overlay = "stills";
     render();
     void loadTmdbStillCandidates();
   } else if (action === "reload-tmdb-stills") {
+    void loadTmdbStillCandidates({ force: true });
+  } else if (action === "link-tmdb-for-stills") {
+    const current = findWorkById(state.works, state.currentWorkId);
+    const linkState = state.tmdbStillLink.workId === current?.id ? state.tmdbStillLink : null;
+    const candidate = linkState?.candidates?.[Number(trigger.dataset.index)];
+    const tmdbId = candidate?.tmdbId;
+    if (!current || !tmdbId) return;
+    const duplicate = findWorkByExternalRef(state.works, "tmdb", tmdbId);
+    if (duplicate && duplicate.id !== current.id) {
+      showToast(`这个 TMDB 条目已关联《${duplicate.title || "另一部作品"}》`);
+      return;
+    }
+    await updateCurrentWork((work) => ({
+      ...work,
+      external_refs: upsertExternalRef(work.external_refs, { source: "tmdb", id: tmdbId, url: candidate.url })
+    }));
+    state.tmdbStillLink = { workId: current.id, status: "idle", query: "", candidates: [], error: null };
+    state.stillCandidates = { workId: current.id, status: "idle", items: [], error: null };
+    render();
+    showToast("已追加 TMDB 关联，Bangumi 信息保持不变");
     void loadTmdbStillCandidates({ force: true });
   } else if (action === "add-tmdb-still") {
     const still = createTmdbStill(trigger.dataset.path);
@@ -5003,6 +5111,11 @@ document.addEventListener("click", async (event) => {
       cinemaName: ctx.cinemaName,
       auditorium: ctx.auditorium,
       format: ctx.format,
+      ticketPrice: Number(ctx.ticketAmount) > 0 ? {
+        amount: Number(ctx.ticketAmount),
+        currency: ctx.ticketCurrency === "CNY" ? "CNY" : "JPY",
+        count: Math.max(1, Number(ctx.ticketCount) || 1)
+      } : null,
       eventTypes: ctx.eventTypes,
       bonusNote: ctx.bonusNote
     });
@@ -5493,6 +5606,10 @@ document.addEventListener("input", (event) => {
     if (state.captureContext) state.captureContext.cinemaName = event.target.value;
   } else if (event.target.id === "scene-auditorium-input") {
     if (state.captureContext) state.captureContext.auditorium = event.target.value;
+  } else if (event.target.id === "scene-ticket-amount-input") {
+    if (state.captureContext) state.captureContext.ticketAmount = event.target.value === "" ? null : Number(event.target.value);
+  } else if (event.target.id === "scene-ticket-count-input") {
+    if (state.captureContext) state.captureContext.ticketCount = Math.max(1, Number(event.target.value) || 1);
   } else if (event.target.id === "scene-viewed-on-input") {
     if (!state.captureContext) return;
     state.captureContext.viewedOn = event.target.value;
@@ -5528,6 +5645,24 @@ document.addEventListener("input", (event) => {
     if (!pending) return;
     const key = event.target.dataset.field === "ticket-auditorium" ? "auditorium" : "cinema_name";
     ctx.pendingEvents[idx] = { ...pending, viewing_context: { ...pending.viewing_context, [key]: event.target.value || null } };
+  } else if (event.target.matches("[data-field='ticket-price-amount'], [data-field='ticket-price-count']")) {
+    const ctx = state.captureContext;
+    const idx = Number(event.target.dataset.eventIndex);
+    const pending = ctx?.pendingEvents?.[idx];
+    if (!pending) return;
+    const card = event.target.closest(".ticket-confirm-card");
+    const amountInput = card?.querySelector("[data-field='ticket-price-amount']");
+    const currencyInput = card?.querySelector("[data-field='ticket-price-currency']");
+    const countInput = card?.querySelector("[data-field='ticket-price-count']");
+    const amount = Number(amountInput?.value);
+    ctx.pendingEvents[idx] = {
+      ...pending,
+      ticket_price: amount > 0 ? {
+        amount,
+        currency: currencyInput?.value === "CNY" ? "CNY" : "JPY",
+        count: Math.max(1, Number(countInput?.value) || 1)
+      } : null
+    };
   } else if (event.target.matches("[data-field='bonus-note']")) {
     const ctx = state.captureContext;
     if (!ctx) return;
@@ -5567,12 +5702,18 @@ document.addEventListener("change", async (event) => {
     state.shelfFilter.sort = event.target.value;
     render();
     return;
+  } else if (event.target.id === "shelf-decade") {
+    state.shelfFilter.decade = event.target.value === "all" ? "all" : Number(event.target.value);
+    render();
+    return;
   }
   if (event.target.matches("[data-testid='recommendation-note']")) {
     await updateRecord((record) => { record.recommendationNote = event.target.value.trim(); });
     announce("推荐说明已保存");
   } else if (event.target.id === "scene-format-select") {
     if (state.captureContext) state.captureContext.format = event.target.value;
+  } else if (event.target.id === "scene-ticket-currency-select") {
+    if (state.captureContext) state.captureContext.ticketCurrency = event.target.value === "CNY" ? "CNY" : "JPY";
   } else if (event.target.matches("[data-field='ticket-location-type']")) {
     const ctx = state.captureContext;
     const idx = Number(event.target.dataset.eventIndex);
@@ -5582,6 +5723,7 @@ document.addEventListener("change", async (event) => {
     ctx.pendingEvents[idx] = {
       ...pending,
       location_type: locationType,
+      ticket_price: locationType === "cinema" ? pending.ticket_price : null,
       viewing_context: locationType === "cinema" ? pending.viewing_context : {
         ...pending.viewing_context,
         cinema_name: null,
@@ -5592,6 +5734,16 @@ document.addEventListener("change", async (event) => {
         event_types: [],
         bonus_note: null
       }
+    };
+    render();
+  } else if (event.target.matches("[data-field='ticket-price-currency']")) {
+    const ctx = state.captureContext;
+    const idx = Number(event.target.dataset.eventIndex);
+    const pending = ctx?.pendingEvents?.[idx];
+    if (!pending?.ticket_price) return;
+    ctx.pendingEvents[idx] = {
+      ...pending,
+      ticket_price: { ...pending.ticket_price, currency: event.target.value === "CNY" ? "CNY" : "JPY" }
     };
     render();
   } else if (event.target.matches("[data-field='ticket-format']")) {
@@ -5719,6 +5871,13 @@ document.addEventListener("submit", async (event) => {
     }));
     render();
     announce(`已添加${releaseRegionLabel(region)}上映日`);
+    return;
+  }
+
+  if (event.target.id === "tmdb-still-link-form") {
+    event.preventDefault();
+    const query = String(new FormData(event.target).get("query") || "").trim();
+    if (query) await searchTmdbForStills(query);
     return;
   }
 

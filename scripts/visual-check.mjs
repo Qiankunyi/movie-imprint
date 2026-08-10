@@ -229,6 +229,25 @@ async function mockBangumi(page) {
       })
     });
   });
+  await page.route("**/api/tmdb/search?**", async (route) => {
+    const query = new URL(route.request().url()).searchParams.get("q") || "";
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        configured: true,
+        query,
+        candidates: [{
+          tmdbId: 456,
+          title: "Bangumi 补绑测试片",
+          originalTitle: "Bangumi Link Test",
+          year: 2014,
+          releaseDate: "2014-01-01",
+          url: "https://www.themoviedb.org/movie/456"
+        }]
+      })
+    });
+  });
   await page.route("**/api/tmdb/image?**", async (route) => {
     await route.fulfill({ status: 200, contentType: "image/png", body: mockPosterImage });
   });
@@ -255,7 +274,8 @@ async function runArchiveUiPath(browser) {
     });
     const works = [
       { id: "work_archive", title: "这是一个足够长用来验证两行网格整齐的电影标题", work_type: "live_action_film", aliases: [], release_year: 2026, release_dates: { entries: [] }, external_refs: [{ source: "tmdb", id: "123" }], primary_source: "tmdb", poster: null, stills: [], genres: [], related_refs: [], tagline: { text: "一段真正属于档案正文的简介。", source: "manual", updated_at: new Date().toISOString() }, identity_status: "matched", merged_from: [], first_recorded_at: new Date().toISOString(), match: { status: "confirmed", candidates: [] } },
-      { id: "work_short", title: "短片名", work_type: "live_action_film", aliases: [], release_year: 2025, release_dates: { entries: [] }, external_refs: [], poster: null, stills: [], genres: [], related_refs: [], tagline: null, identity_status: "local_only", merged_from: [], first_recorded_at: new Date().toISOString(), match: { status: "idle", candidates: [] } }
+      { id: "work_short", title: "短片名", work_type: "live_action_film", aliases: [], release_year: 2025, release_dates: { entries: [] }, external_refs: [], poster: null, stills: [], genres: [], related_refs: [], tagline: null, identity_status: "local_only", merged_from: [], first_recorded_at: new Date().toISOString(), match: { status: "idle", candidates: [] } },
+      { id: "work_bangumi", title: "Bangumi 补绑测试片", work_type: "animation_film", aliases: [], release_year: 2014, release_dates: { entries: [] }, external_refs: [{ source: "bangumi", id: "451", url: "https://bangumi.tv/subject/451" }], primary_source: "bangumi", poster: { source: "bangumi", subject_id: 451 }, stills: [], genres: [], related_refs: [], tagline: null, identity_status: "matched", merged_from: [], first_recorded_at: new Date().toISOString(), match: { status: "confirmed", candidates: [] } }
     ];
     await new Promise((resolve, reject) => {
       const transaction = database.transaction("works", "readwrite");
@@ -278,6 +298,44 @@ async function runArchiveUiPath(browser) {
   if (await page.locator(".sidebar-artwork-img").getAttribute("src") !== dailyArtworkSrc) throw new Error("同一天再次打开侧栏时图片发生变化");
   await page.getByTestId("sidebar-shelf").click();
   await page.getByTestId("shelf-watch-status").selectOption("all");
+  const decadeOptions = await page.getByTestId("shelf-decade").locator("option").allTextContents();
+  if (JSON.stringify(decadeOptions) !== JSON.stringify(["全部年代", "2010年代", "2020年代"])) {
+    throw new Error(`上映年代没有按实际作品动态生成：${JSON.stringify(decadeOptions)}`);
+  }
+  await page.getByTestId("shelf-decade").selectOption("2010");
+  if (!await page.getByTestId("shelf-item-work_bangumi").isVisible() || await page.getByTestId("shelf-item-work_archive").count()) {
+    throw new Error("2010年代筛选结果不正确");
+  }
+  await page.getByTestId("shelf-decade").selectOption("all");
+
+  // Bangumi 已关联的 Work 可从剧照入口追加 TMDB，且不会改写原关联/主来源。
+  await page.getByTestId("shelf-item-work_bangumi").click();
+  await page.getByTestId("add-first-still").click();
+  await page.locator("#tmdb-still-link-form").getByRole("button", { name: "搜索", exact: true }).click();
+  await page.getByTestId("tmdb-still-link-0").waitFor();
+  await page.getByTestId("tmdb-still-link-0").click();
+  await page.getByTestId("tmdb-still-0").waitFor();
+  const linkedRefs = await page.evaluate(async () => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("movie-imprint-local", 4);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const work = await new Promise((resolve, reject) => {
+      const request = database.transaction("works").objectStore("works").get("work_bangumi");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    return { refs: work.external_refs, primarySource: work.primary_source, poster: work.poster };
+  });
+  if (!linkedRefs.refs.some((ref) => ref.source === "bangumi" && ref.id === "451")
+      || !linkedRefs.refs.some((ref) => ref.source === "tmdb" && ref.id === "456")
+      || linkedRefs.primarySource !== "bangumi" || linkedRefs.poster?.source !== "bangumi") {
+    throw new Error(`补绑 TMDB 改坏了 Bangumi 信息：${JSON.stringify(linkedRefs)}`);
+  }
+  await page.getByTestId("stills-editor").locator(".sheet-title-row .icon-button").click();
+  await page.getByTestId("fab-toggle").click();
+  await page.getByTestId("work-back").click();
 
   const longTitle = page.getByTestId("shelf-item-work_archive").locator(".shelf-item-title");
   const titleStyle = await longTitle.evaluate((element) => ({
@@ -522,6 +580,43 @@ async function runFunctionalPath(browser) {
   if (await page.locator(".detail-content > .judgement-summary, .detail-content > .work-match-panel, .detail-content > .analysis-draft").count()) {
     throw new Error("后台操作入口仍混在感想详情正文里");
   }
+  // 模拟旧版只保存票价数字、没有 currency 的记录：展示仍应明确按原日本票务默认值兼容。
+  await page.evaluate(async () => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("movie-imprint-local", 4);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const events = await new Promise((resolve, reject) => {
+      const request = database.transaction("viewingEvents").objectStore("viewingEvents").getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const target = events.find((event) => event.location_type === "cinema" && event.viewing_context?.cinema_name === "测试电影院");
+    if (!target) throw new Error("没有找到用于旧票价兼容测试的场次");
+    target.ticket_price = { amount: 1800, count: 1 };
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction("viewingEvents", "readwrite");
+      transaction.objectStore("viewingEvents").put(target);
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error);
+    });
+  });
+  await page.reload();
+  await page.getByTestId("viewing-events").waitFor();
+  if (!((await page.getByTestId("viewing-events").innerText()) || "").includes("1,800円")) throw new Error("旧票价缺少币种时兼容显示失败");
+  await page.getByTestId("edit-record-viewing-info").click();
+  if (await page.getByTestId("history-ticket-currency").inputValue() !== "JPY") throw new Error("旧票价编辑时没有兼容默认 JPY");
+  await page.getByTestId("history-ticket-amount").fill("45");
+  await page.getByTestId("history-ticket-currency").selectOption("CNY");
+  await page.locator("#history-event-form").getByRole("button", { name: "保存", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector("[data-testid='viewing-events']")?.textContent?.includes("45元"));
+  await page.getByTestId("edit-record-viewing-info").click();
+  if (await page.getByTestId("history-ticket-currency").inputValue() !== "CNY") throw new Error("CNY 编辑后没有持久化");
+  await page.getByTestId("history-ticket-amount").fill("1800");
+  await page.getByTestId("history-ticket-currency").selectOption("JPY");
+  await page.locator("#history-event-form").getByRole("button", { name: "保存", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector("[data-testid='viewing-events']")?.textContent?.includes("1,800円"));
   await page.getByTestId("edit-record-viewing-info").click();
   await page.getByTestId("history-viewed-on").fill("2018-10-11");
   await page.getByTestId("history-location-home").check();
