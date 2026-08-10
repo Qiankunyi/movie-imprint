@@ -223,13 +223,34 @@ export function buildCollectionsExport(collections = [], works = [], isWatched =
   }));
 }
 
-export function exportAllJSON(entries = [], collections = []) {
+export function buildExternalPublicationsExport(publications = [], works = []) {
+  const findWork = (workId) =>
+    works.find((work) => work.id === workId)
+    || works.find((work) => (work.merged_from || []).includes(workId))
+    || null;
+  return publications.map((item) => ({
+    id: item.id,
+    work_id: item.work_id,
+    work_title: findWork(item.work_id)?.title || null,
+    url: item.url,
+    normalized_url: item.normalized_url || null,
+    platform: item.platform || "other",
+    published_at: item.published_at || null,
+    viewing_record_id: item.viewing_record_id || null,
+    note: item.note || null,
+    created_at: item.created_at || null,
+    updated_at: item.updated_at || null
+  }));
+}
+
+export function exportAllJSON(entries = [], collections = [], externalPublications = []) {
   return JSON.stringify({
-    schema_version: "movie-imprint-export-all-0.2",
+    schema_version: "movie-imprint-export-all-0.3",
     exported_at: new Date().toISOString(),
     count: entries.length,
     records: entries.map(({ record, work, viewingEvents }) => buildExportPayload(record, work, viewingEvents)),
-    collections
+    collections,
+    external_publications: externalPublications
   }, null, 2);
 }
 
@@ -250,12 +271,22 @@ export function exportCollectionsMarkdown(collections = []) {
   return [`# 片单`, ...blocks].join("\n\n");
 }
 
-export function exportAllMarkdown(entries = [], collections = []) {
+function exportExternalPublicationsMarkdown(publications = []) {
+  if (!publications.length) return "";
+  return ["# 外部发表", ...publications.map((item) => {
+    const date = item.published_at ? ` · ${String(item.published_at).slice(0, 10)}` : "";
+    const note = item.note ? `\n\n${item.note}` : "";
+    return `## ${item.work_title || "未命名作品"} · ${item.platform || "other"}${date}\n\n${item.url}${note}`;
+  })].join("\n\n");
+}
+
+export function exportAllMarkdown(entries = [], collections = [], externalPublications = []) {
   const records = entries
     .map(({ record, work, viewingEvents }) => exportMarkdown(record, work, viewingEvents))
     .join("\n\n---\n\n");
   const collectionsMd = exportCollectionsMarkdown(collections);
-  return [records, collectionsMd].filter(Boolean).join("\n\n---\n\n");
+  const publicationsMd = exportExternalPublicationsMarkdown(externalPublications);
+  return [records, collectionsMd, publicationsMd].filter(Boolean).join("\n\n---\n\n");
 }
 
 // ─── 3. 文件名 ───────────────────────────────────────────────────────────────

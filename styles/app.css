@@ -3547,6 +3547,192 @@ svg {
   font: var(--type-meta);
 }
 
+/* ── 外部发表：正文仍在原平台，这里只呈现克制的引用关系 ─────────────────── */
+
+.external-publications-title-row,
+.external-publication-heading,
+.external-publication-heading > div,
+.external-publication-actions {
+  display: flex;
+  align-items: center;
+}
+
+.external-publications-title-row,
+.external-publication-heading {
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.external-publications-title-row .work-section-title {
+  margin-bottom: 2px;
+}
+
+.external-publications-title-row p {
+  margin: 0;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.external-publication-add {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  color: var(--accent-strong);
+  border: 1px solid var(--outline-soft);
+  border-radius: 999px;
+  background: transparent;
+  font: var(--type-label);
+}
+
+.external-publications-list {
+  display: grid;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+}
+
+.external-publication {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-card);
+  background: var(--surface-container);
+}
+
+.external-publication-heading > div,
+.external-publication-actions {
+  gap: var(--space-2);
+}
+
+.external-publication-heading strong {
+  color: var(--ink);
+  font: var(--type-label);
+}
+
+.external-publication-heading time,
+.external-publication-heading button,
+.external-publication-viewing-label,
+.external-publication-origin,
+.external-publication-note,
+.external-publication-card-host,
+.external-publication-card-platform,
+.external-publication-detected {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.external-publication-heading button {
+  padding: 3px 0;
+  background: transparent;
+}
+
+.external-publication-heading button.danger {
+  color: var(--error, #a43a32);
+}
+
+.external-publication-viewing-label {
+  justify-self: start;
+  padding: 2px 8px;
+  color: var(--accent-strong);
+  border-radius: 999px;
+  background: var(--accent-container);
+}
+
+.external-publication-card {
+  display: grid;
+  gap: 5px;
+  padding: var(--space-4);
+  color: inherit;
+  text-decoration: none;
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-tag);
+  background: var(--surface);
+}
+
+.external-publication-card strong {
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--type-card-title);
+}
+
+.external-publication-card-platform {
+  color: var(--accent-strong);
+}
+
+.external-publication-origin {
+  justify-self: end;
+  color: var(--accent-strong);
+  text-decoration: none;
+}
+
+.external-publication-note {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-2);
+  margin: 0;
+  line-height: 1.55;
+}
+
+.external-publication-note span {
+  color: var(--film);
+}
+
+.external-publication-x {
+  min-height: 54px;
+  overflow: hidden;
+  border-radius: var(--radius-tag);
+}
+
+.external-publication-x .twitter-tweet {
+  box-sizing: border-box;
+  width: 100% !important;
+  max-width: 100% !important;
+  padding: var(--space-4);
+  margin: 0;
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-tag);
+  background: var(--surface);
+}
+
+.external-publication-x .twitter-tweet a {
+  color: var(--accent-strong);
+  font: var(--type-meta);
+}
+
+.external-publication-x iframe {
+  max-width: 100% !important;
+  margin: 0 !important;
+}
+
+.external-publication-detected {
+  margin: 0;
+}
+
+.external-publication-detected strong {
+  color: var(--ink);
+}
+
+.external-publication-detected span {
+  margin-left: 4px;
+}
+
+@media (max-width: 412px) {
+  .external-publication-heading {
+    align-items: flex-start;
+  }
+
+  .external-publication-actions {
+    display: grid;
+    justify-items: end;
+    gap: 2px;
+  }
+
+  .external-publications-title-row p {
+    max-width: 210px;
+  }
+}
+
 .work-supplement-button {
   display: block;
   width: 100%;

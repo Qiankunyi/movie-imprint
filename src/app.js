@@ -1,4 +1,4 @@
-import { db, clearAllData, migrateLocalToCloud } from "./db.js?v=14";
+import { db, clearAllData, migrateLocalToCloud } from "./db.js?v=15";
 import { interpretTmdbStatus } from "./tmdb.js?v=2";
 import {
   MAX_WORK_STILLS,
@@ -64,6 +64,17 @@ import {
   indexEventsByRecord,
   viewingEventsForRecord
 } from "./work-view.js?v=6";
+import {
+  createExternalPublication,
+  detectPublicationPlatform,
+  hasDuplicatePublication,
+  normalizePublicationUrl,
+  publicationPlatformLabel,
+  sortExternalPublications,
+  updateExternalPublication,
+  viewingPublicationLabel,
+  xStatusId
+} from "./external-publications.js?v=1";
 import {
   RELEASE_REGIONS,
   SERIES_RELATION_TYPES,
@@ -145,13 +156,14 @@ import {
   downloadExport,
   exportAllFilename,
   buildCollectionsExport,
+  buildExternalPublicationsExport,
   exportAllJSON,
   exportAllMarkdown,
   exportFilename,
   exportJSON,
   exportMarkdown,
   exportTXT
-} from "./export.js?v=3";
+} from "./export.js?v=4";
 
 const app = document.querySelector("#app");
 // 浮层与 FAB 各自有独立的挂载点（见 index.html 的注释）：只有它们变化时不去动 #app，
@@ -252,6 +264,8 @@ const state = {
   allViewingEvents: [],        // R4：全量 ViewingEvent，供书架按作品聚合观看次数/最近观看/是否有活动场次
   currentWorkId: null,         // R4：作品页当前显示的 work id
   currentWorkEvents: [],       // R4：作品页当前 work 的全部 ViewingEvent（含 merged_from 旧 id 下的）
+  currentWorkPublications: [], // 当前作品关联的外部公开内容引用
+  editingPublicationId: null,  // 正在新增（null）或编辑的外部发表
   detailReturnView: "home",    // R4："home" | "work" —— 详情页从哪个视图进入，决定返回去哪
   returnScrollY: 0,            // 时间线离开时的滚动位置（R3 已有字段，R4 沿用同一套约定）
   shelfScrollY: 0,             // R4：作品书架离开时的滚动位置
@@ -596,6 +610,27 @@ async function loadWorkEventsFor(workId) {
     renderPreservingScroll();
   }
   return events;
+}
+
+/** 作品页专用：外部发表是独立实体，只在进入对应作品页时加载。 */
+async function loadExternalPublicationsFor(workId) {
+  const canonical = findWorkById(state.works, workId) || { id: workId, merged_from: [] };
+  const ids = new Set([canonical.id, ...(canonical.merged_from || [])]);
+  let publications = [];
+  try {
+    publications = (await db.getAll("externalPublications")).filter((item) => ids.has(item.work_id));
+  } catch (_) {
+    publications = [];
+  }
+  if (state.view === "work" && state.currentWorkId === workId) {
+    state.currentWorkPublications = sortExternalPublications(publications);
+    renderPreservingScroll();
+  }
+  return publications;
+}
+
+function loadWorkPageData(workId) {
+  void Promise.all([loadWorkEventsFor(workId), loadExternalPublicationsFor(workId)]);
 }
 
 function topBar() {
@@ -1187,6 +1222,52 @@ function impressionsListMarkup(impressions) {
   </section>`;
 }
 
+function publicationLinkCard(publication) {
+  let host = "";
+  try { host = new URL(publication.url).hostname.replace(/^www\./, ""); } catch (_) { /* 已保存 URL 理应合法 */ }
+  return `<a class="external-publication-card" href="${escapeHtml(publication.url)}" target="_blank" rel="noopener noreferrer" data-testid="external-publication-link-${escapeHtml(publication.id)}">
+    <span class="external-publication-card-platform">${escapeHtml(publicationPlatformLabel(publication.platform))}</span>
+    <strong>${escapeHtml(publication.title || host || "外部网页")}</strong>
+    <span class="external-publication-card-host">${escapeHtml(host)} <span aria-hidden="true">↗</span></span>
+  </a>`;
+}
+
+function externalPublicationItem(publication) {
+  const statusId = xStatusId(publication.url);
+  const viewingLabel = viewingPublicationLabel(publication, state.currentWorkEvents);
+  const preview = statusId
+    ? `<div class="external-publication-x" data-x-embed data-testid="external-publication-x-${escapeHtml(publication.id)}">
+        <blockquote class="twitter-tweet" data-dnt="true"><a href="${escapeHtml(publication.url)}" target="_blank" rel="noopener noreferrer">X 上的原内容暂时无法预览，查看原文 ↗</a></blockquote>
+      </div>`
+    : publicationLinkCard(publication);
+  return `<article class="external-publication" data-testid="external-publication-${escapeHtml(publication.id)}">
+    <div class="external-publication-heading">
+      <div><strong>${escapeHtml(publicationPlatformLabel(publication.platform))}</strong>${publication.published_at ? `<time datetime="${escapeHtml(publication.published_at)}">${escapeHtml(formatShortDate(publication.published_at))}</time>` : ""}</div>
+      <div class="external-publication-actions">
+        <button type="button" data-action="edit-external-publication" data-publication-id="${escapeHtml(publication.id)}">编辑</button>
+        <button type="button" class="danger" data-action="remove-external-publication" data-publication-id="${escapeHtml(publication.id)}">从作品中移除</button>
+      </div>
+    </div>
+    ${viewingLabel ? `<span class="external-publication-viewing-label">${escapeHtml(viewingLabel)}</span>` : ""}
+    ${preview}
+    ${publication.note ? `<p class="external-publication-note"><span>备注</span>${escapeHtml(publication.note)}</p>` : ""}
+    <a class="external-publication-origin" href="${escapeHtml(publication.url)}" target="_blank" rel="noopener noreferrer">查看原文 <span aria-hidden="true">↗</span></a>
+  </article>`;
+}
+
+function externalPublicationsMarkup(publications) {
+  const sorted = sortExternalPublications(publications);
+  return `<section class="work-section external-publications-section" data-testid="external-publications">
+    <div class="external-publications-title-row">
+      <div><h2 class="work-section-title">外部发表</h2><p>已公开发布在其他平台的内容引用</p></div>
+      <button type="button" class="archive-pressable external-publication-add" data-action="add-external-publication" data-testid="add-external-publication">＋ 添加</button>
+    </div>
+    ${sorted.length
+      ? `<div class="external-publications-list">${sorted.map(externalPublicationItem).join("")}</div>`
+      : `<p class="work-section-empty">还没有关联外部发表。</p>`}
+  </section>`;
+}
+
 function renderWork() {
   const work = findWorkById(state.works, state.currentWorkId);
   if (!work) return renderShelf();
@@ -1224,6 +1305,7 @@ function renderWork() {
       </section>
       ${attitudeTimelineMarkup(view.attitudeTimeline)}
       ${impressionsListMarkup(view.impressions)}
+      ${externalPublicationsMarkup(state.currentWorkPublications)}
     </article>
   </main>`;
 }
@@ -1831,6 +1913,7 @@ function deleteWorkOverlay(work) {
     impact.events.length ? `${impact.events.length} 场观影记录` : null,
     impact.collections.length ? `从 ${impact.collections.length} 个片单中移除` : null,
     impact.reasons.length ? `${impact.reasons.length} 条加入理由` : null,
+    impact.publications.length ? `${impact.publications.length} 条外部发表引用` : null,
     impact.series ? `退出系列《${impact.series.title}》` : null
   ].filter(Boolean);
 
@@ -2379,6 +2462,37 @@ function historyEventEditorOverlay(event) {
   </div>`;
 }
 
+function externalPublicationEditorOverlay(work) {
+  const publication = state.currentWorkPublications.find((item) => item.id === state.editingPublicationId) || null;
+  const platform = publication ? publication.platform : "other";
+  const eventOptions = [...state.currentWorkEvents]
+    .sort((a, b) => Number(a.watch_index || 0) - Number(b.watch_index || 0))
+    .map((item) => {
+      const index = Number(item.watch_index);
+      const relation = item.viewing_relation === "first" || index === 1
+        ? "第一次观看"
+        : Number.isFinite(index) && index > 1 ? `第 ${index} 次观看` : "一次观看";
+      const date = formatShortDate(item.viewed_on || item.screening_at);
+      return `<option value="${escapeHtml(item.id)}" ${publication?.viewing_record_id === item.id ? "selected" : ""}>${escapeHtml(relation)}${date ? ` · ${escapeHtml(date)}` : ""}</option>`;
+    }).join("");
+  return `<div class="overlay" data-testid="external-publication-editor">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet external-publication-editor" role="dialog" aria-modal="true" aria-labelledby="external-publication-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="external-publication-title">${publication ? "编辑外部发表" : "添加外部发表"}</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <p class="settings-note">这里只保存作品与原始 URL 的引用关系，不复制外部正文。</p>
+      <form id="external-publication-form" data-publication-id="${escapeHtml(publication?.id || "")}">
+        <label><span>URL</span><input id="external-publication-url" name="url" type="url" inputmode="url" value="${escapeHtml(publication?.url || "")}" placeholder="https://..." required /></label>
+        <p class="external-publication-detected">平台：<strong id="external-publication-platform">${escapeHtml(publicationPlatformLabel(platform))}</strong><span>（自动识别）</span></p>
+        <label><span>发布时间（可选）</span><input name="publishedAt" type="date" value="${escapeHtml(publication?.published_at?.slice(0, 10) || "")}" /></label>
+        <label><span>关联观影记录（可选）</span><select name="viewingRecordId"><option value="">不关联具体观看</option>${eventOptions}</select></label>
+        <label><span>备注（可选）</span><textarea name="note" rows="3" placeholder="例如：第二次重看后写的日语短评">${escapeHtml(publication?.note || "")}</textarea></label>
+        <button class="sheet-done" type="submit">保存</button>
+      </form>
+    </section>
+  </div>`;
+}
+
 /**
  * R5：上映日编辑。每条都是「地区 + 日期」，可以有任意多条（同一部片在不同地区
  * 上映日不同是常态）。抓取回来的条目地区是"未标注地区"，这里给一个下拉让用户认领。
@@ -2824,6 +2938,32 @@ function entryReasonEditorOverlay(collection) {
 let lastBaseHtml = null;
 let lastFabHtml = null;
 let lastOverlayHtml = null;
+let xWidgetsPromise = null;
+
+function hydrateExternalPublicationEmbeds() {
+  if (!app.querySelector("[data-x-embed]")) return;
+  const loadWidgets = () => window.twttr?.widgets?.load?.(app);
+  if (window.twttr?.widgets) {
+    loadWidgets();
+    return;
+  }
+  if (!xWidgetsPromise) {
+    xWidgetsPromise = new Promise((resolve, reject) => {
+      const existing = document.querySelector('script[src="https://platform.twitter.com/widgets.js"]');
+      const script = existing || document.createElement("script");
+      script.addEventListener("load", resolve, { once: true });
+      script.addEventListener("error", reject, { once: true });
+      if (!existing) {
+        script.src = "https://platform.twitter.com/widgets.js";
+        script.async = true;
+        script.charset = "utf-8";
+        document.head.append(script);
+      }
+    });
+  }
+  // 网络、隐私插件或平台状态导致加载失败时，保留 blockquote 内的原文链接即可。
+  xWidgetsPromise.then(loadWidgets).catch(() => {});
+}
 
 function render() {
   const base = state.view === "detail" ? renderDetail()
@@ -2874,6 +3014,8 @@ function render() {
         ? impressionEditorOverlay(record)
       : state.overlay === "history-event" && editingHistoryEvent
         ? historyEventEditorOverlay(editingHistoryEvent)
+      : state.overlay === "external-publication" && currentWorkForOverlay
+        ? externalPublicationEditorOverlay(currentWorkForOverlay)
       : state.overlay === "release-dates" && currentWorkForOverlay
         ? releaseDateEditorOverlay(currentWorkForOverlay)
       : state.overlay === "work-type" && currentWorkForOverlay
@@ -2909,6 +3051,7 @@ function render() {
   if (base !== lastBaseHtml) {
     app.innerHTML = base;
     lastBaseHtml = base;
+    requestAnimationFrame(hydrateExternalPublicationEmbeds);
   }
   const fab = fabMenu();
   if (fab !== lastFabHtml) {
@@ -3276,6 +3419,27 @@ async function confirmWorkMatch(candidateIndex) {
       await db.putViewingEvents(merged);
       if (state.activeRecordId) state.viewingEvents = merged.filter((event) => event.work_id === finalWork.id);
     }
+    // 外部发表也是 Work 的子实体。合并作品时一并改指向；如果两边已经引用了同一条
+    // normalized URL，只保留一条，继续维持 work_id + normalized_url 的唯一语义。
+    const allPublications = await db.getAll("externalPublications").catch(() => []);
+    const retainedUrls = new Set(allPublications
+      .filter((item) => item.work_id === finalWork.id)
+      .map((item) => item.normalized_url || normalizePublicationUrl(item.url))
+      .filter(Boolean));
+    for (const publication of allPublications.filter((item) => staleIds.includes(item.work_id))) {
+      const normalized = publication.normalized_url || normalizePublicationUrl(publication.url);
+      if (normalized && retainedUrls.has(normalized)) {
+        await db.delete("externalPublications", publication.id).catch(() => {});
+        continue;
+      }
+      if (normalized) retainedUrls.add(normalized);
+      await db.put("externalPublications", {
+        ...publication,
+        work_id: finalWork.id,
+        normalized_url: normalized,
+        updated_at: new Date().toISOString()
+      });
+    }
     // 用户反馈：书架里同一部电影出现两个条目——一个正常（有海报有记录），另一个只有
     // 标题、没有海报没有记录。原因是这里只把旧 id 从内存 state.works 里过滤掉
     // （见下），从来没有从数据库里删掉——下次加载又会把旧的本地 work 文档重新读回来。
@@ -3293,7 +3457,7 @@ async function confirmWorkMatch(candidateIndex) {
   // 顺手清掉；改成刷新首页/书架都要用到的全量 ViewingEvent 索引，因为上面可能合并了场次。
   await indexHomeCardData();
   if (state.view === "work" && state.currentWorkId === finalWork.id) {
-    void loadWorkEventsFor(finalWork.id);
+    loadWorkPageData(finalWork.id);
   }
   render();
   announce(`已确认作品：${finalWork.title}`);
@@ -3742,10 +3906,11 @@ function closeShelf() {
 function openWork(workId) {
   applyRoute(routeEnterWork(routeSnapshot(), workId, { scrollY }));
   state.currentWorkEvents = [];
+  state.currentWorkPublications = [];
   history.pushState({ view: "work", workId }, "", `#work=${encodeURIComponent(workId)}`);
   render();
   scrollTo(0, 0);
-  void loadWorkEventsFor(workId);
+  loadWorkPageData(workId);
 }
 
 /** R4：作品页 → 作品书架（本窗口里作品页只能从书架进入，所以固定回书架）。 */
@@ -4091,7 +4256,8 @@ function workDeletionImpact(work) {
   const reasons = collections.flatMap((collection) =>
     collectionEntries(collection).filter((entry) => ids.has(entry.work_id) && entry.reason).map((entry) => entry.reason)
   );
-  return { records, events, collections, reasons, series: findSeriesForWork(state.series, work.id) };
+  const publications = state.currentWorkPublications.filter((item) => ids.has(item.work_id));
+  return { records, events, collections, reasons, publications, series: findSeriesForWork(state.series, work.id) };
 }
 
 /**
@@ -4129,6 +4295,10 @@ async function performWorkDeletion() {
 
   for (const event of impact.events) {
     await db.delete("viewingEvents", event.id).catch(() => {});
+  }
+  const storedPublications = await db.getAll("externalPublications").catch(() => impact.publications);
+  for (const publication of storedPublications.filter((item) => ids.includes(item.work_id))) {
+    await db.delete("externalPublications", publication.id).catch(() => {});
   }
 
   await db.delete("works", work.id).catch(() => {});
@@ -4792,6 +4962,22 @@ document.addEventListener("click", async (event) => {
     state.editingHistoryEventId = trigger.dataset.eventId;
     state.overlay = "history-event";
     render();
+  } else if (action === "add-external-publication") {
+    state.editingPublicationId = null;
+    state.overlay = "external-publication";
+    render();
+  } else if (action === "edit-external-publication") {
+    state.editingPublicationId = trigger.dataset.publicationId || null;
+    state.overlay = "external-publication";
+    render();
+  } else if (action === "remove-external-publication") {
+    const publication = state.currentWorkPublications.find((item) => item.id === trigger.dataset.publicationId);
+    if (!publication) return;
+    if (!window.confirm("要从这部作品中移除这条外部发表吗？\n只会删除 App 内的引用关系，不会删除原平台内容。")) return;
+    await db.delete("externalPublications", publication.id);
+    state.currentWorkPublications = state.currentWorkPublications.filter((item) => item.id !== publication.id);
+    renderPreservingScroll();
+    notify("已从作品中移除外部发表");
   } else if (action === "clear-relation-lock") {
     await updateHistoryEvent(trigger.dataset.eventId, (event) => {
       event.relation_locked = false;
@@ -5559,9 +5745,14 @@ document.addEventListener("click", async (event) => {
     downloadExport(content, exportFilename(work, record, EXPORT_EXT[format]), MIME_TYPES[format]);
     notify("已下载文件");
   } else if (action === "export-all-share") {
-    if (!state.records.length && !state.collections.length) { notify("还没有可导出的内容"); return; }
+    const publications = await db.getAll("externalPublications").catch(() => []);
+    if (!state.records.length && !state.collections.length && !publications.length) { notify("还没有可导出的内容"); return; }
     const entries = await buildAllExportEntries();
-    const content = exportAllMarkdown(entries, buildCollectionsExport(state.collections, state.works, isWorkWatched));
+    const content = exportAllMarkdown(
+      entries,
+      buildCollectionsExport(state.collections, state.works, isWorkWatched),
+      buildExternalPublicationsExport(publications, state.works)
+    );
     try {
       const result = await deliverExport({ content, filename: exportAllFilename("md"), mimeType: MIME_TYPES.markdown, shareTitle: "电影印记 · 全部记录" });
       if (result.method === "cancelled") return;
@@ -5570,10 +5761,15 @@ document.addEventListener("click", async (event) => {
       notify(`分享失败：${error.message}`);
     }
   } else if (action === "export-all-download") {
-    if (!state.records.length && !state.collections.length) { notify("还没有可导出的内容"); return; }
+    const publications = await db.getAll("externalPublications").catch(() => []);
+    if (!state.records.length && !state.collections.length && !publications.length) { notify("还没有可导出的内容"); return; }
     const entries = await buildAllExportEntries();
     downloadExport(
-      exportAllJSON(entries, buildCollectionsExport(state.collections, state.works, isWorkWatched)),
+      exportAllJSON(
+        entries,
+        buildCollectionsExport(state.collections, state.works, isWorkWatched),
+        buildExternalPublicationsExport(publications, state.works)
+      ),
       exportAllFilename("json"),
       MIME_TYPES.json
     );
@@ -5591,6 +5787,11 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("input", (event) => {
+  if (event.target.id === "external-publication-url") {
+    const label = document.querySelector("#external-publication-platform");
+    if (label) label.textContent = publicationPlatformLabel(detectPublicationPlatform(event.target.value));
+    return;
+  }
   if (event.target.id === "interview-answer-input") {
     clearTimeout(state.interviewSaveTimer);
     const status = document.querySelector("[data-testid='interview-save-status']");
@@ -5851,6 +6052,53 @@ document.addEventListener("change", async (event) => {
 });
 
 document.addEventListener("submit", async (event) => {
+  if (event.target.id === "external-publication-form") {
+    event.preventDefault();
+    const work = findWorkById(state.works, state.currentWorkId);
+    if (!work) return;
+    const data = new FormData(event.target);
+    const url = String(data.get("url") || "").trim();
+    const normalizedUrl = normalizePublicationUrl(url);
+    if (!normalizedUrl) {
+      showToast("请输入有效的 HTTP / HTTPS URL");
+      return;
+    }
+    const publicationId = event.target.dataset.publicationId || null;
+    if (hasDuplicatePublication(state.currentWorkPublications, {
+      workId: work.id,
+      normalizedUrl,
+      exceptId: publicationId
+    })) {
+      showToast("这条外部发表已经添加过了。");
+      return;
+    }
+    const changes = {
+      url,
+      publishedAt: String(data.get("publishedAt") || "") || null,
+      viewingRecordId: String(data.get("viewingRecordId") || "") || null,
+      note: String(data.get("note") || "")
+    };
+    const existing = state.currentWorkPublications.find((item) => item.id === publicationId);
+    let publication;
+    try {
+      publication = existing
+        ? updateExternalPublication(existing, changes)
+        : createExternalPublication({ id: createId("publication"), workId: work.id, ...changes });
+    } catch (_) {
+      showToast("无法保存，请检查 URL");
+      return;
+    }
+    await db.put("externalPublications", publication);
+    state.currentWorkPublications = sortExternalPublications([
+      ...state.currentWorkPublications.filter((item) => item.id !== publication.id),
+      publication
+    ]);
+    state.editingPublicationId = null;
+    state.overlay = null;
+    renderPreservingScroll();
+    notify(existing ? "外部发表已更新" : "外部发表已添加");
+    return;
+  }
   if (event.target.id === "card-form") {
     event.preventDefault();
     const data = new FormData(event.target);
@@ -6120,9 +6368,10 @@ window.addEventListener("popstate", (event) => {
     state.view = "work";
     state.currentWorkId = workId;
     state.currentWorkEvents = [];
+    state.currentWorkPublications = [];
     render();
     scrollTo(0, 0);
-    void loadWorkEventsFor(workId);
+    loadWorkPageData(workId);
     return;
   }
   // R5：系列页 / 片单列表 / 片单详情。指向已删除实体的旧链接一律安全降级，

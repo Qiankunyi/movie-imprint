@@ -11,9 +11,9 @@
 // ─── IndexedDB（本地） ────────────────────────────────────────────────────────
 
 const DB_NAME = "movie-imprint-local";
-// v4：R5 新增 series（系列实体）与 collections（用户片单）两个 store
-const DB_VERSION = 4;
-const STORES = ["drafts", "records", "works", "meta", "viewingEvents", "series", "collections"];
+// v5：新增 externalPublications，独立保存「作品 → 外部公开内容」引用。
+const DB_VERSION = 5;
+const STORES = ["drafts", "records", "works", "meta", "viewingEvents", "series", "collections", "externalPublications"];
 
 let databasePromise;
 

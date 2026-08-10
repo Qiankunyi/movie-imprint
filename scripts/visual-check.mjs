@@ -268,7 +268,7 @@ async function runArchiveUiPath(browser) {
   await page.goto(`${baseUrl}/?archive-ui=1`);
   await page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("movie-imprint-local", 4);
+      const request = indexedDB.open("movie-imprint-local", 5);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -317,7 +317,7 @@ async function runArchiveUiPath(browser) {
   await page.getByTestId("tmdb-still-0").waitFor();
   const linkedRefs = await page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("movie-imprint-local", 4);
+      const request = indexedDB.open("movie-imprint-local", 5);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -505,7 +505,7 @@ async function runFunctionalPath(browser) {
   await page.getByTestId("work-match-sheet").getByRole("button", { name: "关闭", exact: true }).click();
   const linkedWork = await page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("movie-imprint-local", 4);
+      const request = indexedDB.open("movie-imprint-local", 5);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -583,7 +583,7 @@ async function runFunctionalPath(browser) {
   // 模拟旧版只保存票价数字、没有 currency 的记录：展示仍应明确按原日本票务默认值兼容。
   await page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("movie-imprint-local", 4);
+      const request = indexedDB.open("movie-imprint-local", 5);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -765,7 +765,7 @@ async function runOfflinePosterPath(browser) {
     const cache = await caches.open("movie-imprint-posters-v1");
     await cache.put("/api/bangumi/image?subjectId=449", new Response(bytes, { headers: { "content-type": "image/png", "x-movie-imprint-cached-at": String(Date.now()) } }));
     const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("movie-imprint-local", 4);
+      const request = indexedDB.open("movie-imprint-local", 5);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });

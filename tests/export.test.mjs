@@ -7,6 +7,7 @@ import {
   downloadExport,
   exportAllFilename,
   buildCollectionsExport,
+  buildExternalPublicationsExport,
   exportCollectionsMarkdown,
   exportAllJSON,
   exportAllMarkdown,
@@ -401,7 +402,7 @@ test("R6：条目指向被合并掉的旧 work id 时，通过 merged_from 回�
 
 test("R6：exportAllJSON 带上片单，且 schema 版本号跟着升", () => {
   const payload = JSON.parse(exportAllJSON([], buildCollectionsExport(R6_COLLECTIONS, R6_WORKS, () => false)));
-  assert.equal(payload.schema_version, "movie-imprint-export-all-0.2");
+  assert.equal(payload.schema_version, "movie-imprint-export-all-0.3");
   assert.equal(payload.collections.length, 1);
   assert.equal(payload.collections[0].entries[0].reason, "重看《蜘蛛侠：英雄归来》后觉得他的秃鹫非常不错");
 });
@@ -413,6 +414,25 @@ test("R6：exportAllMarkdown 里片单成段，已看/未看与理由都在", ()
   assert.match(md, /### 鸟人（2014） · 未看/);
   assert.match(md, /秃鹫非常不错/);
   assert.match(md, /> 从《蜘蛛侠：英雄归来》发现/);
+});
+
+test("外部发表进入全量 JSON/Markdown 备份，但不复制原帖正文", () => {
+  const publications = buildExternalPublicationsExport([{
+    id: "pub_1",
+    work_id: "work_birdman",
+    url: "https://x.com/me/status/1",
+    normalized_url: "https://x.com/me/status/1",
+    platform: "x",
+    published_at: "2026-08-10",
+    note: "重看后发表"
+  }], R6_WORKS);
+  const payload = JSON.parse(exportAllJSON([], [], publications));
+  assert.equal(payload.external_publications[0].work_title, "鸟人");
+  assert.equal(payload.external_publications[0].url, "https://x.com/me/status/1");
+  const md = exportAllMarkdown([], [], publications);
+  assert.match(md, /# 外部发表/);
+  assert.match(md, /鸟人 · x · 2026-08-10/);
+  assert.match(md, /https:\/\/x\.com\/me\/status\/1/);
 });
 
 test("R6：没有片单时不留一个空的「# 片单」标题", () => {
