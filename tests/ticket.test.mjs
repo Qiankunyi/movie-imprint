@@ -196,6 +196,12 @@ const REAL_CHINESE_OCR_TICKET = `大 地 影院 益阳 剧院 > 4 9
 2015-05-28 3 号 厅 £2)
 00:05~01:40 ”9 排 6 座 = a`;
 
+const REAL_CHINESE_VISUAL_CARD_OCR = `ad | 蝙 蝠 侠 大 战 超 人: 正义 黎明
+we 2016-04-17 10:55
+
+Kk; Dual 4K 8 排 10 列
+更 多 共 1 张 实 付款 Y40.8`;
+
 describe("parseTicketText — 109シネマズ真实票据回归", () => {
   const result = parseTicketText(REAL_109_TICKET);
   const screening = result.screenings[0];
@@ -319,6 +325,59 @@ describe("parseTicketText — 中国 App 截图 OCR 真实文本回归", () => {
     assert.equal(event.duration_minutes, 95);
     assert.equal(event.viewing_context.language, "国语");
     assert.equal(event.viewing_context.ticket_count, 1);
+  });
+});
+
+describe("parseTicketText — 中国视觉卡片型票据 OCR 回归", () => {
+  const screening = parseTicketText(REAL_CHINESE_VISUAL_CARD_OCR, { ocr: true }).screenings[0];
+
+  it("从带前缀噪声的单行中选择自然语言标题，不拼接 metadata", () => {
+    assert.equal(screening.movieTitle, "蝙蝠侠大战超人：正义黎明");
+    assert.equal(screening.version, null);
+  });
+
+  it("从带噪行中提取单一开始时间、列式座位与缺失字段", () => {
+    assert.equal(screening.viewedOn, "2016-04-17");
+    assert.equal(screening.screeningAt, "2016-04-17T10:55:00+09:00");
+    assert.equal(screening.screeningEndsAt, null);
+    assert.equal(screening.cinemaName, null);
+    assert.equal(screening.auditorium, null);
+    assert.deepEqual(screening.seats, ["8排10列"]);
+  });
+
+  it("Dual 4K 进入其他规格备注，数量与人民币实付款独立提取", () => {
+    assert.equal(screening.format, "其他");
+    assert.equal(screening.formatNote, "Dual 4K");
+    assert.equal(screening.is3D, false);
+    assert.equal(screening.language, null);
+    assert.equal(screening.ticketQuantity, 1);
+    assert.deepEqual(screening.ticketPrice, { amount: 40.8, currency: "CNY", count: 1 });
+  });
+});
+
+describe("parseTicketText — OCR visual hierarchy 辅助标题评分", () => {
+  it("语义候选接近时，较大的主文本行可胜过较小的 UI 文案", () => {
+    const layout = {
+      width: 400,
+      height: 120,
+      lines: [
+        { text: "会员优惠", bbox: { x0: 20, y0: 10, x1: 100, y1: 22 } },
+        { text: "无声告白", bbox: { x0: 20, y0: 32, x1: 180, y1: 62 } },
+        { text: "2016-04-17 10:55", bbox: { x0: 20, y0: 80, x1: 180, y1: 92 } }
+      ]
+    };
+    const screening = parseTicketText("会员优惠\n无声告白\n2016-04-17 10:55", { ocr: true, layout }).screenings[0];
+    assert.equal(screening.movieTitle, "无声告白");
+  });
+
+  it("孤立的海报规格文字不会无条件覆盖票务字段", () => {
+    const screening = parseTicketText(`IMAX 3D
+蝙蝠侠大战超人：正义黎明
+2016-04-17 10:55
+8排10列`, { ocr: true }).screenings[0];
+    assert.equal(screening.movieTitle, "蝙蝠侠大战超人：正义黎明");
+    assert.equal(screening.format, null);
+    assert.equal(screening.is3D, false);
   });
 });
 

@@ -12,11 +12,11 @@ import {
 } from "./stills.js?v=1";
 import { selectDailySidebarStill } from "./sidebar-artwork.js?v=1";
 import { SIDEBAR_STILLS, SIDEBAR_STILL_EXTENSIONS } from "../public/assets/sidebar-stills/manifest.js?v=1";
-import { parseTicketText, draftViewingEvent } from "./ticket.js?v=6";
+import { parseTicketText, draftViewingEvent } from "./ticket.js?v=7";
 import { buildWorkSearchQuery } from "./bangumi.js?v=14";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
 import { runMigrationIfNeeded } from "./migrate.js?v=6";
-import { EVENT_TYPES, normalizeCinemaFormat } from "./event-types.js?v=3";
+import { EVENT_TYPES, normalizeCinemaFormat } from "./event-types.js?v=4";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
 import {
   TICKET_OCR_LANGUAGE_OPTIONS,

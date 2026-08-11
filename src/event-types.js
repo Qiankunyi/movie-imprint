@@ -30,6 +30,7 @@ const FORMAT_KEYWORD_PATTERNS = [
   /ScreenX/i,
   /TCX/i,
   /BESTIA/i,
+  /Dual\s*4K/i,
   /^\s*[23]D\s*$/i
 ];
 
@@ -54,6 +55,7 @@ const FORMAT_EXTRACT_PATTERNS = [
   /MX4D/i,
   /TCX/i,
   /BESTIA/i,
+  /Dual\s*4K/i,
   /ドルビーシネマ|Dolby\s*Cinema/i,
   /[23]D/i,
   // 兜底：纯音响系统（非独立银幕规格），只有在没有其它更具体规格命中时才会走到这里
@@ -130,6 +132,7 @@ export function extractCinemaFormatCandidates(text) {
     /4DX(?:\s*SCREEN)?(?:\s*3D)?/gi,
     /ScreenX/gi,
     /\b(?:TCX|BESTIA)\b/gi,
+    /Dual\s*4K/gi,
     /(?:^|[\s　【[])([23]D)(?=$|[\s　】\]])/gi
   ];
   const found = [];
@@ -167,6 +170,7 @@ export function normalizeCinemaFormat(rawFormat) {
   if (/^(?:2D|3D|普通)$/i.test(raw)) return { format: "普通", formatNote: null, is3D };
   if (raw === "其他") return { format: "其他", formatNote: null, is3D };
   if (/^(?:TCX|BESTIA)$/i.test(raw)) return { format: "其他", formatNote: raw, is3D };
+  if (/^Dual\s*4K$/i.test(raw)) return { format: "其他", formatNote: "Dual 4K", is3D };
 
   return { format: "其他", formatNote: raw, is3D };
 }

@@ -17,12 +17,12 @@ import {
   extractEventTypes,
   normalizeCinemaFormat,
   splitVersionFromTitle
-} from "./event-types.js";
+} from "./event-types.js?v=4";
 import {
   cleanOcrCinemaCandidate,
   cleanOcrTitleCandidate,
   normalizeOcrTicketInput
-} from "./ticket-normalize.js";
+} from "./ticket-normalize.js?v=2";
 
 // ─── 1. 敏感信息模式 ────────────────────────────────────────────────────────
 
@@ -242,7 +242,7 @@ export function parseTicketPrice(segment) {
 
   if (!currency && /[¥￥]/.test(text)) {
     const japaneseTicketContext = /料金|金額|大人|小人|劇場|上映|座席|購入|ご予約|KINEZO|シネマ|チケット|松竹/i.test(text);
-    const chineseTicketContext = /票价|金额|人民币|影城|影院|场次|座位|订单|购票/i.test(text);
+    const chineseTicketContext = /票价|金额|人民币|影城|影院|场次|座位|订单|购票|实付款|付款|支付|共\s*\d+\s*张/i.test(text);
     if (japaneseTicketContext && !chineseTicketContext) currency = "JPY";
     else if (chineseTicketContext && !japaneseTicketContext) currency = "CNY";
   }
@@ -385,7 +385,7 @@ function extractAuditoriumCandidate(line) {
 }
 
 function isLikelyChineseSeatLine(line) {
-  return /^\d+[\s　]*排[\s　]*\d+[\s　]*(?:座|号)(?:[\s　]*[,，、][\s　]*\d+[\s　]*(?:座|号))*$/u.test(String(line || "").trim());
+  return /^\d+[\s　]*排[\s　]*\d+[\s　]*(?:座|号|列)(?:[\s　]*[,，、][\s　]*\d+[\s　]*(?:座|号|列))*$/u.test(String(line || "").trim());
 }
 
 function extractUnlabeledFormat(line) {
@@ -401,9 +401,13 @@ function isLikelyTicketMetadataLine(line) {
     || isLikelyCinemaLine(value)
     || Boolean(extractAuditoriumCandidate(value))
     || isLikelyChineseSeatLine(value)
+    || /\d+[\s　]*排[\s　]*\d+[\s　]*(?:座|号|列)/u.test(value)
     || Boolean(extractUnlabeledFormat(value))
-    || /^\d{4}[\/\-年]\d{1,2}[\/\-月]\d{1,2}[日]?/u.test(value)
-    || /^\d{1,2}:\d{2}\s*[～〜~]\s*\d{1,2}:\d{2}$/u.test(value)
+    || extractCinemaFormatCandidates(value).length > 0
+    || /\d{4}[\/\-年]\d{1,2}[\/\-月]\d{1,2}[日]?/u.test(value)
+    || /\d{1,2}:\d{2}(?:\s*[～〜~]\s*\d{1,2}:\d{2})?/u.test(value)
+    || /(?:共\s*)?\d+\s*(?:张|枚)/u.test(value)
+    || /(?:实付款|付款|票价|金额|合计|合計)\s*[¥￥Y]?\s*\d/iu.test(value)
     || /^(?:合计|合計)?[¥￥]?[\d,]+(?:\.\d+)?\s*(?:円|元|JPY|CNY)?$/iu.test(value)
     || /^https?:\/\//iu.test(value)
     || /REDACTED/u.test(value);
@@ -422,14 +426,15 @@ function extractViewingLanguage(segment) {
 
 function extractTicketQuantity(segment, seats, ticketPrice) {
   const labeled = pickTicketField(extractTicketFields(segment), "quantity");
-  const explicit = (labeled || String(segment || "")).match(/(?:^|\s)(\d+)\s*(?:张|枚)(?:\s|$|[／/])/u);
+  const explicit = (labeled || String(segment || "")).match(/(?:共\s*)?(\d+)\s*(?:张|枚)(?:\s|$|[／/]|实付款|付款|票价|金额)/u);
   if (explicit) return Math.max(1, Number(explicit[1]) || 1);
   if (Number(ticketPrice?.count) > 0) return Number(ticketPrice.count);
   if (seats.length) return seats.length;
   return null;
 }
 
-function scoreTitleCandidate(line, index, { ocr = false } = {}) {
+function scoreTitleCandidate(line, index, options = {}, layoutMetrics = null) {
+  const { ocr = false } = options;
   let value = String(line || "").trim();
   if (ocr) value = cleanOcrTitleCandidate(value);
   if (value.length < 2 || isLikelyTicketMetadataLine(value)) return null;
@@ -441,13 +446,31 @@ function scoreTitleCandidate(line, index, { ocr = false } = {}) {
   let score = Math.min(letterCount, 30) + Math.min(cjkCount, 16) * 1.5;
   if (/[：:《》「」『』・·]/u.test(value)) score += 2;
   if (letterCount / Math.max(value.length, 1) < 0.45) score -= 8;
+  const layoutLine = options.ocrLines?.[index];
+  const box = layoutLine?.bbox;
+  if (box && layoutMetrics?.medianHeight > 0) {
+    const height = Number(box.y1) - Number(box.y0);
+    const sizeRatio = height / layoutMetrics.medianHeight;
+    score += Math.max(-1.5, Math.min(4, (sizeRatio - 1) * 3));
+    if (layoutMetrics.imageHeight > 0) {
+      const centerY = (Number(box.y0) + Number(box.y1)) / 2;
+      score += Math.max(-1, Math.min(1, (0.5 - centerY / layoutMetrics.imageHeight) * 2));
+    }
+  }
   score -= index * 0.05; // 仅作同分项；位置不再决定 title。
   return { value, score };
 }
 
 function selectTitleCandidate(lines, options) {
+  const layoutHeights = (options.ocrLines || [])
+    .map((line) => Number(line?.bbox?.y1) - Number(line?.bbox?.y0))
+    .filter((height) => Number.isFinite(height) && height > 0)
+    .sort((a, b) => a - b);
+  const medianHeight = layoutHeights.length ? layoutHeights[Math.floor(layoutHeights.length / 2)] : 0;
+  const imageHeight = Number(options.layout?.height)
+    || Math.max(0, ...(options.ocrLines || []).map((line) => Number(line?.bbox?.y1) || 0));
   return lines
-    .map((line, index) => scoreTitleCandidate(line, index, options))
+    .map((line, index) => scoreTitleCandidate(line, index, options, { medianHeight, imageHeight }))
     .filter(Boolean)
     .sort((a, b) => b.score - a.score)[0]?.value || null;
 }
@@ -515,6 +538,10 @@ export function parseScreeningSegment(segment, options = {}) {
   const startTimeMatch = !timeRangeMatch && segment.match(
     /開映(?:時間)?[：:]\s*(\d{1,2}:\d{2})/
   );
+  // 视觉卡片型票据常把日期与唯一的开场时间放在同一行，没有字段标签。
+  const unlabeledStartTimeMatch = !timeRangeMatch && segment.match(
+    /\d{4}[\/\-年]\d{1,2}[\/\-月]\d{1,2}[日]?(?:\([^)]+\))?[^\n\d]*(\d{1,2}:\d{2})/u
+  );
   // 结束时间（独立行）：「終映時間：12:10」或「終映：12:10」
   const endTimeMatch = segment.match(
     /終映(?:時間)?[：:]\s*(\d{1,2}:\d{2})/
@@ -526,8 +553,8 @@ export function parseScreeningSegment(segment, options = {}) {
   if (viewedOn && timeRangeMatch) {
     screeningAt = toISO(viewedOn, timeRangeMatch[1]);
     screeningEndsAt = toISO(viewedOn, timeRangeMatch[2]);
-  } else if (viewedOn && startTimeMatch) {
-    screeningAt = toISO(viewedOn, startTimeMatch[1]);
+  } else if (viewedOn && (startTimeMatch || unlabeledStartTimeMatch)) {
+    screeningAt = toISO(viewedOn, (startTimeMatch || unlabeledStartTimeMatch)[1]);
     if (endTimeMatch) screeningEndsAt = toISO(viewedOn, endTimeMatch[1]);
   }
 
@@ -570,15 +597,26 @@ export function parseScreeningSegment(segment, options = {}) {
   if (formatFromTitle) {
     formatDetailsCandidates.push({ format: formatFromTitle, formatNote: formatNoteFromTitle, is3D: is3DFromTitle });
   }
-  const rawFormatSources = [pickTicketField(fields, "format"), rawCinemaField, segment];
+  // 普通票务文本可扫描整段；OCR 截图则只扫描明确字段和带票务实体的行，避免把海报美术上的
+  // “IMAX 3D”等字样无条件写入订单规格。标题括号中的明确格式已由 formatFromTitle 处理。
+  const rawFormatSources = [pickTicketField(fields, "format"), rawCinemaField];
+  if (!options.ocr) rawFormatSources.push(segment);
   for (const source of rawFormatSources) {
     for (const candidate of extractCinemaFormatCandidates(source)) {
       formatDetailsCandidates.push(normalizeCinemaFormat(candidate));
     }
   }
   for (const line of ticketLines) {
-    const candidate = extractUnlabeledFormat(line);
-    if (candidate) formatDetailsCandidates.push(normalizeCinemaFormat(candidate));
+    if (!options.ocr) {
+      const unlabeledCandidate = extractUnlabeledFormat(line);
+      if (unlabeledCandidate) formatDetailsCandidates.push(normalizeCinemaFormat(unlabeledCandidate));
+    }
+    const hasOcrTicketContext = /\d+[\s　]*排[\s　]*\d+[\s　]*(?:座|号|列)|(?:共\s*)?\d+\s*(?:张|枚)|(?:国语|普通话|粤语|英语|日语|韩语|原声)|(?:实付款|付款|票价|金额|座席|影厅|厅号)/u.test(line);
+    if (!options.ocr || hasOcrTicketContext) {
+      for (const candidate of extractCinemaFormatCandidates(line)) {
+        formatDetailsCandidates.push(normalizeCinemaFormat(candidate));
+      }
+    }
   }
   const normalizedFormat = normalizeFormatCandidates(formatDetailsCandidates);
 
@@ -594,8 +632,8 @@ export function parseScreeningSegment(segment, options = {}) {
       .map((seat) => seat.includes("-") ? seat : seat.replace(/^([A-Z])(\d+)$/, "$1-$2"));
   }
   if (!seats.length) {
-    seats = [...segment.matchAll(/(\d+)[\s　]*排[\s　]*(\d+)[\s　]*(?:座|号)/gu)]
-      .map((match) => `${match[1]}排${match[2]}座`);
+    seats = [...segment.matchAll(/(\d+)[\s　]*排[\s　]*(\d+)[\s　]*(座|号|列)/gu)]
+      .map((match) => `${match[1]}排${match[2]}${match[3] === "列" ? "列" : "座"}`);
   }
 
   // ── 票务提供商 ────────────────────────────────────────────────────────────
@@ -683,9 +721,11 @@ export function parseScreeningSegment(segment, options = {}) {
  * @returns {TicketParseResult}
  */
 export function parseTicketText(rawInput, options = {}) {
-  const parserInput = options.ocr
-    ? normalizeOcrTicketInput(rawInput, options.layout).text
-    : rawInput;
+  const normalizedOcr = options.ocr ? normalizeOcrTicketInput(rawInput, options.layout) : null;
+  const parserInput = normalizedOcr?.text || rawInput;
+  const parserOptions = normalizedOcr
+    ? { ...options, ocrLines: normalizedOcr.lines }
+    : options;
   // 第一步：按邮件边界拆分
   const segments = splitEmails(parserInput);
 
@@ -694,7 +734,7 @@ export function parseTicketText(rawInput, options = {}) {
 
   // 第三步：逐段解析
   const screenings = redactedSegments
-    .map((segment) => parseScreeningSegment(segment, options))
+    .map((segment) => parseScreeningSegment(segment, parserOptions))
     .filter(Boolean);
 
   // 第四步：按放映开始时间升序排列（无时间的排在最后）

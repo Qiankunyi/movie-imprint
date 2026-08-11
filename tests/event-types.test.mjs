@@ -69,6 +69,10 @@ test("4DX / MX4D 收敛为 4D，并只把有意义的原始名称写入备注", 
   assert.deepEqual(normalizeCinemaFormat("MX4D 3D"), { format: "4D", formatNote: "MX4D", is3D: true });
 });
 
+test("不能归入核心分类的明确设备规格进入其他与规格备注", () => {
+  assert.deepEqual(normalizeCinemaFormat("Dual 4K"), { format: "其他", formatNote: "Dual 4K", is3D: false });
+});
+
 test("回归保护：前篇／后篇等区分词不被制式／活动提取吞掉", () => {
   const front = extractFormatAndTitle("【DolbyCinema】劇場版 魔法少女まどか☆マギカ 前編 始まりの物語");
   const back = extractFormatAndTitle("【DolbyCinema】劇場版 魔法少女まどか☆マギカ 後編 永遠の物語");

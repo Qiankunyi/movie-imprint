@@ -19,6 +19,11 @@ export function normalizeOcrLineText(input) {
   value = value.replace(/(\d)\s+(?=(?:号|厅|排|座|张|枚))/gu, "$1");
   value = value.replace(/(号|排)\s+(?=\d)/gu, "$1");
   value = value.replace(/(\d)\s+(?=[DK]\b)/giu, "$1");
+  value = value.replace(new RegExp(`([${CJK}])\\s*:\\s*(?=[${CJK}])`, "gu"), "$1：");
+  // 中文付款语境中的 Y40.8 是常见的人民币符号 OCR 误识别；没有付款词时不改普通字母 Y。
+  if (/(?:实付款|付款|票价|金额|支付)/u.test(value)) {
+    value = value.replace(/\bY\s*(?=\d+(?:\.\d+)?\b)/giu, "¥");
+  }
   value = value.replace(/[ \t　]+/gu, " ").trim();
   return value;
 }
@@ -116,6 +121,12 @@ export function cleanOcrCinemaCandidate(input) {
 
 export function cleanOcrTitleCandidate(input) {
   let value = normalizeOcrLineText(input);
+  // 仅当短拉丁碎片后有分隔符、且剩余主体含足够长的 CJK 文本时，清理左侧 UI/OCR 噪声。
+  // 因此 F1、TENET、A.I. 等纯英文/数字标题不会被这一规则命中。
+  const leadingNoise = value.match(/^[A-Za-z]{1,3}\s*[|;]\s*(.+)$/u);
+  if (leadingNoise && (leadingNoise[1].match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu) || []).length >= 4) {
+    value = leadingNoise[1].trim();
+  }
   // 仅清理“较完整 CJK 标题 + 空格 + 1~3 个小写拉丁字母”的孤立尾巴。
   // A / AI / F1 / X / LOVE 等合法标题不会命中。
   if ((value.match(/\p{Script=Han}/gu) || []).length >= 4) {
