@@ -25,9 +25,13 @@ import {
   removeWorkFromCollection,
   removeWorkFromSeries,
   seriesIdFor,
+  seriesMemberCounts,
+  seriesMemberDetails,
   seriesRelationLabel,
+  seriesTimelineEntries,
   setReleaseDateRegion,
   setSeriesRelation,
+  updateSeriesMember,
   taglineFromSummary
 } from "../src/library.js";
 
@@ -128,6 +132,48 @@ test("createSeries + addWorkToSeries：成员按加入顺序排列且不重复",
   series = addWorkToSeries(series, "work_b", NOW);
   series = addWorkToSeries(series, "work_a", NOW); // 重复加入应无效
   assert.deepEqual(series.member_ids, ["work_a", "work_b"]);
+  assert.deepEqual(series.member_details.work_b, { relation: "core", series_order: 2, relation_note: null });
+});
+
+test("旧 Series 成员缺少关系数据时兼容为 core，并沿用原顺序生成编号", () => {
+  const legacy = { member_ids: ["a", "b"], relations: [] };
+  assert.deepEqual(seriesMemberDetails(legacy, "b"), { relation: "core", seriesOrder: 2, relationNote: "" });
+  assert.deepEqual(seriesMemberCounts(legacy), { core: 2, crossover: 0 });
+});
+
+test("updateSeriesMember：关系属于 Series—Work，crossover 保存说明但不保存系列编号", () => {
+  let series = addWorkToSeries(createSeries({ title: "蜘蛛侠 MCU" }, NOW), "civil-war", NOW);
+  series = updateSeriesMember(series, "civil-war", {
+    relation: "crossover",
+    seriesOrder: 9,
+    relationNote: " MCU版 Spider-Man 首次登场 "
+  }, NOW);
+  assert.deepEqual(seriesMemberDetails(series, "civil-war"), {
+    relation: "crossover",
+    seriesOrder: null,
+    relationNote: "MCU版 Spider-Man 首次登场"
+  });
+});
+
+test("seriesTimelineEntries：core 与 crossover 按上映日混排，seriesOrder 不影响展示顺序", () => {
+  let series = createSeries({ title: "蜘蛛侠 MCU" }, NOW);
+  for (const id of ["homecoming", "civil-war", "far-from-home", "infinity-war"]) series = addWorkToSeries(series, id, NOW);
+  series = updateSeriesMember(series, "homecoming", { relation: "core", seriesOrder: 1 }, NOW);
+  series = updateSeriesMember(series, "civil-war", { relation: "crossover", relationNote: "首次登场" }, NOW);
+  series = updateSeriesMember(series, "far-from-home", { relation: "core", seriesOrder: 2 }, NOW);
+  series = updateSeriesMember(series, "infinity-war", { relation: "crossover", relationNote: "参与无限战争" }, NOW);
+  const works = [
+    { id: "homecoming", release_dates: { entries: [{ region: "us", date: "2017-07-07" }] } },
+    { id: "civil-war", release_dates: { entries: [{ region: "us", date: "2016-05-06" }] } },
+    { id: "far-from-home", release_dates: { entries: [{ region: "us", date: "2019-07-02" }] } },
+    { id: "infinity-war", release_dates: { entries: [{ region: "us", date: "2018-04-27" }] } }
+  ];
+  assert.deepEqual(seriesTimelineEntries(series, works).map((entry) => [entry.work.id, entry.relation, entry.seriesOrder]), [
+    ["civil-war", "crossover", null],
+    ["homecoming", "core", 1],
+    ["infinity-war", "crossover", null],
+    ["far-from-home", "core", 2]
+  ]);
 });
 
 test("moveWorkInSeries：手动调整系列内顺序", () => {
@@ -162,6 +208,7 @@ test("removeWorkFromSeries：连带清掉该作品参与的所有关系，不留
   const after = removeWorkFromSeries(series, "b", NOW);
   assert.deepEqual(after.member_ids, ["a", "c"]);
   assert.deepEqual(after.relations, [], "两条关系都涉及 b，应一并清除");
+  assert.equal(after.member_details.b, undefined);
 });
 
 test("removeSeriesRelation 只删指定方向的那一条", () => {

@@ -103,11 +103,15 @@ import {
   removeSeriesRelation,
   removeWorkFromCollection,
   removeWorkFromSeries,
+  seriesMemberCounts,
+  seriesMemberDetails,
   seriesRelationLabel,
+  seriesTimelineEntries,
   setReleaseDateRegion,
   setSeriesRelation,
+  updateSeriesMember,
   taglineFromSummary
-} from "./library.js?v=3";
+} from "./library.js?v=4";
 import {
   captureTransition,
   toggleEventType,
@@ -344,6 +348,8 @@ const state = {
   tagSearchQuery: "",
   tagSort: "attitude",
   currentSeriesId: null,      // R5：系列页当前显示的系列
+  seriesFilter: "all",       // Series 作品轴筛选：all / core / crossover
+  editingSeriesMemberId: null,
   currentCollectionId: null,  // R5：片单详情页当前显示的片单
   editingEntryWorkId: null,   // R6：正在编辑「想看理由」的片单条目对应的 work id
   entryMenuWorkId: null,      // R6 补丁 13：片单条目的二级菜单当前作用于哪条
@@ -671,6 +677,15 @@ async function loadState() {
     // 否则首屏会把空的 state.viewingEvents 当成“观影信息待确认”。
     await hydrateRecordViewingEvents(targetId, { renderAfter: false });
     return;
+  }
+  if (location.hash.startsWith("#series=")) {
+    const seriesId = decodeURIComponent(location.hash.slice(8));
+    if (state.series.some((item) => item.id === seriesId)) {
+      state.view = "series";
+      state.currentSeriesId = seriesId;
+      state.seriesFilter = "all";
+      return;
+    }
   }
   if (location.hash === "#tags") {
     state.view = "tags";
@@ -1215,10 +1230,12 @@ function taglineRow(work) {
 /** R5：所属系列 + 系列内位置。点进去是系列页。 */
 function seriesRow(work) {
   const series = findSeriesForWork(state.series, work.id);
-  const index = series ? (series.member_ids || []).indexOf(work.id) : -1;
+  const details = series ? seriesMemberDetails(series, work.id) : null;
   const value = series
     ? `<span class="collection-chip" data-testid="current-series">
-        ${escapeHtml(series.title)}${index >= 0 ? `<span class="work-relation-index">第 ${index + 1} 部</span>` : ""}
+        ${escapeHtml(series.title)}${details?.relation === "crossover"
+          ? `<span class="work-relation-index">关联作品</span>`
+          : details?.seriesOrder ? `<span class="work-relation-index">第 ${details.seriesOrder} 部</span>` : ""}
       </span>`
     : `<span class="archive-empty-value" aria-hidden="true">—</span>`;
   return `<button type="button" class="work-relation-row archive-pressable" data-action="edit-series" data-testid="edit-series" aria-label="系列信息">
@@ -1481,24 +1498,51 @@ function workGridMarkup(works, emptyCopy) {
   </button>`).join("")}</section>`;
 }
 
-/**
- * 系列页：系列内成员按手动顺序排列（可上下调整），下面是作品之间的关系连线。
- * 关系全部由用户手动指定——抓取只提供"这两部有关联"的锚点，不猜具体关系类型。
- */
+/** Series 详情：Core 与 Crossover 共用一条按上映时间排列的作品轴。 */
 function renderSeries() {
   const series = state.series.find((item) => item.id === state.currentSeriesId);
   if (!series) return renderShelf();
   const members = orderedSeriesMembers(series, state.works);
+  const counts = seriesMemberCounts(series);
+  const timeline = seriesTimelineEntries(series, state.works);
+  const visibleTimeline = state.seriesFilter === "all"
+    ? timeline
+    : timeline.filter((entry) => entry.relation === state.seriesFilter);
+  const years = timeline.map((entry) => entry.year).filter(Boolean);
+  const range = years.length
+    ? `${Math.min(...years)} — ${timeline.some((entry) => !entry.year) ? "至今" : Math.max(...years)}`
+    : "上映时间待补充";
   const titleById = new Map(state.works.map((work) => [work.id, work.title || "未命名作品"]));
-
-  const memberRows = members.map((work, index) => `<div class="series-member" data-testid="series-member-${escapeHtml(work.id)}">
-    <span class="series-member-index" aria-hidden="true">${index + 1}</span>
-    <button type="button" class="series-member-title" data-action="open-work" data-work-id="${escapeHtml(work.id)}">${escapeHtml(work.title || "未命名作品")}</button>
-    <span class="series-member-actions">
-      <button type="button" class="icon-button small" data-action="move-series-member" data-work-id="${escapeHtml(work.id)}" data-direction="up" aria-label="上移" ${index === 0 ? "disabled" : ""}>↑</button>
-      <button type="button" class="icon-button small" data-action="move-series-member" data-work-id="${escapeHtml(work.id)}" data-direction="down" aria-label="下移" ${index === members.length - 1 ? "disabled" : ""}>↓</button>
-    </span>
-  </div>`).join("");
+  const memberRows = visibleTimeline.map((entry) => {
+    const { work, relation, seriesOrder, relationNote, year } = entry;
+    const poster = posterUrlFor(work);
+    const initial = escapeHtml((work.title || "?").trim().slice(0, 1));
+    const posterMarkup = poster
+      ? `<img src="${escapeHtml(poster)}" alt="" loading="lazy" />`
+      : `<span aria-hidden="true">${initial}</span>`;
+    const node = relation === "core"
+      ? `<span class="series-timeline-node core"></span>`
+      : `<span class="series-timeline-node crossover"></span>`;
+    const order = relation === "core" && seriesOrder
+      ? `<span class="series-entry-order">${String(seriesOrder).padStart(2, "0")}</span>`
+      : "";
+    return `<article class="series-timeline-entry ${relation}" data-testid="series-member-${escapeHtml(work.id)}">
+      <time class="series-entry-year">${year || "—"}</time>
+      <span class="series-entry-rail" aria-hidden="true">${node}</span>
+      <div class="series-entry-card">
+        <button type="button" class="series-entry-open" data-action="open-work" data-work-id="${escapeHtml(work.id)}" aria-label="打开《${escapeHtml(work.title || "未命名作品")}》">
+          <span class="series-entry-poster">${posterMarkup}</span>
+          <span class="series-entry-copy">
+            ${order}
+            <strong>${escapeHtml(work.title || "未命名作品")}</strong>
+            <small>${year || "上映年份未知"}</small>
+            ${relation === "crossover" && relationNote ? `<span class="series-entry-note">${escapeHtml(relationNote)}</span>` : ""}
+          </span>
+        </button>
+        <button type="button" class="series-entry-edit" data-action="edit-series-member" data-work-id="${escapeHtml(work.id)}" aria-label="编辑《${escapeHtml(work.title || "未命名作品")}》在系列中的关系">${icon("more")}</button>
+      </div>
+    </article>`;
+  }).join("");
 
   const relationRows = (series.relations || []).map((rel) => `<div class="series-relation" data-testid="series-relation-${escapeHtml(rel.from_work_id)}-${escapeHtml(rel.to_work_id)}">
     <span class="series-relation-copy">《${escapeHtml(titleById.get(rel.from_work_id) || rel.from_work_id)}》的${escapeHtml(seriesRelationLabel(rel.type))}是《${escapeHtml(titleById.get(rel.to_work_id) || rel.to_work_id)}》</span>
@@ -1509,23 +1553,29 @@ function renderSeries() {
 
   return `<main class="series-view" data-testid="series">
     <article class="work-content">
-      <h1 class="page-title">${escapeHtml(series.title)}</h1>
-      <section class="work-section">
-        <h2 class="work-section-title">系列作品 · ${members.length} 部</h2>
-        <p class="settings-note">顺序由你手动排定——上映顺序、观看顺序、故事时间线顺序，取决于你想怎么看这个系列。</p>
-        <div class="series-members">${memberRows || `<p class="work-section-empty">这个系列还没有作品</p>`}</div>
+      <header class="series-header">
+        <h1 class="page-title">${escapeHtml(series.title)}</h1>
+        <p class="series-summary">${counts.core} 部主系列${counts.crossover ? ` · ${counts.crossover} 部关联作品` : ""}</p>
+        <p class="series-range">${escapeHtml(range)}</p>
+      </header>
+      ${members.length ? `<nav class="series-filters" aria-label="筛选系列作品">
+        ${[["all", "全部", members.length], ["core", "主系列", counts.core], ["crossover", "关联作品", counts.crossover]].map(([value, label, count]) => `<button type="button" data-action="set-series-filter" data-value="${value}" class="${state.seriesFilter === value ? "active" : ""}" aria-pressed="${state.seriesFilter === value}" ${value === "crossover" && !count ? "disabled" : ""}>${label}<span>${count}</span></button>`).join("")}
+      </nav>` : ""}
+      ${counts.crossover ? `<div class="series-legend" aria-label="图例"><span><i class="core"></i>主系列</span><span><i class="crossover"></i>关联作品</span></div>` : ""}
+      <section class="series-timeline" aria-label="系列作品脉络">
+        ${memberRows || `<p class="work-section-empty">${members.length ? "这个筛选下没有作品" : "这个系列还没有作品"}</p>`}
       </section>
-      <section class="work-section" data-testid="series-relations">
-        <h2 class="work-section-title">作品之间的关系</h2>
-        <p class="settings-note">Bangumi 的关联条目只作为锚点抓回来，具体是前作、外传还是平行世界，由你自己标注——自动解析这类关系很容易出错。</p>
-        <div class="series-relations">${relationRows || `<p class="work-section-empty">还没有标注任何关系</p>`}</div>
+      ${(series.relations || []).length || members.length >= 2 ? `<details class="series-legacy-relations" data-testid="series-relations">
+        <summary>作品之间的其他关系</summary>
+        <p class="settings-note">可继续保留原有的前作、续作等手动连线；它们不会改变主系列与关联作品身份。</p>
+        <div class="series-relations">${relationRows || `<p class="work-section-empty">还没有标注其他关系</p>`}</div>
         ${members.length >= 2 ? `<form id="series-relation-form" class="series-relation-form">
           <label><span>作品</span><select name="fromWorkId">${memberOptions}</select></label>
           <label><span>关系</span><select name="type">${SERIES_RELATION_TYPES.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></label>
           <label><span>指向</span><select name="toWorkId">${memberOptions}</select></label>
           <button class="sheet-done" type="submit" data-testid="add-series-relation">添加关系</button>
-        </form>` : `<p class="settings-note">系列里至少要有两部作品，才能标注它们之间的关系。</p>`}
-      </section>
+        </form>` : ""}
+      </details>` : ""}
     </article>
   </main>`;
 }
@@ -2895,10 +2945,13 @@ function taglineEditorOverlay(work) {
  */
 function seriesEditorOverlay(work) {
   const current = findSeriesForWork(state.series, work.id);
-  const options = state.series.map((series) => `<button type="button" class="series-option ${current?.id === series.id ? "selected" : ""}" data-action="assign-series" data-series-id="${escapeHtml(series.id)}" data-testid="assign-series-${escapeHtml(series.id)}">
-    <span class="series-option-title">${escapeHtml(series.title)}</span>
-    <span class="series-option-count">${(series.member_ids || []).length} 部</span>
-  </button>`).join("");
+  const options = state.series.map((series) => {
+    const counts = seriesMemberCounts(series);
+    return `<button type="button" class="series-option ${current?.id === series.id ? "selected" : ""}" data-action="assign-series" data-series-id="${escapeHtml(series.id)}" data-testid="assign-series-${escapeHtml(series.id)}">
+      <span class="series-option-title">${escapeHtml(series.title)}</span>
+      <span class="series-option-count">${counts.core} 部主系列${counts.crossover ? ` · ${counts.crossover} 部关联` : ""}</span>
+    </button>`;
+  }).join("");
 
   return `<div class="overlay" data-testid="series-editor">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
@@ -2913,6 +2966,37 @@ function seriesEditorOverlay(work) {
       <form id="series-form">
         <label><span>新建系列</span><input type="text" name="title" maxlength="60" placeholder="例如：蜘蛛侠" data-testid="series-title-input" /></label>
         <button class="sheet-done" type="submit">新建并归入</button>
+      </form>
+    </section>
+  </div>`;
+}
+
+/** 在 Series 页沿用现有 bottom sheet 编辑单个 Series—Work 关系。 */
+function seriesMemberEditorOverlay(series) {
+  const workId = state.editingSeriesMemberId;
+  const work = findWorkById(state.works, workId);
+  if (!work || !(series.member_ids || []).includes(workId)) return "";
+  const details = seriesMemberDetails(series, workId);
+  const index = (series.member_ids || []).indexOf(workId);
+  return `<div class="overlay" data-testid="series-member-editor">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet series-member-editor" role="dialog" aria-modal="true" aria-labelledby="series-member-editor-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">${escapeHtml(series.title)}</span><h2 id="series-member-editor-title">《${escapeHtml(work.title || "未命名作品")}》</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <form id="series-member-form">
+        <label><span>成员关系</span><select name="relation" data-testid="series-member-relation">
+          <option value="core" ${details.relation === "core" ? "selected" : ""}>主系列作品</option>
+          <option value="crossover" ${details.relation === "crossover" ? "selected" : ""}>关联作品</option>
+        </select></label>
+        <label><span>系列编号 <small>主系列作品使用</small></span><input type="number" name="seriesOrder" min="1" step="1" value="${details.seriesOrder || ""}" placeholder="例如 1" /></label>
+        <label><span>关系说明 <small>关联作品使用，建议填写</small></span><textarea name="relationNote" rows="3" maxlength="120" placeholder="例如：MCU版 Spider-Man 首次登场">${escapeHtml(details.relationNote)}</textarea></label>
+        <p class="settings-note">页面按上映时间混排；手动顺序只在上映日期相同或未知时作为补充。</p>
+        <div class="series-member-order-actions">
+          <button type="button" class="text-action" data-action="move-series-member" data-work-id="${escapeHtml(workId)}" data-direction="up" ${index === 0 ? "disabled" : ""}>手动上移</button>
+          <button type="button" class="text-action" data-action="move-series-member" data-work-id="${escapeHtml(workId)}" data-direction="down" ${index === (series.member_ids || []).length - 1 ? "disabled" : ""}>手动下移</button>
+        </div>
+        <button class="sheet-done" type="submit" data-testid="save-series-member">保存关系</button>
+        <button type="button" class="text-action danger series-member-remove" data-action="remove-series-member" data-work-id="${escapeHtml(workId)}">从这个系列移除</button>
       </form>
     </section>
   </div>`;
@@ -3395,6 +3479,7 @@ function render() {
   const editingHistoryEvent = [...(state.currentWorkEvents || []), ...(state.viewingEvents || [])]
     .find((event) => event.id === state.editingHistoryEventId) || null;
   const currentCollectionForOverlay = state.collections.find((item) => item.id === state.currentCollectionId) || null;
+  const currentSeriesForOverlay = state.series.find((item) => item.id === state.currentSeriesId) || null;
   const overlay = state.overlay === "capture-entry"
     ? captureEntryOverlay()
     : state.overlay === "ticket-confirm"
@@ -3445,6 +3530,8 @@ function render() {
         ? taglineEditorOverlay(currentWorkForOverlay)
       : state.overlay === "series" && currentWorkForOverlay
         ? seriesEditorOverlay(currentWorkForOverlay)
+      : state.overlay === "series-member" && currentSeriesForOverlay
+        ? seriesMemberEditorOverlay(currentSeriesForOverlay)
       : state.overlay === "collections" && currentWorkForOverlay
         ? collectionsEditorOverlay(currentWorkForOverlay)
       : state.overlay === "stills" && currentWorkForOverlay
@@ -4456,7 +4543,7 @@ function closeShelf() {
 
 /** R4：作品书架 → 作品页。 */
 function openWork(workId) {
-  state.workReturnView = state.view === "tag" ? "tag" : "shelf";
+  state.workReturnView = ["tag", "series"].includes(state.view) ? state.view : "shelf";
   applyRoute(routeEnterWork(routeSnapshot(), workId, { scrollY }));
   state.currentWorkEvents = [];
   state.currentWorkPublications = [];
@@ -4475,6 +4562,13 @@ function closeWork() {
     render();
     return;
   }
+  if (state.workReturnView === "series" && state.currentSeriesId) {
+    state.view = "series";
+    state.currentWorkId = null;
+    history.replaceState({ view: "series", seriesId: state.currentSeriesId }, "", `#series=${encodeURIComponent(state.currentSeriesId)}`);
+    render();
+    return;
+  }
   applyRoute(routeExitWork(routeSnapshot()));
   history.replaceState({ view: "shelf" }, "", "#shelf");
   render();
@@ -4489,6 +4583,8 @@ function openSeries(seriesId) {
   state.seriesReturnView = state.view;
   state.workScrollY = state.view === "work" ? scrollY : state.workScrollY;
   state.currentSeriesId = seriesId;
+  state.seriesFilter = "all";
+  state.editingSeriesMemberId = null;
   state.view = "series";
   state.overlay = null;
   history.pushState({ view: "series", seriesId }, "", `#series=${encodeURIComponent(seriesId)}`);
@@ -5842,8 +5938,23 @@ document.addEventListener("click", async (event) => {
     openSeries(trigger.dataset.seriesId);
   } else if (action === "close-series") {
     closeSeries();
+  } else if (action === "set-series-filter") {
+    state.seriesFilter = ["core", "crossover"].includes(trigger.dataset.value) ? trigger.dataset.value : "all";
+    render();
+  } else if (action === "edit-series-member") {
+    state.editingSeriesMemberId = trigger.dataset.workId || null;
+    state.overlay = "series-member";
+    render();
   } else if (action === "move-series-member") {
     await moveSeriesMember(trigger.dataset.workId, trigger.dataset.direction);
+  } else if (action === "remove-series-member") {
+    const workId = trigger.dataset.workId;
+    const work = findWorkById(state.works, workId);
+    await updateCurrentSeries((series) => removeWorkFromSeries(series, workId));
+    state.overlay = null;
+    state.editingSeriesMemberId = null;
+    renderPreservingScroll();
+    announce(`已把《${work?.title || "这部作品"}》移出系列`);
   } else if (action === "remove-series-relation") {
     await updateCurrentSeries((series) => removeSeriesRelation(series, trigger.dataset.from, trigger.dataset.to));
     renderPreservingScroll();
@@ -7205,6 +7316,23 @@ document.addEventListener("submit", async (event) => {
     state.overlay = null;
     render();
     announce(`已新建片单《${title}》`);
+    return;
+  }
+
+  if (event.target.id === "series-member-form") {
+    event.preventDefault();
+    const workId = state.editingSeriesMemberId;
+    if (!workId) return;
+    const data = new FormData(event.target);
+    await updateCurrentSeries((series) => updateSeriesMember(series, workId, {
+      relation: String(data.get("relation") || "core"),
+      seriesOrder: data.get("seriesOrder"),
+      relationNote: String(data.get("relationNote") || "")
+    }));
+    state.overlay = null;
+    state.editingSeriesMemberId = null;
+    renderPreservingScroll();
+    announce("已保存系列成员关系");
     return;
   }
 

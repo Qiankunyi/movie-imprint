@@ -206,6 +206,7 @@ export function createSeries({ title, aliases = [], externalRefs = [] } = {}, no
     aliases: [...new Set(aliases.filter(Boolean))],
     external_refs: externalRefs,
     member_ids: [],
+    member_details: {},
     relations: [],
     created_at: now,
     updated_at: now
@@ -216,18 +217,97 @@ export function createSeries({ title, aliases = [], externalRefs = [] } = {}, no
 export function addWorkToSeries(series, workId, now = new Date().toISOString()) {
   if (!series || !workId) return series;
   if ((series.member_ids || []).includes(workId)) return series;
-  return { ...series, member_ids: [...(series.member_ids || []), workId], updated_at: now };
+  const memberIds = [...(series.member_ids || []), workId];
+  const nextOrder = (series.member_ids || []).filter((id) => seriesMemberDetails(series, id).relation === "core").length + 1;
+  return {
+    ...series,
+    member_ids: memberIds,
+    member_details: {
+      ...(series.member_details || {}),
+      [workId]: { relation: "core", series_order: nextOrder, relation_note: null }
+    },
+    updated_at: now
+  };
 }
 
 export function removeWorkFromSeries(series, workId, now = new Date().toISOString()) {
   if (!series) return series;
+  const memberDetails = { ...(series.member_details || {}) };
+  delete memberDetails[workId];
   return {
     ...series,
     member_ids: (series.member_ids || []).filter((id) => id !== workId),
+    member_details: memberDetails,
     // 该作品参与的关系连线一并清掉，避免留下指向已移除成员的悬空关系
     relations: (series.relations || []).filter((rel) => rel.from_work_id !== workId && rel.to_work_id !== workId),
     updated_at: now
   };
+}
+
+/**
+ * 读取作品在某个系列中的成员身份。旧 Series 没有 member_details，按 core 解释；
+ * core 的旧数据编号沿用 member_ids 里 core 成员的相对次序。
+ */
+export function seriesMemberDetails(series, workId) {
+  const raw = series?.member_details?.[workId] || {};
+  const relation = raw.relation === "crossover" ? "crossover" : "core";
+  const memberIds = series?.member_ids || [];
+  const fallbackOrder = memberIds
+    .slice(0, Math.max(0, memberIds.indexOf(workId)) + 1)
+    .filter((id) => (series?.member_details?.[id]?.relation || "core") !== "crossover")
+    .length;
+  const numericOrder = Number(raw.series_order);
+  return {
+    relation,
+    seriesOrder: relation === "core" && Number.isInteger(numericOrder) && numericOrder > 0
+      ? numericOrder
+      : relation === "core" ? Math.max(1, fallbackOrder) : null,
+    relationNote: relation === "crossover" ? String(raw.relation_note || "").trim() : ""
+  };
+}
+
+/** 更新 Series—Work 关系，而不是修改 Work 自身。 */
+export function updateSeriesMember(series, workId, { relation, seriesOrder, relationNote } = {}, now = new Date().toISOString()) {
+  if (!series || !(series.member_ids || []).includes(workId)) return series;
+  const previous = seriesMemberDetails(series, workId);
+  const nextRelation = relation === "crossover" ? "crossover" : "core";
+  const parsedOrder = Number(seriesOrder);
+  const nextOrder = nextRelation === "core"
+    ? (Number.isInteger(parsedOrder) && parsedOrder > 0 ? parsedOrder : previous.seriesOrder)
+    : null;
+  const nextNote = nextRelation === "crossover" ? String(relationNote || "").trim().slice(0, 120) : null;
+  return {
+    ...series,
+    member_details: {
+      ...(series.member_details || {}),
+      [workId]: { relation: nextRelation, series_order: nextOrder, relation_note: nextNote }
+    },
+    updated_at: now
+  };
+}
+
+/** 详情页统一作品轴：精确上映日优先，同日/未知日期沿用 member_ids 手动顺序。 */
+export function seriesTimelineEntries(series, works) {
+  const manualIndex = new Map((series?.member_ids || []).map((id, index) => [id, index]));
+  return orderedSeriesMembers(series, works)
+    .map((work) => {
+      const details = seriesMemberDetails(series, work.id);
+      const releaseDate = normalizeReleaseDates(work.release_dates).entries[0]?.date || null;
+      const year = releaseDate ? Number(releaseDate.slice(0, 4)) : (work.release_year ?? null);
+      return { work, ...details, releaseDate, year, manualIndex: manualIndex.get(work.id) ?? Number.MAX_SAFE_INTEGER };
+    })
+    .sort((a, b) => {
+      const aKey = a.releaseDate || (a.year ? `${a.year}-12-31` : "9999-12-31");
+      const bKey = b.releaseDate || (b.year ? `${b.year}-12-31` : "9999-12-31");
+      return aKey.localeCompare(bKey) || a.manualIndex - b.manualIndex;
+    });
+}
+
+export function seriesMemberCounts(series) {
+  return (series?.member_ids || []).reduce((counts, workId) => {
+    counts[seriesMemberDetails(series, workId).relation] += 1;
+    return counts;
+  }, { core: 0, crossover: 0 });
 }
 
 /** 在系列内把某部作品move到指定位置（用于手动排系列顺序）。 */

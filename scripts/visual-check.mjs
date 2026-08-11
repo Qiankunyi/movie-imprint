@@ -268,7 +268,7 @@ async function runArchiveUiPath(browser) {
   await page.goto(`${baseUrl}/?archive-ui=1`);
   await page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("movie-imprint-local", 5);
+      const request = indexedDB.open("movie-imprint-local", 6);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -317,7 +317,7 @@ async function runArchiveUiPath(browser) {
   await page.getByTestId("tmdb-still-0").waitFor();
   const linkedRefs = await page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("movie-imprint-local", 5);
+      const request = indexedDB.open("movie-imprint-local", 6);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -505,7 +505,7 @@ async function runFunctionalPath(browser) {
   await page.getByTestId("work-match-sheet").getByRole("button", { name: "关闭", exact: true }).click();
   const linkedWork = await page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("movie-imprint-local", 5);
+      const request = indexedDB.open("movie-imprint-local", 6);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -583,7 +583,7 @@ async function runFunctionalPath(browser) {
   // 模拟旧版只保存票价数字、没有 currency 的记录：展示仍应明确按原日本票务默认值兼容。
   await page.evaluate(async () => {
     const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("movie-imprint-local", 5);
+      const request = indexedDB.open("movie-imprint-local", 6);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -765,7 +765,7 @@ async function runOfflinePosterPath(browser) {
     const cache = await caches.open("movie-imprint-posters-v1");
     await cache.put("/api/bangumi/image?subjectId=449", new Response(bytes, { headers: { "content-type": "image/png", "x-movie-imprint-cached-at": String(Date.now()) } }));
     const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("movie-imprint-local", 5);
+      const request = indexedDB.open("movie-imprint-local", 6);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -827,6 +827,104 @@ async function runOfflinePosterPath(browser) {
     }));
     throw new Error(`离线刷新后履历卡海报没有从本地缓存恢复：${JSON.stringify(diagnostics)}`);
   }
+  await context.close();
+}
+
+/** Series Core/Crossover 验收案例：隔离上下文，不写入用户浏览器数据。 */
+async function runSeriesPath(browser) {
+  const context = await browser.newContext({ viewport: { width: 1000, height: 900 }, colorScheme: "light", serviceWorkers: "block" });
+  let page = await context.newPage();
+  await page.goto(baseUrl);
+  const seriesId = "series_spider_mcu_acceptance";
+  const works = [
+    ["civil-war", "美国队长3：内战", "2016-05-06"],
+    ["homecoming", "蜘蛛侠：英雄归来", "2017-07-07"],
+    ["infinity-war", "复仇者联盟3：无限战争", "2018-04-27"],
+    ["endgame", "复仇者联盟4：终局之战", "2019-04-26"],
+    ["far-from-home", "蜘蛛侠：英雄远征", "2019-07-02"],
+    ["no-way-home", "蜘蛛侠：英雄无归", "2021-12-17"],
+    ["spider-man-4", "Spider-Man 4", null]
+  ].map(([id, title, date]) => ({
+    id,
+    work_id: id,
+    title,
+    aliases: [],
+    external_refs: [],
+    release_dates: date ? { entries: [{ id: `us_${date}`, region: "us", date, source: "manual" }] } : { entries: [] },
+    release_year: date ? Number(date.slice(0, 4)) : null,
+    identity_status: "matched",
+    match: { status: "confirmed", candidates: [] },
+    first_recorded_at: new Date().toISOString()
+  }));
+  await page.evaluate(async ({ seriesId, works }) => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("movie-imprint-local", 6);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(["works", "series"], "readwrite");
+      for (const work of works) transaction.objectStore("works").put(work);
+      transaction.objectStore("series").put({
+        id: seriesId,
+        title: "蜘蛛侠 MCU",
+        aliases: [],
+        external_refs: [],
+        member_ids: works.map((work) => work.id),
+        member_details: {
+          "civil-war": { relation: "crossover", series_order: null, relation_note: "MCU版 Spider-Man 首次登场" },
+          homecoming: { relation: "core", series_order: 1, relation_note: null },
+          "infinity-war": { relation: "crossover", series_order: null, relation_note: "参与无限战争" },
+          endgame: { relation: "crossover", series_order: null, relation_note: "参与终局之战" },
+          "far-from-home": { relation: "core", series_order: 2, relation_note: null },
+          "no-way-home": { relation: "core", series_order: 3, relation_note: null },
+          "spider-man-4": { relation: "core", series_order: 4, relation_note: null }
+        },
+        relations: [],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error);
+    });
+  }, { seriesId, works });
+
+  // 用新页面模拟直接打开深链，确保不是同文档 hash 跳转触发的内存状态。
+  await page.close();
+  page = await context.newPage();
+  await page.goto(`${baseUrl}/#series=${encodeURIComponent(seriesId)}`);
+  try {
+    await page.getByTestId("series").waitFor({ timeout: 5000 });
+  } catch {
+    throw new Error(`Series 深链未恢复：${(await page.locator("body").innerText()).slice(0, 500)}`);
+  }
+  const summary = await page.locator(".series-summary").innerText();
+  if (summary !== "4 部主系列 · 3 部关联作品") throw new Error(`Series 数量摘要错误：${summary}`);
+  const titles = await page.locator(".series-entry-copy strong").allTextContents();
+  const expectedTitles = works.map((work) => work.title);
+  if (JSON.stringify(titles) !== JSON.stringify(expectedTitles)) throw new Error(`Series 没有按上映时间混排：${JSON.stringify(titles)}`);
+  if (await page.locator(".series-timeline-entry.core").count() !== 4) throw new Error("Series Core 数量错误");
+  if (await page.locator(".series-timeline-entry.crossover").count() !== 3) throw new Error("Series Crossover 数量错误");
+  const corePoster = await page.locator(".series-timeline-entry.core .series-entry-poster").first().boundingBox();
+  const crossoverPoster = await page.locator(".series-timeline-entry.crossover .series-entry-poster").first().boundingBox();
+  if (!corePoster || !crossoverPoster || corePoster.width <= crossoverPoster.width) throw new Error("Core 海报没有明显大于 Crossover");
+  if (!((await page.getByTestId("series-member-civil-war").innerText()).includes("MCU版 Spider-Man 首次登场"))) throw new Error("Crossover 没有展示关系说明");
+
+  await page.locator('[data-action="set-series-filter"][data-value="crossover"]').click();
+  if (await page.locator(".series-timeline-entry").count() !== 3) throw new Error("关联作品筛选没有生效");
+  await page.locator('[data-action="set-series-filter"][data-value="all"]').click();
+  await page.getByTestId("series-member-civil-war").locator(".series-entry-edit").click();
+  await page.getByTestId("series-member-editor").waitFor();
+  await page.getByPlaceholder("例如：MCU版 Spider-Man 首次登场").fill("MCU版 Spider-Man 首次登场（验收）");
+  await page.getByTestId("save-series-member").click();
+  const relationSaved = await page.waitForFunction(() => document.querySelector('[data-testid="series-member-civil-war"]')?.textContent?.includes("首次登场（验收）"), null, { timeout: 5000 })
+    .then(() => true).catch(() => false);
+  if (!relationSaved) throw new Error("关系说明编辑没有保存");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  if (await page.locator(".series-timeline-entry").count() !== 7) throw new Error("窄屏更换了 Series 组件结构");
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+  if (overflow) throw new Error("Series 窄屏出现横向溢出");
   await context.close();
 }
 
@@ -902,6 +1000,7 @@ try {
   });
   try {
     await runFunctionalPath(browser);
+    await runSeriesPath(browser);
     await runOfflinePosterPath(browser);
     await runArchiveUiPath(browser);
     if (!testOnly) await captureVariants(browser);
