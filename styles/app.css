@@ -960,6 +960,19 @@ svg {
   margin: 0;
 }
 
+.work-match-state-copy {
+  min-width: 0;
+}
+
+.work-match-state-copy .work-search-sources {
+  margin-top: var(--space-2);
+  margin-bottom: 0;
+}
+
+.work-match-panel > .work-search-sources {
+  margin-top: var(--space-2);
+}
+
 .work-match-panel.confirmed .work-match-secondary {
   min-height: 40px;
   padding: 0;
@@ -974,6 +987,49 @@ svg {
 .work-match-panel.muted .work-match-secondary {
   flex: 0 0 auto;
   margin: 0 0 0 auto;
+}
+
+.work-match-search-form {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.work-match-search-form > label {
+  color: var(--ink);
+  font: var(--type-label);
+}
+
+.work-match-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+}
+
+.work-match-search-row input {
+  min-width: 0;
+  min-height: var(--touch);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--outline-soft);
+  border-radius: 12px;
+  color: var(--ink);
+  background: var(--surface-high);
+  font: var(--type-body);
+}
+
+.work-match-search-row button {
+  min-width: 72px;
+  min-height: var(--touch);
+  padding: 0 var(--space-3);
+  border-radius: 12px;
+  color: var(--surface);
+  background: var(--accent-strong);
+  font: var(--type-label);
+}
+
+.work-match-search-form small {
+  color: var(--ink-soft);
+  font: var(--type-meta);
 }
 
 .match-spinner {

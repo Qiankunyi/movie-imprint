@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildWorkMatchOutcome,
   bangumiCandidateToUnified,
   buildSearchResults,
   foldIntoLocal,
@@ -293,4 +294,54 @@ test("海报关联：同名候选有歧义或年份冲突时必须让用户确�
     bgm(2, "某片", { releaseDate: "2007-05-01" })
   ]), null, "两个同样可信的结果不能擅自选一个");
   assert.equal(uniqueBangumiLinkCandidate(work, [bgm(3, "某片", { releaseDate: "2017-01-01" })]), null);
+});
+
+test("详情页作品匹配保留双源状态，TMDB 未配置时不会伪装成零结果", () => {
+  const sources = {
+    bangumi: { state: "ok", count: 8 },
+    tmdb: { state: "unconfigured", count: 0 }
+  };
+  const candidates = [{ source: "bangumi", sourceId: "1", title: "魔戒2：双塔奇兵" }];
+  const match = buildWorkMatchOutcome({
+    query: "指环王 双塔奇兵",
+    candidates,
+    sources,
+    correcting: true
+  });
+
+  assert.equal(match.status, "needs_confirmation");
+  assert.equal(match.query, "指环王 双塔奇兵");
+  assert.equal(match.sources.tmdb.state, "unconfigured");
+  assert.deepEqual(match.candidates, candidates);
+});
+
+test("修正匹配没有候选时仍保留查询词和来源状态，允许继续换英文名搜索", () => {
+  const sources = {
+    bangumi: { state: "ok", count: 0 },
+    tmdb: { state: "ok", count: 0 }
+  };
+  const match = buildWorkMatchOutcome({
+    query: "The Lord of the Rings: The Two Towers",
+    candidates: [],
+    sources,
+    correcting: true
+  });
+
+  assert.equal(match.status, "no_results");
+  assert.equal(match.query, "The Lord of the Rings: The Two Towers");
+  assert.equal(match.correcting, true);
+  assert.equal(match.sources, sources);
+  assert.match(match.message, /保留当前匹配/);
+});
+
+test("两个作品数据库都失败时明确进入 unavailable 且不丢失各源错误", () => {
+  const sources = {
+    bangumi: { state: "failed", count: 0, error: "timeout" },
+    tmdb: { state: "failed", count: 0, error: "HTTP 503" }
+  };
+  const match = buildWorkMatchOutcome({ query: "Two Towers", sources });
+
+  assert.equal(match.status, "unavailable");
+  assert.equal(match.sources.bangumi.error, "timeout");
+  assert.equal(match.sources.tmdb.error, "HTTP 503");
 });

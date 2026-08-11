@@ -54,6 +54,7 @@ import {
 } from "./routing.js?v=1";
 import {
   buildSearchResults,
+  buildWorkMatchOutcome,
   countBySource,
   filterCandidatesBySource,
   hasDegradedSource,
@@ -61,7 +62,7 @@ import {
   searchLocalWorks,
   summarizeSearchSources,
   uniqueBangumiLinkCandidate
-} from "./work-search.js?v=5";
+} from "./work-search.js?v=6";
 import {
   buildWorkView,
   findWorkById,
@@ -1822,6 +1823,13 @@ function workTypeLabel(type) {
   return type === "anime" ? "动画" : type === "real" ? "真人影视" : "影视作品";
 }
 
+function workMatchSourceStatusMarkup(match) {
+  if (!match?.sources) return "";
+  return `<p class="work-search-sources ${hasDegradedSource(match.sources) ? "degraded" : ""}" data-testid="work-match-sources">
+    ${summarizeSearchSources(match.sources).map((item) => `<span class="source-chip tone-${item.tone}" data-testid="work-match-source-${item.source}">${escapeHtml(item.text)}</span>`).join("")}
+  </p>`;
+}
+
 function workMatchPanel(record) {
   const work = currentWork(record);
   if (!work) return "";
@@ -1842,6 +1850,7 @@ function workMatchPanel(record) {
   if (match.status === "needs_confirmation") {
     return `<section class="work-match-panel" data-testid="work-match-panel">
       <div class="work-match-heading"><span class="section-label-icon">${icon("match")}作品匹配</span><b>请选择正确条目</b></div>
+      ${workMatchSourceStatusMarkup(match)}
       <div class="work-candidates">
         ${(match.candidates || []).map((candidate, index) => `<button type="button" class="work-candidate" data-action="confirm-work-match" data-index="${index}">
           <b>${escapeHtml(candidate.title)}<span class="work-search-item-source src-${escapeHtml(candidate.source)}">${escapeHtml(SOURCE_DISPLAY[candidate.source] || candidate.source)}</span></b>
@@ -1855,15 +1864,15 @@ function workMatchPanel(record) {
   if (match.status === "searching") {
     return `<section class="work-match-panel muted" data-testid="work-match-panel"><span class="match-spinner" aria-hidden="true"></span><p>正在查找正式作品条目…</p></section>`;
   }
-  const message = match.status === "no_results"
+  const message = match.message || (match.status === "no_results"
     ? "没有找到合适条目，本地作品已经保留。"
     : match.status === "dismissed"
       ? "已保留为本地作品。"
       : match.status === "unavailable"
         ? "暂时无法联网匹配，本地记录不受影响。"
-        : "作品目前保存在本地，可以查找正式条目。";
+        : "作品目前保存在本地，可以查找正式条目。");
   return `<section class="work-match-panel muted" data-testid="work-match-panel">
-    <p>${message}</p><button type="button" class="work-match-secondary" data-action="retry-work-match">${match.status === "idle" ? "查找作品" : "重新匹配"}</button>
+    <div class="work-match-state-copy"><p>${message}</p>${workMatchSourceStatusMarkup(match)}${emptyResultHint(match)}</div><button type="button" class="work-match-secondary" data-action="retry-work-match">${match.status === "idle" ? "查找作品" : "重新匹配"}</button>
   </section>`;
 }
 
@@ -1909,12 +1918,23 @@ function workSplitOverlay() {
 
 function workMatchOverlay(record) {
   const work = currentWork(record);
+  const match = work?.match || { status: "idle", query: "" };
+  const query = match.query || buildWorkSearchQuery(record) || work?.title || record.title || "";
+  const searching = match.status === "searching";
   return `<div class="overlay" data-testid="work-match-sheet">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭作品匹配"></button>
     <section class="bottom-sheet work-match-sheet" role="dialog" aria-modal="true" aria-labelledby="work-match-sheet-title">
       <div class="sheet-handle" aria-hidden="true"></div>
       <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work?.title || record.title || "")}》</span><h2 id="work-match-sheet-title">查找正式作品</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
       <p class="settings-note">用于修正<b>这个作品条目</b>的资料、海报与外部标识。你的原文、记忆卡片与观影信息不会被改动；但条目资料是同条目下所有感想共用的，选到另一部电影时会先向你确认。</p>
+      <form id="work-match-search-form" class="work-match-search-form">
+        <label for="work-match-query">换一个片名重新搜索</label>
+        <div class="work-match-search-row">
+          <input type="search" id="work-match-query" name="query" value="${escapeHtml(query)}" placeholder="例如 The Lord of the Rings: The Two Towers" autocomplete="off" maxlength="80" required data-testid="work-match-query" ${searching ? "disabled" : ""} />
+          <button type="submit" data-testid="work-match-search" ${searching ? "disabled" : ""}>${searching ? "搜索中…" : "搜索"}</button>
+        </div>
+        <small>可以改用英文名、原名或更准确的译名；只有确认候选后才会修改作品条目。</small>
+      </form>
       ${workMatchPanel(record)}
     </section>
   </div>`;
@@ -3887,11 +3907,12 @@ function renderPreservingScroll() {
   requestAnimationFrame(() => scrollTo({ top: previousScroll, behavior: "instant" }));
 }
 
-async function requestWorkMatch(recordId, { force = false } = {}) {
+async function requestWorkMatch(recordId, { force = false, query: queryOverride = null } = {}) {
   const record = state.records.find((item) => item.id === recordId);
   const work = currentWork(record);
   if (!record || !work || work.match?.status === "searching" || (work.identity_status === "matched" && !force)) return;
-  const query = buildWorkSearchQuery(record);
+  const query = String(queryOverride ?? buildWorkSearchQuery(record)).trim();
+  if (!query) return;
   work.match = { status: "searching", query, candidates: [], message: null, correcting: force };
   await db.put("works", work);
   renderPreservingScroll();
@@ -3908,7 +3929,10 @@ async function requestWorkMatch(recordId, { force = false } = {}) {
     : { state: "failed", candidates: [], error: settled.reason?.message || "网络错误" };
   const bangumiInfo = unwrap(bangumiResult);
   const tmdbInfo = unwrap(tmdbResult);
-  const bothFailed = bangumiInfo.state === "failed" && tmdbInfo.state === "failed";
+  const sources = {
+    bangumi: { state: bangumiInfo.state, count: bangumiInfo.candidates.length, error: bangumiInfo.error },
+    tmdb: { state: tmdbInfo.state, count: tmdbInfo.candidates.length, error: tmdbInfo.error }
+  };
 
   const { external } = buildSearchResults({
     local: [],
@@ -3917,17 +3941,7 @@ async function requestWorkMatch(recordId, { force = false } = {}) {
     query
   });
 
-  if (bothFailed) {
-    work.match = force
-      ? { status: "confirmed", query, candidates: [], message: "暂时无法重新匹配，已保留当前作品。", correcting: false }
-      : { status: "unavailable", query, candidates: [], message: "两个数据库都暂时连不上", correcting: false };
-  } else {
-    work.match = external.length
-      ? { status: "needs_confirmation", query, candidates: external, message: null, correcting: force }
-      : force
-        ? { status: "confirmed", query, candidates: [], message: "没有找到新的候选，已保留当前匹配。", correcting: false }
-        : { status: "no_results", query, candidates: [], message: null, correcting: false };
-  }
+  work.match = buildWorkMatchOutcome({ query, candidates: external, sources, correcting: force });
   await db.put("works", work);
   renderPreservingScroll();
 }
@@ -6602,7 +6616,7 @@ document.addEventListener("click", async (event) => {
     state.overlay = "work-match";
     render();
   } else if (action === "retry-work-match") {
-    await requestWorkMatch(currentRecord()?.id);
+    await requestWorkMatch(currentRecord()?.id, { force: currentWork(currentRecord())?.identity_status === "matched" });
   } else if (action === "rematch-work") {
     await requestWorkMatch(currentRecord()?.id, { force: true });
   } else if (action === "retry-local-analysis") {
@@ -7220,6 +7234,18 @@ document.addEventListener("change", async (event) => {
 });
 
 document.addEventListener("submit", async (event) => {
+  if (event.target.id === "work-match-search-form") {
+    event.preventDefault();
+    const query = String(new FormData(event.target).get("query") || "").trim();
+    const record = currentRecord();
+    if (!record || !query) return;
+    await requestWorkMatch(record.id, {
+      force: currentWork(record)?.identity_status === "matched",
+      query
+    });
+    return;
+  }
+
   if (event.target.id === "work-tag-form") {
     event.preventDefault();
     const work = findWorkById(state.works, state.currentWorkId);

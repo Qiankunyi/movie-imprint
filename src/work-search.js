@@ -283,10 +283,39 @@ export function hasDegradedSource(sources = {}) {
 }
 
 /**
- * 查询词是否是 CJK。TMDB 的 `language` 参数只决定**返回字段用哪种语言**，
- * 不决定**用哪种语言去匹配**——它对中文片名的收录本来就有限，所以中文查询
- * 在 TMDB 上搜不到是常态，不是故障。空结果时据此给一句可操作的提示，
- * 而不是让用户以为坏了。
+ * 把双源请求的结果收束成详情页作品匹配状态。
+ *
+ * `sources` 必须原样保留在结果里：否则候选只有 Bangumi 时，UI 无法判断 TMDB 是
+ * 未配置、请求失败还是确实返回 0 条。修正匹配没有结果时也保留 no_results 状态，
+ * 让用户能够继续换片名搜索，而不是悄悄回到 confirmed、把搜索入口收起来。
+ */
+export function buildWorkMatchOutcome({ query = "", candidates = [], sources = {}, correcting = false } = {}) {
+  const bothFailed = ["bangumi", "tmdb"].every((source) => sources[source]?.state === "failed");
+  if (bothFailed) {
+    return {
+      status: "unavailable",
+      query,
+      candidates: [],
+      message: correcting ? "暂时无法重新匹配，已保留当前作品。" : "两个数据库都暂时连不上",
+      correcting,
+      sources
+    };
+  }
+  return candidates.length
+    ? { status: "needs_confirmation", query, candidates, message: null, correcting, sources }
+    : {
+        status: "no_results",
+        query,
+        candidates: [],
+        message: correcting ? "没有找到新的候选，已保留当前匹配。" : null,
+        correcting,
+        sources
+      };
+}
+
+/**
+ * 查询词是否是 CJK。只在某次 TMDB 请求正常但返回 0 条时，用它给出“可尝试原名或
+ * 英文名”的操作提示；不据此臆测 TMDB 的整体中文收录能力。
  */
 export function looksCJK(query) {
   return /[぀-ヿ㐀-䶿一-鿿豈-﫿]/.test(String(query || ""));
