@@ -3219,13 +3219,42 @@ svg {
 
 .work-hero {
   position: relative;
+  display: block;
   width: 100%;
+  padding: 0;
   overflow: hidden;
   aspect-ratio: 3 / 4;
+  border: 0;
   border-radius: var(--radius-card);
   background: var(--surface-high);
   box-shadow: var(--shadow-float);
 }
+
+.work-hero:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 3px;
+}
+
+.work-hero-edit {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: #fff;
+  border: 1px solid rgb(255 255 255 / 32%);
+  border-radius: 50%;
+  background: rgb(8 15 18 / 68%);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 24%);
+  backdrop-filter: blur(6px);
+  transition: transform var(--motion-fast), background var(--motion-fast);
+}
+
+.work-hero-edit svg { width: 14px; height: 14px; }
+.work-hero:hover .work-hero-edit,
+.work-hero:focus-visible .work-hero-edit { background: var(--accent); transform: scale(1.06); }
 
 .work-hero-img {
   position: absolute;
@@ -3244,6 +3273,139 @@ svg {
   font: var(--type-display);
   font-size: 28px;
 }
+
+/* 海报选择：来源分组保持安静，候选只取 Bangumi 1 张与 TMDB 三种地区版本。 */
+.poster-editor { padding-bottom: calc(var(--space-5) + env(safe-area-inset-bottom)); }
+
+.poster-source-section {
+  padding-top: var(--space-4);
+  margin-top: var(--space-3);
+  border-top: 1px solid var(--outline-soft);
+}
+
+.poster-source-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.poster-source-heading h3 { margin: 0; color: var(--ink); font: var(--type-label); }
+.poster-source-heading span { color: var(--ink-soft); font: var(--type-meta); }
+
+.poster-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.poster-choice-grid.single { grid-template-columns: minmax(0, 112px); }
+
+.poster-choice {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+  color: var(--ink-soft);
+  text-align: left;
+  background: transparent;
+  font: var(--type-meta);
+}
+
+.poster-choice-preview {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  aspect-ratio: 2 / 3;
+  border: 2px solid transparent;
+  border-radius: var(--radius-tag);
+  background: var(--surface-high);
+  box-shadow: 0 4px 14px rgb(8 18 21 / 8%);
+}
+
+.poster-choice-preview > img { width: 100%; height: 100%; object-fit: cover; }
+.poster-choice.selected { color: var(--accent-strong); }
+.poster-choice.selected .poster-choice-preview { border-color: var(--accent); }
+.poster-choice:focus-visible { outline: none; }
+.poster-choice:focus-visible .poster-choice-preview { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 2px; }
+.poster-choice-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.poster-choice-check {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  color: var(--on-accent);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 25%);
+  font: var(--type-label);
+}
+
+.poster-choice-skeletons {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.poster-choice-skeletons span {
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius-tag);
+  background: linear-gradient(100deg, var(--surface-high) 20%, var(--surface) 42%, var(--surface-high) 64%);
+  background-size: 220% 100%;
+  animation: capture-skeleton-shimmer 1.4s linear infinite;
+}
+
+.poster-source-empty { margin: 0; color: var(--ink-soft); font: var(--type-meta); }
+.poster-source-empty.error { color: var(--danger); }
+
+.poster-upload-row { display: flex; align-items: stretch; gap: var(--space-3); }
+
+.poster-upload-current {
+  position: relative;
+  width: 72px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius-tag);
+  background: var(--surface-high);
+}
+
+.poster-upload-current img { width: 100%; height: 100%; object-fit: cover; }
+.poster-upload-current span {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 3px;
+  color: #fff;
+  text-align: center;
+  background: rgb(5 12 14 / 72%);
+  font: var(--type-meta);
+}
+
+.poster-upload-button {
+  display: flex;
+  min-height: 72px;
+  flex: 1;
+  padding: var(--space-3);
+  align-items: center;
+  gap: var(--space-3);
+  cursor: pointer;
+  color: var(--accent-strong);
+  border: 1px dashed var(--outline);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+
+.poster-upload-button > svg { width: 24px; height: 24px; flex: 0 0 auto; }
+.poster-upload-button > span { display: grid; gap: 2px; }
+.poster-upload-button b { color: var(--ink); font: var(--type-label); }
+.poster-upload-button small { color: var(--ink-soft); font: var(--type-meta); }
+.poster-upload-button:focus-within { border-color: var(--accent); background: var(--accent-container); }
 
 /* 底部留出 FAB 的空间（56px 按钮 + 上下间距），最后一段内容不会被圆按钮压住 */
 .work-content {

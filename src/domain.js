@@ -83,13 +83,18 @@ export function upsertExternalRef(refs, { source, id, url } = {}) {
  * 取这部作品的海报引用。R6 之前海报只认 Bangumi（work.poster_subject_id），
  * 现在统一走 work.poster，由调用方按 source 决定用哪个图片代理端点。
  * @param {object} work
- * @returns {{ source: string, subject_id?: number, path?: string }|null}
+ * @returns {{ source: string, subject_id?: number, path?: string, data_url?: string }|null}
  */
 export function workPosterRef(work) {
   const poster = work?.poster;
   if (!poster || !poster.source) return null;
   if (poster.source === "bangumi") return poster.subject_id ? poster : null;
   if (poster.source === "tmdb") return poster.path ? poster : null;
+  if (poster.source === "upload") {
+    return typeof poster.data_url === "string" && /^data:image\/(?:jpeg|png|webp);base64,/i.test(poster.data_url)
+      ? poster
+      : null;
+  }
   return null;
 }
 
@@ -380,8 +385,14 @@ export function applyCandidateToWork(work, candidate = {}, { overwritePoster = f
     summary: candidate.summary || work.summary || null,
     tagline: work.tagline
       || (candidate.summary ? buildTagline(taglineFromSummary(candidate.summary), candidate.source || "external") : null),
-    // 平时不覆盖已有海报；「刷新作品资料」时才允许用新规则重挑的那张顶上
-    poster: overwritePoster ? (candidate.posterRef || work.poster || null) : (work.poster || candidate.posterRef || null),
+    // 用户在海报编辑器里明确选过的版本优先级最高，刷新元数据也不能悄悄改回自动值。
+    // 未手选的旧海报则允许在刷新／详情补全时按新版地区规则纠正。
+    poster: work.poster?.selected_by === "user"
+      ? work.poster
+      : overwritePoster
+        ? (candidate.posterRef || work.poster || null)
+        : (work.poster || candidate.posterRef || null),
+    poster_rule_version: candidate.posterRuleVersion ?? work.poster_rule_version ?? null,
     // 刷新外部资料永远不替用户改动个人剧照收藏。
     stills: work.stills || [],
     runtime_minutes: work.runtime_minutes ?? candidate.runtimeMinutes ?? null,
@@ -619,6 +630,7 @@ export function createWorkFromCandidate(candidate = {}, now = new Date().toISOSt
 
   work.primary_source = candidate.source || work.external_refs[0]?.source || null;
   work.poster = candidate.posterRef || null;
+  work.poster_rule_version = candidate.posterRuleVersion ?? null;
   work.first_recorded_at = now;
 
   return work;

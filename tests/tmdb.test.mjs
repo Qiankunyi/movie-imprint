@@ -11,6 +11,7 @@ import {
   normalizeTmdbDetail,
   normalizeTmdbBackdrops,
   normalizeTmdbMovies,
+  normalizeTmdbPosterChoices,
   pickPosterPath
 } from "../src/tmdb.js";
 
@@ -348,6 +349,36 @@ test("补丁9：normalizeTmdbDetail 端到端——日本动画电影选到日�
   });
   assert.equal(detail.posterPath, P.ja, "应按出品国 JP 选日文海报，而不是沿用 zh-CN");
   assert.equal(detail.workType, "animation_film");
+});
+
+test("海报编辑器：TMDB 只返回英语、中文、日语各一张，并按评分选最佳", () => {
+  const choices = normalizeTmdbPosterChoices([
+    poster(P.en, "en", 6.1),
+    poster(P.enBetter, "en", 8.8),
+    poster(P.zh, "zh", 7.2),
+    poster(P.ja, "ja", 7.9),
+    poster(P.fr, "fr", 9.9)
+  ]);
+  assert.deepEqual(choices.map((item) => [item.language, item.path]), [
+    ["en", P.enBetter],
+    ["zh", P.zh],
+    ["ja", P.ja]
+  ]);
+});
+
+test("《蜘蛛侠 3》回归：美国出品时自动海报不得沿用 zh-CN 搜索结果", () => {
+  const detail = normalizeTmdbDetail({
+    id: 559,
+    title: "蜘蛛侠 3",
+    original_title: "Spider-Man 3",
+    original_language: "en",
+    origin_country: ["US"],
+    production_countries: [{ iso_3166_1: "US", name: "United States" }],
+    poster_path: P.zh,
+    images: { posters: [poster(P.zh, "zh", 8.2), poster(P.enBetter, "en", 7.8), poster(P.ja, "ja", 7.4)] }
+  });
+  assert.equal(detail.posterPath, P.enBetter);
+  assert.deepEqual(detail.posterChoices.map((item) => item.language), ["en", "zh", "ja"]);
 });
 
 test("补丁9：没有 images 字段的旧响应仍然工作（向后兼容）", () => {

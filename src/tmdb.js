@@ -115,6 +115,39 @@ export function pickPosterPath(posters, { countries = [], originalLanguage = nul
 }
 
 /**
+ * 海报编辑器只展示三个有明确用途的 TMDB 档位：英语、中文、日语。
+ * 每个语言只留社区评分最高的一张，避免把选择面板变成难以判断的图片瀑布流。
+ */
+export const TMDB_POSTER_CHOICE_LANGUAGES = [
+  { language: "en", label: "英语地区" },
+  { language: "zh", label: "中文地区" },
+  { language: "ja", label: "日语地区" }
+];
+
+export function normalizeTmdbPosterChoices(posters) {
+  const list = (Array.isArray(posters) ? posters : [])
+    .filter((item) => isValidTmdbPosterPath(item?.file_path));
+
+  return TMDB_POSTER_CHOICE_LANGUAGES.flatMap(({ language, label }) => {
+    const best = list
+      .filter((item) => item?.iso_639_1 === language)
+      .sort((a, b) => {
+        const rating = (Number(b?.vote_average) || 0) - (Number(a?.vote_average) || 0);
+        return rating || ((Number(b?.vote_count) || 0) - (Number(a?.vote_count) || 0));
+      })[0];
+    if (!best) return [];
+    return [{
+      path: best.file_path,
+      language,
+      label,
+      width: Number(best.width) || null,
+      height: Number(best.height) || null,
+      voteAverage: Number(best.vote_average) || 0
+    }];
+  });
+}
+
+/**
  * 海报地址。TMDB 的 poster_path 形如 "/nBNZadXqJSdt05SHLqgT0HuC5Gm.jpg"，
  * 要拼上图床前缀和尺寸档位才是完整 URL。
  */
@@ -256,6 +289,7 @@ export function normalizeTmdbDetail(payload) {
       originalLanguage: payload?.original_language || null,
       fallbackPath: payload?.poster_path || null
     }),
+    posterChoices: normalizeTmdbPosterChoices(payload?.images?.posters),
     backdrops: normalizeTmdbBackdrops(payload?.images?.backdrops),
     summary: typeof payload?.overview === "string" && payload.overview.trim() ? payload.overview.trim() : null,
     runtimeMinutes: Number.isFinite(runtime) && runtime > 0 ? runtime : null,

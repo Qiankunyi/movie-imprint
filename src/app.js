@@ -1,5 +1,5 @@
 import { db, clearAllData, migrateLocalToCloud } from "./db.js?v=16";
-import { interpretTmdbStatus } from "./tmdb.js?v=2";
+import { interpretTmdbStatus } from "./tmdb.js?v=3";
 import {
   MAX_WORK_STILLS,
   addWorkStill,
@@ -151,7 +151,7 @@ import {
   extractHashtags,
   recommendationLabel,
   resolveWork
-} from "./domain.js?v=20";
+} from "./domain.js?v=21";
 import {
   deleteTag as deleteTagEntity,
   displayTagName,
@@ -271,6 +271,7 @@ function posterUrlFor(work) {
   if (!ref) return "";
   if (ref.source === "bangumi") return withImageToken(`/api/bangumi/image?subjectId=${ref.subject_id}`);
   if (ref.source === "tmdb") return withImageToken(`/api/tmdb/image?path=${encodeURIComponent(ref.path)}`);
+  if (ref.source === "upload") return ref.data_url;
   return "";
 }
 
@@ -369,6 +370,7 @@ const state = {
   taglineSummaryState: "idle", // "idle" | "loading" | "ready" | "missing"
   stillCandidates: { workId: null, status: "idle", items: [], error: null },
   tmdbStillLink: { workId: null, status: "idle", query: "", candidates: [], error: null },
+  posterEditor: { workId: null, status: "idle", tmdbChoices: [], error: null },
   fabOpen: false,             // R5 补丁 4：右下角 FAB 二级菜单是否展开
   fabClosing: false,          // R5 补丁 6：正在播收起动画（播完才从 DOM 移除）
   sidebarSkipEntryAnimation: false, // 由手势提交时渲染的抽屉不播入场动画（见 finishSidebarGesture）
@@ -761,7 +763,7 @@ async function loadExternalPublicationsFor(workId) {
 }
 
 function loadWorkPageData(workId) {
-  void Promise.all([loadWorkEventsFor(workId), loadExternalPublicationsFor(workId)]);
+  void Promise.all([loadWorkEventsFor(workId), loadExternalPublicationsFor(workId), ensureRegionalPoster(workId)]);
 }
 
 function topBar() {
@@ -1138,11 +1140,12 @@ function formatShortDate(isoLike) {
 function workHeroMarkup(work) {
   const src = posterUrlFor(work);
   const hasPoster = Boolean(src);
-  return `<div class="work-hero" data-testid="work-hero">
+  return `<button type="button" class="work-hero archive-pressable" data-action="edit-poster" data-testid="work-hero" aria-label="更换《${escapeHtml(work.title || "")}》的海报">
     ${hasPoster
       ? `<img class="work-hero-img" src="${escapeHtml(src)}" alt="" />`
       : `<div class="work-hero-fallback" aria-hidden="true">${escapeHtml((work.title || "?").trim().charAt(0) || "?")}</div>`}
-  </div>`;
+    <span class="work-hero-edit" aria-hidden="true">${icon("edit")}</span>
+  </button>`;
 }
 
 function workMetaLine(work) {
@@ -2725,6 +2728,93 @@ function releaseDateEditorOverlay(work) {
   </div>`;
 }
 
+function posterChoiceSelected(work, source, value) {
+  const current = workPosterRef(work);
+  if (!current || current.source !== source) return false;
+  if (source === "bangumi") return String(current.subject_id) === String(value);
+  if (source === "tmdb") return current.path === value;
+  return source === "upload";
+}
+
+function posterChoiceButton(work, { source, value, label, src, testId }) {
+  const selected = posterChoiceSelected(work, source, value);
+  return `<button type="button" class="poster-choice ${selected ? "selected" : ""}" data-action="select-poster" data-source="${escapeHtml(source)}" data-value="${escapeHtml(value || "")}" aria-pressed="${selected}" data-testid="${escapeHtml(testId)}">
+    <span class="poster-choice-preview">
+      <img class="resilient-image" src="${escapeHtml(src)}" alt="${escapeHtml(label)}海报" loading="lazy" />
+      <span class="image-fallback">${icon("photo")}<small>无法预览</small></span>
+      ${selected ? `<span class="poster-choice-check" aria-hidden="true">✓</span>` : ""}
+    </span>
+    <span class="poster-choice-label">${escapeHtml(label)}</span>
+  </button>`;
+}
+
+function posterEditorOverlay(work) {
+  const editor = state.posterEditor.workId === work.id
+    ? state.posterEditor
+    : { status: "idle", tmdbChoices: [], error: null };
+  const bangumiId = externalRefId(work, "bangumi");
+  const tmdbId = externalRefId(work, "tmdb");
+  const current = workPosterRef(work);
+
+  const bangumiBlock = bangumiId
+    ? posterChoiceButton(work, {
+        source: "bangumi",
+        value: bangumiId,
+        label: "Bangumi",
+        src: posterUrlFor({ poster: { source: "bangumi", subject_id: Number(bangumiId) } }),
+        testId: "poster-choice-bangumi"
+      })
+    : `<p class="poster-source-empty">未关联 Bangumi 条目</p>`;
+
+  let tmdbBlock = "";
+  if (!tmdbId) {
+    tmdbBlock = `<p class="poster-source-empty">未关联 TMDB 条目</p>`;
+  } else if (editor.status === "loading" || editor.status === "idle") {
+    tmdbBlock = `<div class="poster-choice-skeletons" aria-label="正在读取 TMDB 海报"><span></span><span></span><span></span></div>`;
+  } else if (editor.status === "error") {
+    tmdbBlock = `<p class="poster-source-empty error">${escapeHtml(editor.error || "暂时拿不到 TMDB 海报")}</p><button type="button" class="text-action" data-action="reload-poster-choices">重试</button>`;
+  } else if (!editor.tmdbChoices.length) {
+    tmdbBlock = `<p class="poster-source-empty">英语、中文和日语地区暂无可用海报</p>`;
+  } else {
+    tmdbBlock = `<div class="poster-choice-grid">${editor.tmdbChoices.map((choice, index) => posterChoiceButton(work, {
+      source: "tmdb",
+      value: choice.path,
+      label: choice.label,
+      src: posterUrlFor({ poster: { source: "tmdb", path: choice.path } }),
+      testId: `poster-choice-tmdb-${index}`
+    })).join("")}</div>`;
+  }
+
+  const uploadedPreview = current?.source === "upload"
+    ? `<div class="poster-upload-current"><img src="${escapeHtml(current.data_url)}" alt="当前手动上传的海报" /><span>当前使用</span></div>`
+    : "";
+
+  return `<div class="overlay" data-testid="poster-editor">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet poster-editor" role="dialog" aria-modal="true" aria-labelledby="poster-editor-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="poster-editor-title">选择海报</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <p class="settings-note">自动海报按作品出品地区选择；你也可以随时改用下面任一版本。手动选择会保持不变，不会被资料刷新覆盖。</p>
+      <section class="poster-source-section" aria-labelledby="poster-bangumi-title">
+        <div class="poster-source-heading"><h3 id="poster-bangumi-title">Bangumi</h3><span>${bangumiId ? "1 张" : "未关联"}</span></div>
+        <div class="poster-choice-grid single">${bangumiBlock}</div>
+      </section>
+      <section class="poster-source-section" aria-labelledby="poster-tmdb-title">
+        <div class="poster-source-heading"><h3 id="poster-tmdb-title">TMDB</h3><span>${tmdbId ? "英语 · 中文 · 日语" : "未关联"}</span></div>
+        ${tmdbBlock}
+      </section>
+      <section class="poster-source-section poster-upload-section" aria-labelledby="poster-upload-title">
+        <div class="poster-source-heading"><h3 id="poster-upload-title">自己的图片</h3><span>会压缩后保存</span></div>
+        <div class="poster-upload-row">
+          ${uploadedPreview}
+          <label class="poster-upload-button" for="poster-upload-input">${icon("photo")}<span><b>${current?.source === "upload" ? "换一张图片" : "上传海报"}</b><small>JPG、PNG 或 WebP</small></span></label>
+          <input class="sr-only" id="poster-upload-input" type="file" accept="image/jpeg,image/png,image/webp" />
+        </div>
+      </section>
+    </section>
+  </div>`;
+}
+
 /**
  * R5 补丁：一句话简介编辑。
  *
@@ -3325,6 +3415,8 @@ function render() {
         ? externalPublicationEditorOverlay(currentWorkForOverlay)
       : state.overlay === "release-dates" && currentWorkForOverlay
         ? releaseDateEditorOverlay(currentWorkForOverlay)
+      : state.overlay === "poster" && currentWorkForOverlay
+        ? posterEditorOverlay(currentWorkForOverlay)
       : state.overlay === "work-type" && currentWorkForOverlay
         ? workTypeEditorOverlay(currentWorkForOverlay)
       : state.overlay === "tagline" && currentWorkForOverlay
@@ -3695,8 +3787,14 @@ function otherRecordsOnWork(work, exceptRecordId) {
 async function confirmWorkMatch(candidateIndex, { force = false } = {}) {
   const record = currentRecord();
   const work = currentWork(record);
-  const candidate = work?.match?.candidates?.[Number(candidateIndex)];
+  let candidate = work?.match?.candidates?.[Number(candidateIndex)];
   if (!record || !work || !candidate) return;
+
+  // 搜索响应里的 poster_path 受 TMDB_LANGUAGE 影响，不能直接落库；详情响应才带有
+  // 各语言图片与出品国，必须先按地区规则重挑。失败时仍保留原候选，不阻断匹配。
+  if (candidate.source === "tmdb") {
+    try { candidate = await enrichTmdbCandidate(candidate); } catch (_) { /* 保留搜索候选 */ }
+  }
 
   // 拦截「其实是另一部作品」的情况。
   //
@@ -3741,7 +3839,7 @@ async function confirmWorkMatch(candidateIndex, { force = false } = {}) {
       )
     : null;
 
-  const promoted = applyCandidateToWork(work, candidate);
+  const promoted = applyCandidateToWork(work, candidate, { overwritePoster: true });
   const oldId = work.id;
   // 合并时以「已经持有这个 external_ref 的一方」为主体，被匹配的一方并入它
   const finalWork = conflictingWork ? mergeWorks(conflictingWork, [promoted]) : promoted;
@@ -4544,6 +4642,131 @@ async function updateCurrentWork(mutate) {
   return updated;
 }
 
+async function loadPosterChoices({ force = false } = {}) {
+  const work = findWorkById(state.works, state.currentWorkId);
+  if (!work) return;
+  const tmdbId = externalRefId(work, "tmdb");
+  if (!tmdbId) {
+    state.posterEditor = { workId: work.id, status: "ready", tmdbChoices: [], error: null };
+    render();
+    return;
+  }
+  if (!force && state.posterEditor.workId === work.id && state.posterEditor.status === "ready") return;
+
+  state.posterEditor = { workId: work.id, status: "loading", tmdbChoices: [], error: null };
+  render();
+  try {
+    const response = await apiFetch(`/api/tmdb/movie?id=${encodeURIComponent(tmdbId)}`, { headers: { accept: "application/json" } });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.detail) throw new Error(payload?.message || "暂时拿不到 TMDB 海报");
+    state.posterEditor = {
+      workId: work.id,
+      status: "ready",
+      tmdbChoices: Array.isArray(payload.detail.posterChoices) ? payload.detail.posterChoices.slice(0, 3) : [],
+      error: null
+    };
+  } catch (error) {
+    state.posterEditor = { workId: work.id, status: "error", tmdbChoices: [], error: error.message };
+  }
+  if (state.overlay === "poster" && state.currentWorkId === work.id) render();
+}
+
+/**
+ * 旧版可能已经把 TMDB 搜索响应里随 zh-CN 返回的 poster_path 落了库。
+ * 首次打开作品页时用详情接口纠正一次；用户明确手选过的海报永远跳过。
+ */
+async function ensureRegionalPoster(workId) {
+  const work = findWorkById(state.works, workId);
+  const tmdbId = externalRefId(work, "tmdb");
+  if (!work || !tmdbId || work.poster_rule_version >= 2 || work.poster?.selected_by === "user") return;
+  try {
+    const response = await apiFetch(`/api/tmdb/movie?id=${encodeURIComponent(tmdbId)}`, { headers: { accept: "application/json" } });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.detail) return;
+    const current = findWorkById(state.works, workId);
+    if (!current || current.poster?.selected_by === "user") return;
+    const updated = {
+      ...current,
+      poster: payload.detail.posterPath ? { source: "tmdb", path: payload.detail.posterPath } : current.poster,
+      poster_rule_version: 2
+    };
+    await db.put("works", updated);
+    state.works = state.works.map((item) => (item.id === updated.id ? updated : item));
+    state.worksById.set(updated.id, updated);
+    if (state.view === "work" && state.currentWorkId === workId) renderPreservingScroll();
+  } catch (_) { /* 网络失败时保留当前海报，下次进入作品页再试 */ }
+}
+
+async function selectPosterReference(source, value) {
+  const selectedAt = new Date().toISOString();
+  const poster = source === "bangumi"
+    ? { source, subject_id: Number(value) || null, selected_by: "user", selected_at: selectedAt }
+    : source === "tmdb"
+      ? { source, path: value, selected_by: "user", selected_at: selectedAt }
+      : null;
+  if (!workPosterRef({ poster })) return;
+  await updateCurrentWork((work) => ({ ...work, poster, poster_rule_version: 2 }));
+  render();
+  showToast("海报已更新");
+}
+
+function blobAsDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("读取图片失败"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function optimizePosterUpload(file) {
+  const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
+  if (!file || !allowed.has(file.type)) throw new Error("请选择 JPG、PNG 或 WebP 图片");
+  if (file.size > 12 * 1024 * 1024) throw new Error("原图请不要超过 12 MB");
+
+  const bitmap = await createImageBitmap(file);
+  try {
+    let scale = Math.min(1, 1200 / bitmap.width, 1800 / bitmap.height);
+    let output = null;
+    for (const quality of [0.86, 0.78, 0.7]) {
+      const width = Math.max(1, Math.round(bitmap.width * scale));
+      const height = Math.max(1, Math.round(bitmap.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#101415";
+      context.fillRect(0, 0, width, height);
+      context.drawImage(bitmap, 0, 0, width, height);
+      output = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+      if (output && output.size <= 1_200_000) break;
+      scale *= 0.78;
+    }
+    if (!output || output.size > 1_500_000) throw new Error("图片压缩后仍然过大，请换一张尺寸较小的图");
+    return blobAsDataUrl(output);
+  } finally {
+    bitmap.close?.();
+  }
+}
+
+async function saveUploadedPoster(file) {
+  try {
+    const dataUrl = await optimizePosterUpload(file);
+    const poster = {
+      source: "upload",
+      data_url: dataUrl,
+      selected_by: "user",
+      selected_at: new Date().toISOString(),
+      filename: String(file.name || "poster").slice(0, 120)
+    };
+    await updateCurrentWork((work) => ({ ...work, poster, poster_rule_version: 2 }));
+    render();
+    showToast("上传的海报已保存");
+  } catch (error) {
+    showToast(error.message || "海报上传失败");
+  }
+}
+
 async function loadTmdbStillCandidates({ force = false } = {}) {
   const work = findWorkById(state.works, state.currentWorkId);
   if (!work) return;
@@ -4658,6 +4881,7 @@ async function refreshWorkMetadata() {
           year: detail.year,
           workType: detail.workType,
           posterRef: detail.posterPath ? { source: "tmdb", path: detail.posterPath } : null,
+          posterRuleVersion: 2,
           summary: detail.summary,
           runtimeMinutes: detail.runtimeMinutes,
           genres: detail.genres,
@@ -5022,6 +5246,35 @@ function selectWorkSearchCandidate(group, index) {
   renderWorkSearchResults();
 }
 
+/** 用 TMDB 详情补齐搜索候选，并强制走当前的地区海报规则。 */
+async function enrichTmdbCandidate(candidate) {
+  if (candidate?.source !== "tmdb" || !candidate.sourceId) return candidate;
+  const response = await apiFetch(`/api/tmdb/movie?id=${encodeURIComponent(candidate.sourceId)}`, {
+    headers: { accept: "application/json" }
+  });
+  const payload = await response.json().catch(() => null);
+  const detail = payload?.detail;
+  if (!response.ok || !detail) return candidate;
+  return {
+    ...candidate,
+    originalTitle: detail.originalTitle || candidate.originalTitle,
+    releaseDate: detail.releaseDate || candidate.releaseDate,
+    year: detail.year ?? candidate.year,
+    workType: detail.workType && detail.workType !== "unspecified" ? detail.workType : candidate.workType,
+    posterRef: detail.posterPath ? { source: "tmdb", path: detail.posterPath } : candidate.posterRef,
+    posterRuleVersion: 2,
+    posterChoices: Array.isArray(detail.posterChoices) ? detail.posterChoices : [],
+    summary: detail.summary || candidate.summary,
+    runtimeMinutes: detail.runtimeMinutes,
+    genres: detail.genres,
+    externalIds: {
+      ...candidate.externalIds,
+      ...(detail.externalIds?.imdb ? { imdb: detail.externalIds.imdb } : {}),
+      ...(detail.externalIds?.wikidata ? { wikidata: detail.externalIds.wikidata } : {})
+    }
+  };
+}
+
 /**
  * 把一条候选解析成 Work：已有就引用，没有才新建。**一次完成**，不要求用户
  * 先「导入作品」再回到片单添加。
@@ -5043,30 +5296,7 @@ async function resolveOrCreateWorkFromCandidate(candidate) {
   let enriched = candidate;
   if (candidate.source === "tmdb") {
     try {
-      const response = await apiFetch(`/api/tmdb/movie?id=${encodeURIComponent(candidate.sourceId)}`, {
-        headers: { accept: "application/json" }
-      });
-      const payload = await response.json();
-      const detail = payload?.detail;
-      if (response.ok && detail) {
-        enriched = {
-          ...candidate,
-          originalTitle: detail.originalTitle || candidate.originalTitle,
-          year: detail.year ?? candidate.year,
-          // 详情的类型数据比搜索结果完整（genres 带名字而不只是 id），优先用它，
-          // 但仍然守住 §12：判断不了就是 unspecified，绝不默认真人电影。
-          workType: detail.workType && detail.workType !== "unspecified" ? detail.workType : candidate.workType,
-          posterRef: detail.posterPath ? { source: "tmdb", path: detail.posterPath } : candidate.posterRef,
-          summary: detail.summary || candidate.summary,
-          runtimeMinutes: detail.runtimeMinutes,
-          genres: detail.genres,
-          externalIds: {
-            ...candidate.externalIds,
-            ...(detail.externalIds?.imdb ? { imdb: detail.externalIds.imdb } : {}),
-            ...(detail.externalIds?.wikidata ? { wikidata: detail.externalIds.wikidata } : {})
-          }
-        };
-      }
+      enriched = await enrichTmdbCandidate(candidate);
     } catch (_) { /* 拿不到详情就用搜索结果建卡，不打断添加流程 */ }
   }
 
@@ -5082,7 +5312,7 @@ async function resolveOrCreateWorkFromCandidate(candidate) {
   if (!isNew) {
     // 已有 Work 但这次的候选带了它还没有的外部标识 —— 顺手补上，
     // 以后从另一个源搜到同一部片时就能直接命中，不会再产生重复。
-    let merged = work;
+    let merged = applyCandidateToWork(work, enriched, { overwritePoster: true });
     for (const [source, id] of Object.entries(externalIds)) {
       if (!id || externalRefId(merged, source)) continue;
       merged = { ...merged, external_refs: upsertExternalRef(merged.external_refs, { source, id }) };
@@ -5485,6 +5715,17 @@ document.addEventListener("click", async (event) => {
   } else if (action === "edit-release-dates") {
     state.overlay = "release-dates";
     render();
+  } else if (action === "edit-poster") {
+    const work = findWorkById(state.works, state.currentWorkId);
+    if (!work) return;
+    state.posterEditor = { workId: work.id, status: "idle", tmdbChoices: [], error: null };
+    state.overlay = "poster";
+    render();
+    void loadPosterChoices();
+  } else if (action === "reload-poster-choices") {
+    void loadPosterChoices({ force: true });
+  } else if (action === "select-poster") {
+    await selectPosterReference(trigger.dataset.source, trigger.dataset.value);
   } else if (action === "remove-release-date") {
     await updateCurrentWork((work) => ({
       ...work,
@@ -6467,7 +6708,11 @@ document.addEventListener("error", (event) => {
 }, true);
 
 document.addEventListener("change", async (event) => {
-  if (event.target.id === "tag-sort") {
+  if (event.target.id === "poster-upload-input") {
+    const [file] = event.target.files || [];
+    if (file) await saveUploadedPoster(file);
+    return;
+  } else if (event.target.id === "tag-sort") {
     state.tagSort = event.target.value;
     renderPreservingScroll();
     return;

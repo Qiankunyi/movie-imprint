@@ -19,6 +19,7 @@ import {
   sortRecordsByViewingDate,
   recommendationLabel,
   resolveWork,
+  workPosterRef,
   workIdFor,
   upsertExternalRef,
   findWorkByExternalRef,
@@ -683,6 +684,23 @@ test("补丁12：overwritePoster 只在刷新时打开，平时匹配新源不�
 
   const refreshed = applyCandidateToWork(withPoster, candidate, { overwritePoster: true });
   assert.deepEqual(refreshed.poster, { source: "tmdb", path: "/new-by-region.jpg" }, "刷新时才换");
+});
+
+test("手动选择的海报带锁定标记，刷新资料也不覆盖", () => {
+  const chosen = {
+    ...createLocalWork({ id: "r", workId: "w", title: "某片", inputHints: {} }),
+    poster: { source: "tmdb", path: "/manual-choice.jpg", selected_by: "user" }
+  };
+  const refreshed = applyCandidateToWork(chosen, {
+    source: "tmdb", sourceId: "9", title: "某片", posterRef: { source: "tmdb", path: "/automatic.jpg" }
+  }, { overwritePoster: true });
+  assert.equal(refreshed.poster.path, "/manual-choice.jpg");
+});
+
+test("手动上传海报只接受受支持的图片 data URL", () => {
+  const valid = { poster: { source: "upload", data_url: "data:image/jpeg;base64,AAAA", selected_by: "user" } };
+  assert.equal(workPosterRef(valid)?.source, "upload");
+  assert.equal(workPosterRef({ poster: { source: "upload", data_url: "data:text/html;base64,AAAA" } }), null);
 });
 
 test("补丁12：用户手动认领的「活动」「其他」永远不被外部候选覆盖", () => {
