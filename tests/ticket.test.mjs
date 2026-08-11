@@ -176,6 +176,20 @@ const REAL_MOVIX_KYOTO_TICKET = `▼劇場　MOVIX京都　Dolby Cinema
 ▼座席番号　L-11
 ▼チケット　水曜サービスデイ（大学生）　2,100円/1枚`;
 
+const REAL_CHINESE_COMPACT_TICKET = `长沙MC影城华晨店
+
+美国队长3
+
+英语3D 1张
+
+2016-05-07
+
+巨幕6号厅
+
+14:50~17:18
+
+7排14座`;
+
 describe("parseTicketText — 109シネマズ真实票据回归", () => {
   const result = parseTicketText(REAL_109_TICKET);
   const screening = result.screenings[0];
@@ -245,6 +259,27 @@ describe("parseTicketText — MOVIX京都真实票据回归", () => {
     assert.equal(event.viewing_context.ticket_type, "水曜サービスデイ（大学生）");
     assert.equal(event.viewing_context.auditorium, null);
     assert.equal(event.duration_minutes, 115);
+  });
+});
+
+describe("parseTicketText — 中文无标签简式票据回归", () => {
+  const screening = parseTicketText(REAL_CHINESE_COMPACT_TICKET).screenings[0];
+
+  it("先排除影院与结构化元数据，再从剩余行识别短片名", () => {
+    assert.equal(screening.movieTitle, "美国队长3");
+    assert.equal(screening.rawTitle, "美国队长3");
+    assert.equal(screening.cinemaName, "长沙MC影城华晨店");
+    assert.equal(screening.city, "长沙");
+  });
+
+  it("兼容 ASCII 波浪线、中文影厅座位与语言规格行", () => {
+    assert.equal(screening.viewedOn, "2016-05-07");
+    assert.equal(screening.screeningAt, "2016-05-07T14:50:00+09:00");
+    assert.equal(screening.screeningEndsAt, "2016-05-07T17:18:00+09:00");
+    assert.equal(screening.auditorium, "巨幕6号厅");
+    assert.equal(screening.format, "普通");
+    assert.equal(screening.is3D, true);
+    assert.deepEqual(screening.seats, ["7排14座"]);
   });
 });
 

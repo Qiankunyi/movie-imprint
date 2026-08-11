@@ -360,6 +360,46 @@ function parseTicketType(value) {
     .trim() || null;
 }
 
+/**
+ * 无字段标签的简式票据常按“一行一个语义”排列。这里仅判断结构性元数据，
+ * 让标题 fallback 排除影院、日期、时间、规格、影厅和座位，而不是依赖行长度。
+ */
+function isLikelyCinemaLine(line) {
+  const value = String(line || "").trim();
+  if (!value || /[：:]/.test(value)) return false;
+  return /(?:电影院|电影城|影城|影院)(?:[\p{Script=Han}A-Za-z0-9·・&（）()\-]{0,24})$/u.test(value);
+}
+
+function isLikelyAuditoriumLine(line) {
+  const value = String(line || "").trim();
+  return /^(?=.{2,30}$)(?=.*\d)(?:IMAX|杜比|激光|巨幕|中国巨幕|VIP|普通|[\p{Script=Han}A-Za-z]*)?[\s　]*\d+[\s　]*(?:号)?[\s　]*(?:厅|館)$/iu.test(value);
+}
+
+function isLikelyChineseSeatLine(line) {
+  return /^\d+[\s　]*排[\s　]*\d+[\s　]*(?:座|号)(?:[\s　]*[,，、][\s　]*\d+[\s　]*(?:座|号))*$/u.test(String(line || "").trim());
+}
+
+function extractUnlabeledFormat(line) {
+  const value = String(line || "").trim();
+  if (!/^(?:(?:国语|普通话|粤语|英语|日语|韩语|原声|中文|外语)[\s　]*)?(?:2D|3D|IMAX(?:[\s　]*(?:GT|3D))?|Dolby[\s　]*Cinema|杜比影院|4DX|MX4D|ScreenX)(?:[\s　]*\d+[\s　]*张)?$/iu.test(value)) return null;
+  return value.match(/IMAX(?:[\s　]*(?:GT|3D))?|Dolby[\s　]*Cinema|杜比影院|4DX|MX4D|ScreenX|[23]D/iu)?.[0] || null;
+}
+
+function isLikelyTicketMetadataLine(line) {
+  const value = String(line || "").trim();
+  return !value
+    || Boolean(matchTicketFieldLine(value))
+    || isLikelyCinemaLine(value)
+    || isLikelyAuditoriumLine(value)
+    || isLikelyChineseSeatLine(value)
+    || Boolean(extractUnlabeledFormat(value))
+    || /^\d{4}[\/\-年]\d{1,2}[\/\-月]\d{1,2}[日]?/u.test(value)
+    || /^\d{1,2}:\d{2}\s*[～〜~]\s*\d{1,2}:\d{2}$/u.test(value)
+    || /^(?:合计|合計)?[¥￥]?[\d,]+(?:\.\d+)?\s*(?:円|元|JPY|CNY)?$/iu.test(value)
+    || /^https?:\/\//iu.test(value)
+    || /REDACTED/u.test(value);
+}
+
 // ─── 4. 单段邮件字段解析 ─────────────────────────────────────────────────────
 
 /**
@@ -374,6 +414,7 @@ function parseTicketType(value) {
  */
 export function parseScreeningSegment(segment) {
   const fields = extractTicketFields(segment);
+  const ticketLines = String(segment || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 
   // ── 片名 ──────────────────────────────────────────────────────────────────
   // 明确字段必须先于任何 heuristic；「上映作品」是影院票据中最高优先级的作品字段。
@@ -391,17 +432,7 @@ export function parseScreeningSegment(segment) {
   }
   // 只有完全不存在明确作品字段时才 fallback；所有票务元数据行均不得成为标题。
   if (!rawTitle) {
-    const lines = segment.split("\n").map((l) => l.trim()).filter((l) => l.length > 4);
-    const candidate = lines.find((l) =>
-      !l.match(/^\d{4}[\\/\-年]/) &&
-      !l.match(/[席座]/) &&
-      !l.match(/REDACTED/) &&
-      !matchTicketFieldLine(l) &&
-      !l.match(/^(?:購入番号|予約番号|注文番号|申込番号|受付番号|劇場名|上映劇場|劇場|映画館|シアター名|スクリーン名|上映日|観賞日|鑑賞日|日時|上映時間|開映時間|終映時間|券種|購入枚数|枚数|合計|購入金額|料金|金額|決済方法|支払方法|座席|席番|お座席)[ \t　]*[：:]/i) &&
-      !l.match(/^(?:合計)?[¥￥]?[\d,]+\s*(?:円|元|JPY|CNY)?$/i) &&
-      !/^https?:\/\//i.test(l) &&
-      l.length > 8
-    );
+    const candidate = ticketLines.find((line) => line.length >= 2 && !isLikelyTicketMetadataLine(line));
     rawTitle = candidate || null;
   }
   if (!rawTitle) return null;
@@ -426,7 +457,7 @@ export function parseScreeningSegment(segment) {
 
   // 时间区间（同一行）：12:35～14:40、12:35〜14:40
   const timeRangeMatch = segment.match(
-    /(\d{1,2}:\d{2})\s*[～〜]\s*(\d{1,2}:\d{2})/
+    /(\d{1,2}:\d{2})\s*[～〜~]\s*(\d{1,2}:\d{2})/
   );
   // 开始时间（独立行）：「開映時間：9:50」或「開映：9:50」
   const startTimeMatch = !timeRangeMatch && segment.match(
@@ -458,7 +489,8 @@ export function parseScreeningSegment(segment) {
     /(ユナイテッド・シネマ\S+)/i,
     /([^\n]*(?:シネマ|シアター)[^\n]*(?:京都|大阪|東京|名古屋|福岡|仙台|札幌)[^\n]*)/i
   ];
-  let cinemaName = cleanCinemaField(rawCinemaField);
+  const unlabeledCinemaLine = ticketLines.find(isLikelyCinemaLine) || null;
+  let cinemaName = cleanCinemaField(rawCinemaField || unlabeledCinemaLine);
   if (!cinemaName) {
     for (const pattern of cinemaPatterns) {
       const m = segment.match(pattern);
@@ -467,12 +499,14 @@ export function parseScreeningSegment(segment) {
   }
 
   // 「上映劇場」在 109 シネマズ等票据中表示具体影厅，不能与「劇場名」混用。
-  const auditorium = pickTicketField(fields, "auditorium");
+  const auditorium = pickTicketField(fields, "auditorium")
+    || ticketLines.find(isLikelyAuditoriumLine)
+    || null;
 
   // 城市：从影院名推断
   let city = null;
   if (cinemaName) {
-    const cityMatch = cinemaName.match(/京都|大阪|東京|名古屋|福岡|仙台|札幌|横浜|神戸|広島/);
+    const cityMatch = cinemaName.match(/京都|大阪|東京|名古屋|福岡|仙台|札幌|横浜|神戸|広島|长沙|北京|上海|广州|深圳|成都|重庆|武汉|西安|杭州|南京|苏州|天津|青岛|厦门/);
     if (cityMatch) city = cityMatch[0];
   }
 
@@ -490,6 +524,10 @@ export function parseScreeningSegment(segment) {
       formatDetailsCandidates.push(normalizeCinemaFormat(candidate));
     }
   }
+  for (const line of ticketLines) {
+    const candidate = extractUnlabeledFormat(line);
+    if (candidate) formatDetailsCandidates.push(normalizeCinemaFormat(candidate));
+  }
   const normalizedFormat = normalizeFormatCandidates(formatDetailsCandidates);
 
   // ── 座位 ──────────────────────────────────────────────────────────────────
@@ -502,6 +540,10 @@ export function parseScreeningSegment(segment) {
     seats = (seatMatch[1].match(/[A-Z][ \t　]*-?[ \t　]*\d{1,3}/gi) || [])
       .map((seat) => seat.replace(/[ \t　]+/g, "").toUpperCase())
       .map((seat) => seat.includes("-") ? seat : seat.replace(/^([A-Z])(\d+)$/, "$1-$2"));
+  }
+  if (!seats.length) {
+    seats = [...segment.matchAll(/(\d+)[\s　]*排[\s　]*(\d+)[\s　]*(?:座|号)/gu)]
+      .map((match) => `${match[1]}排${match[2]}座`);
   }
 
   // ── 票务提供商 ────────────────────────────────────────────────────────────
