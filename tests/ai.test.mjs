@@ -259,13 +259,16 @@ test("高密度碎片先逐条发现候选，再完整覆盖到最终卡片", as
     requestBodies.push(body);
     const output = requestBodies.length === 2
       ? candidateOutput
-      : requestBodies.length === 3
+      : requestBodies.length === 3 || requestBodies.length === 4
         ? clusterOutput
-        : requestBodies.length === 4
+        : requestBodies.length === 5
           ? finalOutput
           : qualityOutput;
-    const responseText = requestBodies.length === 1 ? '{"candidate_memories":' : JSON.stringify(output);
-    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: responseText }] } }] }), {
+    // 依次模拟：候选发现首轮截断、聚类首轮截断、质量校对连续两轮截断。
+    // 前两者必须自动修复；质量校对是增强阶段，两次失败后应交付上一阶段已验证卡片。
+    const truncated = [1, 3, 6, 7].includes(requestBodies.length);
+    const responseText = truncated ? '{"memory_cards":[{"title":"未闭合' : JSON.stringify(output);
+    return new Response(JSON.stringify({ candidates: [{ finishReason: truncated ? "MAX_TOKENS" : "STOP", content: { parts: [{ text: responseText }] } }] }), {
       status: 200,
       headers: { "content-type": "application/json" }
     });
@@ -278,18 +281,23 @@ test("高密度碎片先逐条发现候选，再完整覆盖到最终卡片", as
     fetchImpl
   });
   const discoveryInput = JSON.parse(requestBodies[0].contents[0].parts[0].text);
-  const clusterInput = JSON.parse(requestBodies[2].contents[0].parts[0].text);
-  const finalInput = JSON.parse(requestBodies[3].contents[0].parts[0].text);
-  const qualityInput = JSON.parse(requestBodies[4].contents[0].parts[0].text);
+  const clusterInput = JSON.parse(requestBodies[3].contents[0].parts[0].text);
+  const finalInput = JSON.parse(requestBodies[4].contents[0].parts[0].text);
+  const qualityInput = JSON.parse(requestBodies[5].contents[0].parts[0].text);
   assert.equal(discoveryInput.source_units.length, 8);
   assert.equal(clusterInput.candidate_memories.length, 4);
   assert.equal(finalInput.approved_memory_clusters.length, 4);
   assert.equal(qualityInput.draft_memory_cards.length, 4);
+  assert.ok(requestBodies.every((body) => body.generationConfig.maxOutputTokens === 16384));
   assert.equal(result.analysis.memory_cards.length, 4);
   assert.equal(result.metadata.analysis_strategy, "candidate_cluster_coverage");
   assert.equal(result.metadata.candidate_memory_count, 4);
   assert.equal(result.metadata.memory_cluster_count, 4);
   assert.equal(result.metadata.discovery_pass_count, 2);
+  assert.equal(result.metadata.cluster_repair_count, 1);
+  assert.equal(result.metadata.quality_repair_count, 1);
+  assert.equal(result.metadata.quality_fallback_count, 1);
+  assert.ok(result.analysis.warnings.some((warning) => warning.includes("已保留通过覆盖与 Evidence 校验")));
 });
 
 test("源片段拆分完整保留长文本，不做静默截断", () => {

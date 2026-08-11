@@ -31,6 +31,15 @@ test("网络层错误（没有 status/upstreamMessage）→ 展示原始 error.m
   assert.match(message, /fetch failed/);
 });
 
+test("结构化 JSON 截断 → 展示可理解的阶段诊断而不是原始解析异常", () => {
+  const error = new SyntaxError("Unterminated string in JSON at position 678");
+  error.aiStage = "covered_analysis";
+  const message = describeAiError(error, "整理暂时没有完成，原文已经保留");
+  assert.match(message, /卡片生成阶段/);
+  assert.match(message, /JSON 被截断或未闭合/);
+  assert.doesNotMatch(message, /position 678/);
+});
+
 test("内部占位符错误码（ai_upstream_500 这种）不会被当成有信息量的诊断文本重复展示", () => {
   const error = new Error("ai_upstream_500");
   const message = describeAiError(error, "整理暂时没有完成");

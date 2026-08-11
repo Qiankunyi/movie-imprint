@@ -174,7 +174,8 @@ function contractOptions(options = {}) {
     schemaName: options.schemaName || "movie_imprint_analysis",
     toolName: options.toolName || "submit_analysis",
     toolDescription: options.toolDescription || "提交结构化电影感想建议",
-    inputText: options.inputText
+    inputText: options.inputText,
+    maxOutputTokens: Number(options.maxOutputTokens) || 8192
   };
 }
 
@@ -214,7 +215,7 @@ async function callGemini(config, input, fetchImpl, options) {
         // 不依赖 temperature/top-K/top-P 控制质量：不同 Gemini 世代对这些参数的支持并不一致，
         // 结构与保守边界由分阶段 Prompt、JSON Schema 和 Evidence 校验共同保证。
         generationConfig: {
-          maxOutputTokens: 8192,
+          maxOutputTokens: contract.maxOutputTokens,
           responseMimeType: "application/json",
           responseSchema: geminiSchema(contract.schema)
         }
@@ -224,11 +225,42 @@ async function callGemini(config, input, fetchImpl, options) {
   );
   return {
     text: payload.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join(""),
+    finish_reason: payload.candidates?.[0]?.finishReason || null,
     usage: {
       input_tokens: payload.usageMetadata?.promptTokenCount || null,
       output_tokens: payload.usageMetadata?.candidatesTokenCount || null
     }
   };
+}
+
+function structuredResponseText(response, stage) {
+  const finishReason = String(response?.finish_reason || "").toUpperCase();
+  if (finishReason === "MAX_TOKENS") {
+    const error = new Error("incomplete_ai_response:max_tokens");
+    error.aiStage = stage;
+    throw error;
+  }
+  if (typeof response?.text !== "string" || !response.text.trim()) {
+    const error = new Error("empty_ai_response");
+    error.aiStage = stage;
+    throw error;
+  }
+  return response.text;
+}
+
+function isJsonStructureFailure(error) {
+  return error instanceof SyntaxError
+    || /(unterminated|string in json|unexpected end|empty_ai_response|incomplete_ai_response)/i.test(String(error?.message || ""));
+}
+
+function isStructuredOutputFailure(error) {
+  return isJsonStructureFailure(error)
+    || /(invalid_|incomplete_|missing_|unknown_|duplicate_|changed_|coverage_lost)/i.test(String(error?.message || ""));
+}
+
+function annotateAiStage(error, stage) {
+  if (error && !error.aiStage) error.aiStage = stage;
+  return error;
 }
 
 async function callOpenAi(config, input, fetchImpl, options) {
@@ -326,7 +358,18 @@ function addUsage(...items) {
  * @param {string} fallbackMessage
  */
 export function describeAiError(error, fallbackMessage) {
-  const detail = error?.upstreamMessage
+  const stageLabels = {
+    memory_discovery: "候选记忆发现",
+    memory_clustering: "全局归类",
+    covered_analysis: "卡片生成",
+    quality_review: "卡片质量校对",
+    single_pass: "卡片生成"
+  };
+  const stageLabel = stageLabels[error?.aiStage];
+  const structuredFailure = isJsonStructureFailure(error);
+  const detail = structuredFailure
+    ? `${stageLabel ? `${stageLabel}阶段：` : ""}模型返回的 JSON 被截断或未闭合，自动重试后仍未恢复`
+    : error?.upstreamMessage
     ? `${error.status ? `HTTP ${error.status}：` : ""}${error.upstreamMessage}`
     : typeof error?.status === "number"
       ? `HTTP ${error.status}`
@@ -435,6 +478,7 @@ async function runMemoryDiscovery({ selected, config, input, normalizedSources, 
       const options = {
         systemPrompt: `${AI_MEMORY_DISCOVERY_PROMPT}${repair ? "\n\n召回修复：上一轮候选异常偏少。请重新逐条审计，尤其不要漏掉带明确情绪、个人联想、价值判断或重看变化的独立记忆；仍然不得为数量制造卡片。" : ""}${attempt ? "\n\n结构修复：上一轮候选清单被截断或没有完整覆盖本批 unit_id。请重新输出完整、闭合的 JSON，并确保本批每个 unit_id 恰好登记一次。" : ""}`,
         schema: AI_MEMORY_DISCOVERY_SCHEMA,
+        maxOutputTokens: 16384,
         schemaName: "movie_imprint_memory_discovery",
         toolName: "submit_memory_discovery",
         toolDescription: "提交逐片段覆盖的候选电影记忆",
@@ -447,10 +491,11 @@ async function runMemoryDiscovery({ selected, config, input, normalizedSources, 
       const response = await callStructuredProvider(selected, config, input, fetchImpl, options);
       responses.push(response);
       try {
-        discovered = validateMemoryDiscovery(normalizedSources, batch, response.text);
+        discovered = validateMemoryDiscovery(normalizedSources, batch, structuredResponseText(response, "memory_discovery"));
         break;
       } catch (error) {
-        if (attempt) throw error;
+        annotateAiStage(error, "memory_discovery");
+        if (attempt || !isStructuredOutputFailure(error)) throw error;
       }
     }
     const idMap = new Map();
@@ -471,6 +516,7 @@ async function runMemoryClustering({ selected, config, input, discovery, fetchIm
   const options = {
     systemPrompt: `${AI_MEMORY_CLUSTER_PROMPT}${repairReason ? `\n\n结构修复：上一轮聚类未通过完整性校验（${repairReason}）。请重新全局规整并确保每个 candidate_id 恰好归属一次。` : ""}`,
     schema: AI_MEMORY_CLUSTER_SCHEMA,
+    maxOutputTokens: 16384,
     schemaName: "movie_imprint_memory_clusters",
     toolName: "submit_memory_clusters",
     toolDescription: "提交完整覆盖候选记忆的全局聚类方案",
@@ -480,7 +526,11 @@ async function runMemoryClustering({ selected, config, input, discovery, fetchIm
     })
   };
   const response = await callStructuredProvider(selected, config, input, fetchImpl, options);
-  return { response, plan: validateMemoryClusterPlan(discovery.candidates, response.text) };
+  try {
+    return { response, plan: validateMemoryClusterPlan(discovery.candidates, structuredResponseText(response, "memory_clustering")) };
+  } catch (error) {
+    throw annotateAiStage(error, "memory_clustering");
+  }
 }
 
 function validateCoveredAnalysis(sourceInput, candidateMemories, clusterPlan, value) {
@@ -543,6 +593,7 @@ async function runCoveredAnalysis({ selected, config, input, normalizedSources, 
     schemaName: "movie_imprint_covered_analysis",
     toolName: "submit_covered_analysis",
     toolDescription: "提交完整覆盖候选记忆的电影印记分析",
+    maxOutputTokens: 16384,
     inputText: JSON.stringify({
       ...JSON.parse(userPayload(input)),
       approved_memory_clusters: clusterPlan.memory_clusters.map((cluster) => ({
@@ -552,7 +603,19 @@ async function runCoveredAnalysis({ selected, config, input, normalizedSources, 
     })
   };
   const response = await callStructuredProvider(selected, config, input, fetchImpl, options);
-  return { response, analysis: validateCoveredAnalysis(normalizedSources, discovery.candidates, clusterPlan, response.text) };
+  try {
+    return {
+      response,
+      analysis: validateCoveredAnalysis(
+        normalizedSources,
+        discovery.candidates,
+        clusterPlan,
+        structuredResponseText(response, "covered_analysis")
+      )
+    };
+  } catch (error) {
+    throw annotateAiStage(error, "covered_analysis");
+  }
 }
 
 async function runCardQualityReview({ selected, config, input, normalizedSources, discovery, clusterPlan, draftResponse, fetchImpl, repairReason = "" }) {
@@ -563,6 +626,7 @@ async function runCardQualityReview({ selected, config, input, normalizedSources
     schemaName: "movie_imprint_card_quality",
     toolName: "submit_card_quality",
     toolDescription: "提交经过逐句来源校对的电影记忆卡片",
+    maxOutputTokens: 16384,
     inputText: JSON.stringify({
       ...JSON.parse(userPayload(input)),
       approved_memory_clusters: clusterPlan.memory_clusters.map((cluster) => ({
@@ -573,7 +637,12 @@ async function runCardQualityReview({ selected, config, input, normalizedSources
     })
   };
   const response = await callStructuredProvider(selected, config, input, fetchImpl, options);
-  const reviewed = parseProviderJson(response.text);
+  let reviewed;
+  try {
+    reviewed = parseProviderJson(structuredResponseText(response, "quality_review"));
+  } catch (error) {
+    throw annotateAiStage(error, "quality_review");
+  }
   const combined = {
     ...draftOutput,
     memory_cards: reviewed.memory_cards,
@@ -623,6 +692,7 @@ export async function requestAiAnalysis({ provider, modelMode, title, rawText, s
   let clusterRepairCount = 0;
   let qualityResponses = [];
   let qualityRepairCount = 0;
+  let qualityFallbackCount = 0;
   let coveredRepairCount = 0;
 
   if (coveredStrategy) {
@@ -649,26 +719,34 @@ export async function requestAiAnalysis({ provider, modelMode, title, rawText, s
       clusterResponses.push(clustered.response);
       clusterPlan = clustered.plan;
     } catch (error) {
-      if (!/(cluster|candidate|memory)/.test(String(error?.message || ""))) throw error;
+      if (!isStructuredOutputFailure(error) && !/(cluster|candidate|memory)/.test(String(error?.message || ""))) throw error;
       clusterRepairCount = 1;
-      const clustered = await runMemoryClustering({
-        selected, config, input, discovery, fetchImpl, repairReason: String(error.message).slice(0, 160)
-      });
-      clusterResponses.push(clustered.response);
-      clusterPlan = clustered.plan;
+      try {
+        const clustered = await runMemoryClustering({
+          selected, config, input, discovery, fetchImpl, repairReason: String(error.message).slice(0, 160)
+        });
+        clusterResponses.push(clustered.response);
+        clusterPlan = clustered.plan;
+      } catch (repairError) {
+        throw annotateAiStage(repairError, "memory_clustering");
+      }
     }
     try {
       const covered = await runCoveredAnalysis({ selected, config, input, normalizedSources, discovery, clusterPlan, fetchImpl });
       result = covered.response;
       analysis = covered.analysis;
     } catch (error) {
-      if (!/(candidate_|candidate_ids|card_|evidence_|memory_cards|multiple_core)/.test(String(error?.message || ""))) throw error;
+      if (!isStructuredOutputFailure(error) && !/(candidate_|candidate_ids|card_|evidence_|memory_cards|multiple_core)/.test(String(error?.message || ""))) throw error;
       coveredRepairCount = 1;
-      const covered = await runCoveredAnalysis({
-        selected, config, input, normalizedSources, discovery, clusterPlan, fetchImpl, repairReason: String(error.message).slice(0, 160)
-      });
-      result = covered.response;
-      analysis = covered.analysis;
+      try {
+        const covered = await runCoveredAnalysis({
+          selected, config, input, normalizedSources, discovery, clusterPlan, fetchImpl, repairReason: String(error.message).slice(0, 160)
+        });
+        result = covered.response;
+        analysis = covered.analysis;
+      } catch (repairError) {
+        throw annotateAiStage(repairError, "covered_analysis");
+      }
     }
     try {
       const reviewed = await runCardQualityReview({
@@ -677,21 +755,32 @@ export async function requestAiAnalysis({ provider, modelMode, title, rawText, s
       qualityResponses.push(reviewed.response);
       analysis = reviewed.analysis;
     } catch (error) {
-      if (!/(candidate_|candidate_ids|cluster|card_|evidence_|memory_cards|multiple_core)/.test(String(error?.message || ""))) throw error;
+      if (!isStructuredOutputFailure(error) && !/(candidate_|candidate_ids|cluster|card_|evidence_|memory_cards|multiple_core)/.test(String(error?.message || ""))) throw error;
       qualityRepairCount = 1;
-      const reviewed = await runCardQualityReview({
-        selected,
-        config,
-        input,
-        normalizedSources,
-        discovery,
-        clusterPlan,
-        draftResponse: result,
-        fetchImpl,
-        repairReason: String(error.message).slice(0, 160)
-      });
-      qualityResponses.push(reviewed.response);
-      analysis = reviewed.analysis;
+      try {
+        const reviewed = await runCardQualityReview({
+          selected,
+          config,
+          input,
+          normalizedSources,
+          discovery,
+          clusterPlan,
+          draftResponse: result,
+          fetchImpl,
+          repairReason: String(error.message).slice(0, 160)
+        });
+        qualityResponses.push(reviewed.response);
+        analysis = reviewed.analysis;
+      } catch (repairError) {
+        if (!isStructuredOutputFailure(repairError)) throw repairError;
+        // 质量校对是已经通过 Evidence 与覆盖校验之后的增强阶段。连续两次结构截断时，
+        // 保留上一阶段完整且已验证的卡片，比把整次整理判成失败、交付 0 张卡更安全。
+        qualityFallbackCount = 1;
+        analysis.warnings = [...new Set([
+          ...analysis.warnings,
+          "质量校对阶段两次返回不完整，已保留通过覆盖与 Evidence 校验的上一阶段卡片。"
+        ])].slice(0, 12);
+      }
     }
     analysis.warnings = [...new Set([...analysis.warnings, ...discovery.warnings, ...clusterPlan.warnings])].slice(0, 12);
   } else {
@@ -733,6 +822,7 @@ export async function requestAiAnalysis({ provider, modelMode, title, rawText, s
       cluster_repair_count: clusterRepairCount,
       quality_response_characters: coveredStrategy ? qualityCharacters : null,
       quality_repair_count: qualityRepairCount,
+      quality_fallback_count: qualityFallbackCount,
       coverage_repair_count: coveredRepairCount
     }
   };
