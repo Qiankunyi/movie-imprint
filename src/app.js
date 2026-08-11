@@ -12,12 +12,19 @@ import {
 } from "./stills.js?v=1";
 import { selectDailySidebarStill } from "./sidebar-artwork.js?v=1";
 import { SIDEBAR_STILLS, SIDEBAR_STILL_EXTENSIONS } from "../public/assets/sidebar-stills/manifest.js?v=1";
-import { parseTicketText, draftViewingEvent } from "./ticket.js?v=4";
+import { parseTicketText, draftViewingEvent } from "./ticket.js?v=5";
 import { buildWorkSearchQuery } from "./bangumi.js?v=14";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
 import { runMigrationIfNeeded } from "./migrate.js?v=5";
 import { EVENT_TYPES, normalizeCinemaFormat } from "./event-types.js?v=3";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
+import {
+  TICKET_OCR_LANGUAGE_OPTIONS,
+  normalizeTicketOcrLanguage,
+  recognizeTicketImage,
+  releaseTicketOcrWorker,
+  ticketOcrProgressLabel
+} from "./ticket-ocr.js?v=1";
 import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=9";
 import { memoryListMarkup } from "./memory-list.js?v=1";
 import {
@@ -432,6 +439,16 @@ function applyRoute(route) {
 
 // 剪贴板原文只放在内存里，绝不写入 state（避免被渲染或被草稿持久化捕获到原文）。
 let pendingClipboardText = null;
+// OCR 原文同样只保存在模块内存，不进入 captureContext / IndexedDB / 导出。
+let pendingTicketOcrText = null;
+let ticketOcrJobId = 0;
+let ticketOcrUi = {
+  status: "idle", // idle | preparing | recognizing | parsing | review | done | error
+  language: TICKET_OCR_LANGUAGE_OPTIONS[0].value,
+  progress: 0,
+  message: "",
+  error: ""
+};
 let sceneTitleMatchTimer = null;
 
 const icons = {
@@ -2400,32 +2417,53 @@ function eventTypeTagsRow(selected, key) {
 /**
  * 统一的观影信息 Step 1。所有“记录这次观看”入口都先到这里，用户可以粘贴票务、
  * 手动填写，或跳过票务导入后继续确认日期与观看方式。
- * W13 的截图 OCR 在这里预留位置，本窗口不实现、也不显示占位按钮。
+ * 截图 OCR 只是另一种文本来源：图片在客户端识别，结果仍进入 parseTicketText()。
  */
 function captureEntryOverlay() {
   const ctx = state.captureContext || {};
   const canContinue = Boolean(ctx.lockedWork || ctx.workTitle?.trim());
+  const ocrBusy = ["preparing", "recognizing", "parsing"].includes(ticketOcrUi.status);
+  const showingOcrText = pendingTicketOcrText !== null;
+  const inputText = showingOcrText ? pendingTicketOcrText : "";
+  const ocrStatus = ocrBusy
+    ? `<div class="ticket-ocr-status" role="status" data-testid="ticket-ocr-status">
+        <span>${escapeHtml(ticketOcrUi.message || "正在识别票务信息…")}</span>
+        <progress max="1" value="${Math.max(0, Math.min(1, ticketOcrUi.progress || 0))}"></progress>
+      </div>`
+    : ticketOcrUi.error
+      ? `<p class="ticket-ocr-error" role="alert" data-testid="ticket-ocr-error">${escapeHtml(ticketOcrUi.error)}</p>`
+      : "";
   return `<div class="overlay" data-testid="capture-entry">
     <button class="overlay-backdrop" type="button" data-action="close-capture" aria-label="收起"></button>
     <section class="bottom-sheet capture-entry" role="dialog" aria-modal="true" aria-labelledby="capture-entry-title">
       <div class="sheet-handle" aria-hidden="true"></div>
       <span class="sheet-kicker">记录这次观看</span>
       <h2 id="capture-entry-title">观影信息</h2>
-      <p class="capture-entry-hint">粘贴票务后可自动填写影院信息；暂时跳过则把观影信息标为待确认，之后可在记录详情中补全。</p>
+      <p class="capture-entry-hint">粘贴票务文字或导入截图后，可自动填写影院信息；识别结果都会在保存前确认。</p>
       ${ctx.lockedWork
         ? `<div class="capture-entry-work" data-testid="capture-entry-work-locked"><span>作品</span><b>《${escapeHtml(ctx.workTitle || "未命名作品")}》</b></div>`
         : `<label class="capture-entry-title-field"><span>作品</span><input type="text" id="capture-entry-work-title-input" data-testid="capture-entry-work-title-input" value="${escapeHtml(ctx.workTitle || "")}" placeholder="输入作品名；粘贴票务时可留空" /></label>`}
       ${state.clipboardTicketDetected ? `<button type="button" class="clipboard-hint-banner" data-action="use-clipboard-ticket" data-testid="clipboard-ticket-banner">
         <span>检测到票务信息 · 一键使用</span>${icon("chevron")}
       </button>` : ""}
+      <div class="ticket-ocr-import">
+        <div class="ticket-ocr-controls">
+          <button type="button" class="ticket-ocr-button" data-action="choose-ticket-screenshot" data-testid="choose-ticket-screenshot" ${ocrBusy ? "disabled" : ""}>${icon("photo")}<span>${ocrBusy ? "正在识别…" : "导入票务截图"}</span></button>
+          <label class="ticket-ocr-language"><span>截图语言</span><select id="ticket-ocr-language" data-testid="ticket-ocr-language" ${ocrBusy ? "disabled" : ""}>${TICKET_OCR_LANGUAGE_OPTIONS.map((option) => `<option value="${option.value}" ${ticketOcrUi.language === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select></label>
+          <input class="sr-only" id="ticket-ocr-input" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" />
+        </div>
+        <small>图片仅用于本地识别，不会保存；首次使用需要下载识别组件。</small>
+        ${ocrStatus}
+      </div>
       <label class="capture-paste-area" for="capture-paste-input">
-        <span>粘贴票务信息</span>
-        <textarea id="capture-paste-input" data-testid="capture-paste-input" placeholder="粘贴票务邮件或订单文本" rows="4"></textarea>
+        <span>${showingOcrText ? "识别出的文字（可修改）" : "粘贴票务信息"}</span>
+        <textarea id="capture-paste-input" data-testid="capture-paste-input" placeholder="粘贴票务邮件或订单文本" rows="${showingOcrText ? 8 : 4}">${escapeHtml(inputText)}</textarea>
       </label>
       <div class="capture-entry-actions">
-        <button type="button" class="sheet-done" data-action="parse-ticket-info" data-testid="parse-ticket-info" disabled>解析票务信息</button>
+        <button type="button" class="sheet-done" data-action="parse-ticket-info" data-testid="parse-ticket-info" ${inputText.trim() && !ocrBusy ? "" : "disabled"}>${showingOcrText ? "重新解析" : "解析票务信息"}</button>
         <button type="button" class="capture-skip-link" data-action="skip-viewing-info" data-testid="skip-viewing-info" ${canContinue ? "" : "disabled"}>暂时跳过 →</button>
       </div>
+      ${showingOcrText && ticketOcrUi.status === "review" ? `<button type="button" class="text-action ticket-ocr-manual" data-action="manual-viewing-info" ${canContinue ? "" : "disabled"}>手动填写观影信息</button>` : ""}
       ${canContinue ? "" : `<small class="capture-entry-requirement">继续前请先填写作品名</small>`}
     </section>
   </div>`;
@@ -2543,6 +2581,15 @@ function ticketConfirmOverlay() {
         ${ctx.lockedWork ? "" : `<button type="button" class="text-action" data-action="toggle-capture-match-candidates" data-testid="change-capture-match">更换</button>`}
       </div>
       ${ctx.lockedWork ? `<p class="ticket-locked-note" data-testid="ticket-work-locked">从作品页进入，作品已确定；票务里的片名会被忽略。</p>` : candidatesBlock}
+      ${pendingTicketOcrText !== null ? `<details class="ticket-ocr-review" open data-testid="ticket-ocr-review">
+        <summary>识别出的文字</summary>
+        <textarea id="ticket-ocr-review-text" data-testid="ticket-ocr-review-text" rows="7">${escapeHtml(pendingTicketOcrText)}</textarea>
+        ${ticketOcrUi.error ? `<p class="ticket-ocr-error" role="alert">${escapeHtml(ticketOcrUi.error)}</p>` : ""}
+        <div class="ticket-ocr-review-actions">
+          <small>可以修正错字后重新解析；图片与文字均不会保存。</small>
+          <button type="button" class="text-action" data-action="reparse-ticket-ocr" data-testid="reparse-ticket-ocr" ${pendingTicketOcrText.trim() ? "" : "disabled"}>重新解析</button>
+        </div>
+      </details>` : ""}
       <div class="ticket-confirm-cards">${cards}</div>
       ${!allSelected && allEvents.length > 1 ? `<button type="button" class="text-action" data-action="select-all-ticket-events" data-testid="select-all-ticket-events">全选</button>` : ""}
       <p class="ticket-privacy-note">姓名、邮箱、取票码已本地移除，原始邮件不保存</p>
@@ -4112,6 +4159,99 @@ async function dismissWorkMatch() {
 
 // ─── R2：捕获流程的异步辅助函数（剪贴板、票务解析、Bangumi 匹配、历史判断）─────
 
+function resetTicketOcrUi({ clearText = true } = {}) {
+  ticketOcrJobId += 1;
+  if (clearText) pendingTicketOcrText = null;
+  ticketOcrUi = {
+    ...ticketOcrUi,
+    status: "idle",
+    progress: 0,
+    message: "",
+    error: ""
+  };
+}
+
+function paintTicketOcrProgress() {
+  const status = document.querySelector("[data-testid='ticket-ocr-status'] span");
+  const progress = document.querySelector("[data-testid='ticket-ocr-status'] progress");
+  if (status) status.textContent = ticketOcrUi.message || "正在识别票务信息…";
+  if (progress) progress.value = Math.max(0, Math.min(1, ticketOcrUi.progress || 0));
+}
+
+async function handleTicketScreenshot(file) {
+  const captureAtStart = state.captureContext;
+  const jobId = ++ticketOcrJobId;
+  pendingTicketOcrText = null;
+  ticketOcrUi = {
+    ...ticketOcrUi,
+    status: "preparing",
+    progress: 0.02,
+    message: "正在准备识别…",
+    error: ""
+  };
+  render();
+
+  try {
+    const text = await recognizeTicketImage(file, {
+      language: ticketOcrUi.language,
+      onProgress(message) {
+        if (jobId !== ticketOcrJobId) return;
+        ticketOcrUi.status = String(message?.status || "").toLowerCase().includes("recognizing")
+          ? "recognizing"
+          : "preparing";
+        ticketOcrUi.progress = Number.isFinite(message?.progress) ? message.progress : ticketOcrUi.progress;
+        ticketOcrUi.message = ticketOcrProgressLabel(message);
+        paintTicketOcrProgress();
+      }
+    });
+    if (jobId !== ticketOcrJobId || state.captureContext !== captureAtStart || state.overlay !== "capture-entry") return;
+
+    pendingTicketOcrText = text;
+    if (!text.trim()) {
+      ticketOcrUi = {
+        ...ticketOcrUi,
+        status: "error",
+        progress: 0,
+        message: "",
+        error: "没有识别到文字，请尝试更清晰的截图，或直接粘贴票务文字。"
+      };
+      render();
+      return;
+    }
+
+    ticketOcrUi = {
+      ...ticketOcrUi,
+      status: "parsing",
+      progress: 1,
+      message: "正在解析票务信息…",
+      error: ""
+    };
+    render();
+    ticketOcrUi.status = "done";
+    if (!handleCapturePaste(text)) {
+      ticketOcrUi = {
+        ...ticketOcrUi,
+        status: "review",
+        progress: 0,
+        message: "",
+        error: "已经识别出文字，但未能识别出票务信息。请修改文字后重新解析，或手动填写。"
+      };
+      render();
+    }
+  } catch (error) {
+    if (jobId !== ticketOcrJobId || state.captureContext !== captureAtStart || state.overlay !== "capture-entry") return;
+    console.error("[ticket-ocr]", error);
+    ticketOcrUi = {
+      ...ticketOcrUi,
+      status: "error",
+      progress: 0,
+      message: "",
+      error: error?.message || "截图识别失败，请重试或直接粘贴票务文字。"
+    };
+    render();
+  }
+}
+
 /**
  * 打开 Step 1 时静默尝试读取剪贴板。权限被拒或不支持时 readClipboardTicketHint
  * 已经处理为返回 null，这里不弹任何提示、不影响流程。命中后只记一个布尔值，
@@ -4131,17 +4271,17 @@ async function peekClipboardForTicket() {
  * 失败或没有识别到场次时只提示，不影响用户已经打的字（此时还没有任何文字输入）。
  */
 function handleCapturePaste(rawText) {
-  if (!rawText || !rawText.trim()) return;
+  if (!rawText || !rawText.trim()) return false;
   let result;
   try {
     result = parseTicketText(rawText);
   } catch (_) {
     announce("解析失败，请检查粘贴内容");
-    return;
+    return false;
   }
   if (!result.screenings.length) {
     announce("未能识别出场次，请检查粘贴内容");
-    return;
+    return false;
   }
   // 默认全选，但每场都保留 selected 标记——用户可以单独排除误识别的场次，
   // 不必因为一场解析错了就整体重新粘贴。
@@ -4171,6 +4311,7 @@ function handleCapturePaste(rawText) {
   render();
   if (!locked) void runCaptureWorkMatch(workTitle);
   void refreshCaptureHistoryFlag();
+  return true;
 }
 
 /**
@@ -5741,6 +5882,7 @@ function startViewingCapture(workId = null) {
   state.captureTagsExpanded = new Set();
   state.clipboardTicketDetected = false;
   pendingClipboardText = null;
+  resetTicketOcrUi();
   applyCaptureTransition("open-capture");
   render();
   void peekClipboardForTicket();
@@ -6165,15 +6307,29 @@ document.addEventListener("click", async (event) => {
     // Step 1/2A/2B 的背景点击：还没有产生任何记录，直接丢弃这次捕获上下文。
     state.captureContext = null;
     state.captureTagsExpanded = new Set();
+    resetTicketOcrUi();
     applyCaptureTransition("close");
     render();
   } else if (action === "use-clipboard-ticket") {
+    resetTicketOcrUi();
     handleCapturePaste(pendingClipboardText || "");
+  } else if (action === "choose-ticket-screenshot") {
+    if (["preparing", "recognizing", "parsing"].includes(ticketOcrUi.status)) return;
+    document.querySelector("#ticket-ocr-input")?.click();
   } else if (action === "parse-ticket-info") {
     const ticketText = document.querySelector("#capture-paste-input")?.value || "";
+    if (pendingTicketOcrText !== null) pendingTicketOcrText = ticketText;
     handleCapturePaste(ticketText);
+  } else if (action === "reparse-ticket-ocr") {
+    if (!pendingTicketOcrText?.trim()) return;
+    ticketOcrUi.error = "";
+    if (!handleCapturePaste(pendingTicketOcrText)) {
+      ticketOcrUi.error = "修改后的文字仍未能识别出票务信息，当前卡片保留上一次解析结果。";
+      render();
+    }
   } else if (action === "manual-viewing-info") {
     if (!state.captureContext) return;
+    resetTicketOcrUi();
     state.captureContext.source = "manual";
     state.captureTagsExpanded = new Set();
     if (state.captureContext.workTitle?.trim()) void refreshCaptureHistoryFlag();
@@ -6197,6 +6353,7 @@ document.addEventListener("click", async (event) => {
       viewedOn: todayInJapan()
     });
     state.captureTagsExpanded = new Set();
+    resetTicketOcrUi();
     applyCaptureTransition("repaste");
     render();
   } else if (action === "toggle-capture-match-candidates") {
@@ -6257,6 +6414,7 @@ document.addEventListener("click", async (event) => {
     const selected = selectedPendingEvents(ctx?.pendingEvents);
     if (!selected.length || selected.some((event) => !event.viewed_on || !event.location_type)) return;
     ctx.pendingEvents = selected; // 只把用户勾选的场次带进 compose，排除的场次彻底丢弃
+    resetTicketOcrUi();
     applyCaptureTransition("confirm");
     await saveDraft(state.draft?.text || "", true);
     render();
@@ -6791,8 +6949,13 @@ document.addEventListener("input", (event) => {
   } else if (event.target.matches("[data-testid='recommendation-note']")) {
     updateRecord((record) => { record.recommendationNote = event.target.value; });
   } else if (event.target.id === "capture-paste-input") {
+    if (pendingTicketOcrText !== null) pendingTicketOcrText = event.target.value;
     const parseButton = document.querySelector("[data-testid='parse-ticket-info']");
     if (parseButton) parseButton.disabled = !event.target.value.trim();
+  } else if (event.target.id === "ticket-ocr-review-text") {
+    pendingTicketOcrText = event.target.value;
+    const reparseButton = document.querySelector("[data-testid='reparse-ticket-ocr']");
+    if (reparseButton) reparseButton.disabled = !event.target.value.trim();
   } else if (event.target.id === "capture-entry-work-title-input") {
     if (!state.captureContext) return;
     state.captureContext.workTitle = event.target.value;
@@ -6911,7 +7074,15 @@ document.addEventListener("error", (event) => {
 }, true);
 
 document.addEventListener("change", async (event) => {
-  if (event.target.id === "poster-upload-input") {
+  if (event.target.id === "ticket-ocr-input") {
+    const [file] = event.target.files || [];
+    event.target.value = "";
+    if (file) await handleTicketScreenshot(file);
+    return;
+  } else if (event.target.id === "ticket-ocr-language") {
+    ticketOcrUi.language = normalizeTicketOcrLanguage(event.target.value);
+    return;
+  } else if (event.target.id === "poster-upload-input") {
     const [file] = event.target.files || [];
     if (file) await saveUploadedPoster(file);
     return;
@@ -7824,6 +7995,7 @@ document.addEventListener("click", (event) => {
   event.preventDefault();
 }, true);
 window.addEventListener("pagehide", () => {
+  void releaseTicketOcrWorker();
   const input = document.querySelector("#composer-input");
   if (input) {
     db.put("drafts", {

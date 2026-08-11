@@ -2515,6 +2515,94 @@ svg {
   flex: 0 0 auto;
 }
 
+.ticket-ocr-import {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-card);
+  background: var(--surface-low);
+}
+
+.ticket-ocr-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(132px, 0.72fr);
+  gap: var(--space-2);
+  align-items: end;
+}
+
+.ticket-ocr-button {
+  display: inline-flex;
+  min-height: var(--touch);
+  padding: var(--space-2) var(--space-3);
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-tag);
+  background: var(--accent-container);
+  color: var(--accent-strong);
+  font: var(--type-label);
+}
+
+.ticket-ocr-button svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.ticket-ocr-button:disabled {
+  opacity: 0.6;
+}
+
+.ticket-ocr-language {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.ticket-ocr-language select {
+  min-height: var(--touch);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-tag);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.ticket-ocr-import > small,
+.ticket-ocr-review small {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+  line-height: 1.45;
+}
+
+.ticket-ocr-status {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.ticket-ocr-status progress {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--accent);
+}
+
+.ticket-ocr-error {
+  margin: 0;
+  color: var(--danger, #a83b32);
+  font: var(--type-meta);
+  line-height: 1.45;
+}
+
+.ticket-ocr-manual {
+  justify-self: start;
+}
+
 .capture-paste-area {
   display: grid;
   gap: var(--space-2);
@@ -2555,6 +2643,53 @@ svg {
 
 .capture-skip-link:disabled {
   opacity: 0.45;
+}
+
+.ticket-ocr-review {
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-card);
+  background: var(--surface-low);
+}
+
+.ticket-ocr-review summary {
+  cursor: pointer;
+  color: var(--ink-soft);
+  font: var(--type-label);
+}
+
+.ticket-ocr-review textarea {
+  width: 100%;
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--outline-soft);
+  border-radius: var(--radius-tag);
+  background: var(--surface);
+  color: var(--ink);
+  font: var(--type-body);
+  line-height: 1.5;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.ticket-ocr-review-actions {
+  display: flex;
+  margin-top: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+@media (max-width: 430px) {
+  .ticket-ocr-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .ticket-ocr-review-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 /* Step 2A：票务确认卡 */

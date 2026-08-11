@@ -48,8 +48,12 @@ async function openCapture(page, workTitle, { location = "home", viewedOn = null
   if (!entryText.includes("观影信息")) {
     throw new Error("开始记录没有先进入统一的观影信息步骤");
   }
-  for (const choice of ["粘贴票务信息", "解析票务信息", "暂时跳过"]) {
+  for (const choice of ["粘贴票务信息", "导入票务截图", "解析票务信息", "暂时跳过"]) {
     if (!entryText.includes(choice)) throw new Error(`观影信息步骤缺少“${choice}”入口`);
+  }
+  const ocrInput = page.locator("#ticket-ocr-input");
+  if (!(await ocrInput.count()) || !String(await ocrInput.getAttribute("accept")).includes("image/webp")) {
+    throw new Error("票务截图入口没有限制为第一版支持的图片格式");
   }
   if (location === "cinema") {
     const ticketDate = (viewedOn || new Date().toISOString().slice(0, 10)).replaceAll("-", "/");
