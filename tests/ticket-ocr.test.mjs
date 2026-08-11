@@ -38,20 +38,29 @@ test("技术性进度被转换为用户可理解的状态", () => {
   assert.equal(ticketOcrProgressLabel({ status: "recognizing text" }), "正在读取文字…");
 });
 
-test("OCR 适配层只返回普通文本，并在完成后释放临时图片", async () => {
+test("OCR 适配层返回文本与轻量布局，并在完成后释放临时图片", async () => {
   let disposed = false;
   let recognizedSource = null;
   let terminated = false;
   const progress = [];
   const worker = {
-    async recognize(source) {
+    async recognize(source, options, output) {
       recognizedSource = source;
-      return { data: { text: "MOVIX京都\r\n作品名　魔女の宅急便\n" } };
+      assert.deepEqual(options, { rotateAuto: true });
+      assert.deepEqual(output, { text: true, blocks: true });
+      return { data: {
+        text: "MOVIX京都\r\n作品名　魔女の宅急便\n",
+        blocks: [{ bbox: { x0: 5, y0: 5, x1: 130, y1: 40 }, paragraphs: [{ lines: [{
+          text: "MOVIX京都",
+          bbox: { x0: 10, y0: 10, x1: 120, y1: 35 },
+          words: [{ text: "MOVIX京都", confidence: 92, bbox: { x0: 10, y0: 10, x1: 120, y1: 35 } }]
+        }] }] }]
+      } };
     },
     async terminate() { terminated = true; }
   };
 
-  const text = await recognizeTicketImage(imageFile(), {
+  const result = await recognizeTicketImage(imageFile(), {
     language: "jpn+eng",
     prepareImage: async () => ({
       source: "temporary-canvas",
@@ -65,7 +74,14 @@ test("OCR 适配层只返回普通文本，并在完成后释放临时图片", a
     onProgress: (message) => progress.push(message.progress)
   });
 
-  assert.equal(text, "MOVIX京都\n作品名　魔女の宅急便");
+  assert.equal(result.text, "MOVIX京都\n作品名　魔女の宅急便");
+  assert.deepEqual(result.layout.lines[0], {
+    text: "MOVIX京都",
+    bbox: { x0: 10, y0: 10, x1: 120, y1: 35 },
+    words: [{ text: "MOVIX京都", confidence: 92, bbox: { x0: 10, y0: 10, x1: 120, y1: 35 } }]
+  });
+  assert.equal(result.layout.blocks.length, 1);
+  assert.deepEqual(result.layout.blocks[0].bbox, { x0: 5, y0: 5, x1: 130, y1: 40 });
   assert.equal(recognizedSource, "temporary-canvas");
   assert.equal(disposed, true);
   assert.deepEqual(progress, [0.5]);

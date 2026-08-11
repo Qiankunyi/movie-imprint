@@ -190,6 +190,12 @@ const REAL_CHINESE_COMPACT_TICKET = `长沙MC影城华晨店
 
 7排14座`;
 
+const REAL_CHINESE_OCR_TICKET = `大 地 影院 益阳 剧院 > 4 9
+哆 啦 A 梦：伴 我 同行 wa
+国语 3D 13K Y
+2015-05-28 3 号 厅 £2)
+00:05~01:40 ”9 排 6 座 = a`;
+
 describe("parseTicketText — 109シネマズ真实票据回归", () => {
   const result = parseTicketText(REAL_109_TICKET);
   const screening = result.screenings[0];
@@ -280,6 +286,39 @@ describe("parseTicketText — 中文无标签简式票据回归", () => {
     assert.equal(screening.format, "普通");
     assert.equal(screening.is3D, true);
     assert.deepEqual(screening.seats, ["7排14座"]);
+  });
+});
+
+describe("parseTicketText — 中国 App 截图 OCR 真实文本回归", () => {
+  const screening = parseTicketText(REAL_CHINESE_OCR_TICKET, { ocr: true }).screenings[0];
+
+  it("影院噪声行不再抢占标题，片名异常空格与 wa 尾噪声被清理", () => {
+    assert.equal(screening.movieTitle, "哆啦A梦：伴我同行");
+    assert.equal(screening.cinemaName, "大地影院益阳剧院");
+  });
+
+  it("从混合行中先提取日期、时间、影厅与座位", () => {
+    assert.equal(screening.viewedOn, "2015-05-28");
+    assert.equal(screening.screeningAt, "2015-05-28T00:05:00+09:00");
+    assert.equal(screening.screeningEndsAt, "2015-05-28T01:40:00+09:00");
+    assert.equal(screening.auditorium, "3号厅");
+    assert.deepEqual(screening.seats, ["9排6座"]);
+  });
+
+  it("3D、语言与张数独立解析，未显示的票价和币种保持为空", () => {
+    assert.equal(screening.format, "普通");
+    assert.equal(screening.formatNote, null);
+    assert.equal(screening.version, null);
+    assert.equal(screening.is3D, true);
+    assert.equal(screening.language, "国语");
+    assert.equal(screening.ticketQuantity, 1);
+    assert.equal(screening.ticketPrice, null);
+    const event = draftViewingEvent(screening, "work_doraemon");
+    assert.equal(event.location_type, "cinema");
+    assert.equal(event.ticket_price, null);
+    assert.equal(event.duration_minutes, 95);
+    assert.equal(event.viewing_context.language, "国语");
+    assert.equal(event.viewing_context.ticket_count, 1);
   });
 });
 

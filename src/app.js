@@ -12,10 +12,10 @@ import {
 } from "./stills.js?v=1";
 import { selectDailySidebarStill } from "./sidebar-artwork.js?v=1";
 import { SIDEBAR_STILLS, SIDEBAR_STILL_EXTENSIONS } from "../public/assets/sidebar-stills/manifest.js?v=1";
-import { parseTicketText, draftViewingEvent } from "./ticket.js?v=5";
+import { parseTicketText, draftViewingEvent } from "./ticket.js?v=6";
 import { buildWorkSearchQuery } from "./bangumi.js?v=14";
 import { applyListStyle, continueListOnEnter } from "./editor.js?v=8";
-import { runMigrationIfNeeded } from "./migrate.js?v=5";
+import { runMigrationIfNeeded } from "./migrate.js?v=6";
 import { EVENT_TYPES, normalizeCinemaFormat } from "./event-types.js?v=3";
 import { readClipboardTicketHint } from "./clipboard.js?v=1";
 import {
@@ -24,7 +24,7 @@ import {
   recognizeTicketImage,
   releaseTicketOcrWorker,
   ticketOcrProgressLabel
-} from "./ticket-ocr.js?v=1";
+} from "./ticket-ocr.js?v=2";
 import { recordCard, emptyHomeStateMarkup, eventDateLabel, badgeChipMarkup, supplementDistanceLabel } from "./record-card.js?v=9";
 import { memoryListMarkup } from "./memory-list.js?v=1";
 import {
@@ -133,7 +133,7 @@ import {
   toggleEventSelection,
   selectAllEvents,
   selectedPendingEvents
-} from "./capture.js?v=8";
+} from "./capture.js?v=9";
 import {
   ATTITUDES,
   ATTITUDE_DESCRIPTIONS,
@@ -441,6 +441,8 @@ function applyRoute(route) {
 let pendingClipboardText = null;
 // OCR 原文同样只保存在模块内存，不进入 captureContext / IndexedDB / 导出。
 let pendingTicketOcrText = null;
+// 布局坐标与 OCR 原文一样只存于当前内存；用户改字后立即丢弃，防止旧坐标覆盖修正文本。
+let pendingTicketOcrLayout = null;
 let ticketOcrJobId = 0;
 let ticketOcrUi = {
   status: "idle", // idle | preparing | recognizing | parsing | review | done | error
@@ -1318,7 +1320,7 @@ function normalizedTicketCurrency(ticketPrice) {
 function ticketPriceLabel(event) {
   const amount = Number(event?.ticket_price?.amount);
   if (!Number.isFinite(amount) || amount <= 0) return "";
-  const count = Number(event.ticket_price?.count) || Number(event.viewing_context?.seat_count) || 1;
+  const count = Number(event.ticket_price?.count) || Number(event.viewing_context?.ticket_count) || Number(event.viewing_context?.seat_count) || 1;
   const currency = normalizedTicketCurrency(event.ticket_price);
   const money = currency === "CNY"
     ? `${amount.toLocaleString("zh-CN")}元`
@@ -1341,6 +1343,7 @@ function workHistoryRow(item, index) {
     ctx.auditorium || "",
     normalizedSpec.formatNote || "",
     normalizedSpec.is3D ? "3D" : "",
+    ctx.language || "",
     ctx.ticket_type || "",
     item.duration_minutes ? `${item.duration_minutes}分` : "",
     ctx.seats?.length ? `座位 ${ctx.seats.join("、")}` : "",
@@ -2533,6 +2536,7 @@ function ticketConfirmOverlay() {
         ${ec.version ? `<span>${escapeHtml(ec.version)}</span>` : ""}
         ${normalizedSpec.format ? `<span>${escapeHtml(normalizedSpec.format)}${normalizedSpec.is3D ? " · 3D" : ""}</span>` : ""}
         ${ec.ticket_type ? `<span>${escapeHtml(ec.ticket_type)}</span>` : ""}
+        ${ec.language ? `<span>${escapeHtml(ec.language)}</span>` : ""}
         ${event.duration_minutes ? `<span>${event.duration_minutes}分</span>` : ""}
         ${seatsStr ? `<span>座位 ${escapeHtml(seatsStr)}</span>` : ""}
         ${priceStr ? `<span>${escapeHtml(priceStr)}</span>` : ""}
@@ -2549,13 +2553,14 @@ function ticketConfirmOverlay() {
         <label><span>放映规格</span><select data-field="ticket-format" data-event-index="${index}"><option value="">未填写</option>${CINEMA_FORMAT_OPTIONS.map((f) => `<option value="${escapeHtml(f)}" ${normalizedSpec.format === f ? "selected" : ""}>${escapeHtml(f)}</option>`).join("")}</select></label>
         <label><span>规格备注（可选）</span><input type="text" data-field="ticket-format-note" data-event-index="${index}" value="${escapeHtml(normalizedSpec.formatNote || "")}" /></label>
         <label><span>3D</span><select data-field="ticket-is-3d" data-event-index="${index}"><option value="false" ${normalizedSpec.is3D ? "" : "selected"}>否</option><option value="true" ${normalizedSpec.is3D ? "selected" : ""}>是</option></select></label>
+        <label><span>语言（可选）</span><input type="text" data-field="ticket-language" data-event-index="${index}" value="${escapeHtml(ec.language || "")}" /></label>
         <div class="price-fields ticket-price-fields">
           <label><span>票价合计</span><input type="number" min="0" step="0.01" inputmode="decimal" data-field="ticket-price-amount" data-event-index="${index}" value="${event.ticket_price?.amount ?? ""}" placeholder="未填写" /></label>
           <label><span>币种</span><select data-field="ticket-price-currency" data-event-index="${index}">
             <option value="JPY" ${normalizedTicketCurrency(event.ticket_price) === "JPY" ? "selected" : ""}>JPY（日元）</option>
             <option value="CNY" ${normalizedTicketCurrency(event.ticket_price) === "CNY" ? "selected" : ""}>CNY（人民币）</option>
           </select></label>
-          <label><span>张数</span><input type="number" min="1" step="1" inputmode="numeric" data-field="ticket-price-count" data-event-index="${index}" value="${event.ticket_price?.count || ec.seat_count || 1}" /></label>
+          <label><span>张数</span><input type="number" min="1" step="1" inputmode="numeric" data-field="ticket-price-count" data-event-index="${index}" value="${event.ticket_price?.count || ec.ticket_count || ec.seat_count || 1}" /></label>
         </div>` : ""}
       </div>
       ${eventTypeTagsRow(ec.event_types || [], `event-${index}`)}
@@ -2735,6 +2740,7 @@ function historyEventEditorOverlay(event) {
           </select></label>
           <label><span>规格备注（可选）</span><input type="text" name="formatNote" value="${escapeHtml(normalizedSpec.formatNote || "")}" /></label>
           <label><span>3D</span><select name="is3D"><option value="false" ${normalizedSpec.is3D ? "" : "selected"}>否</option><option value="true" ${normalizedSpec.is3D ? "selected" : ""}>是</option></select></label>
+          <label><span>语言（可选）</span><input type="text" name="language" value="${escapeHtml(ctx.language || "")}" /></label>
           <fieldset class="event-tags-row" aria-label="活动类型">
             ${EVENT_TYPES.map(([key, label]) => `<label class="event-tag-chip ${(ctx.event_types || []).includes(key) ? "selected" : ""}"><input type="checkbox" name="eventTypes" value="${key}" ${(ctx.event_types || []).includes(key) ? "checked" : ""} />${escapeHtml(label)}</label>`).join("")}
           </fieldset>
@@ -2748,7 +2754,7 @@ function historyEventEditorOverlay(event) {
             <option value="JPY" ${normalizedTicketCurrency(event.ticket_price) === "JPY" ? "selected" : ""}>JPY（日元）</option>
             <option value="CNY" ${normalizedTicketCurrency(event.ticket_price) === "CNY" ? "selected" : ""}>CNY（人民币）</option>
           </select></label>
-          <label><span>张数</span><input type="number" name="ticketCount" min="1" step="1" inputmode="numeric" value="${event.ticket_price?.count || event.viewing_context?.seat_count || 1}" data-testid="history-ticket-count" /></label>
+          <label><span>张数</span><input type="number" name="ticketCount" min="1" step="1" inputmode="numeric" value="${event.ticket_price?.count || event.viewing_context?.ticket_count || event.viewing_context?.seat_count || 1}" data-testid="history-ticket-count" /></label>
         </div>
         <div class="relation-toggle" role="group" aria-label="初看或重看">
           <label class="relation-choice ${event.viewing_relation === "first" ? "selected" : ""}"><input type="radio" name="relation" value="first" ${event.viewing_relation === "first" ? "checked" : ""} />初看</label>
@@ -4161,7 +4167,10 @@ async function dismissWorkMatch() {
 
 function resetTicketOcrUi({ clearText = true } = {}) {
   ticketOcrJobId += 1;
-  if (clearText) pendingTicketOcrText = null;
+  if (clearText) {
+    pendingTicketOcrText = null;
+    pendingTicketOcrLayout = null;
+  }
   ticketOcrUi = {
     ...ticketOcrUi,
     status: "idle",
@@ -4182,6 +4191,7 @@ async function handleTicketScreenshot(file) {
   const captureAtStart = state.captureContext;
   const jobId = ++ticketOcrJobId;
   pendingTicketOcrText = null;
+  pendingTicketOcrLayout = null;
   ticketOcrUi = {
     ...ticketOcrUi,
     status: "preparing",
@@ -4192,7 +4202,7 @@ async function handleTicketScreenshot(file) {
   render();
 
   try {
-    const text = await recognizeTicketImage(file, {
+    const ocrResult = await recognizeTicketImage(file, {
       language: ticketOcrUi.language,
       onProgress(message) {
         if (jobId !== ticketOcrJobId) return;
@@ -4206,7 +4216,9 @@ async function handleTicketScreenshot(file) {
     });
     if (jobId !== ticketOcrJobId || state.captureContext !== captureAtStart || state.overlay !== "capture-entry") return;
 
+    const text = String(typeof ocrResult === "string" ? ocrResult : ocrResult?.text || "");
     pendingTicketOcrText = text;
+    pendingTicketOcrLayout = typeof ocrResult === "string" ? null : ocrResult.layout;
     if (!text.trim()) {
       ticketOcrUi = {
         ...ticketOcrUi,
@@ -4228,7 +4240,7 @@ async function handleTicketScreenshot(file) {
     };
     render();
     ticketOcrUi.status = "done";
-    if (!handleCapturePaste(text)) {
+    if (!handleCapturePaste(text, { ocr: true, layout: pendingTicketOcrLayout })) {
       ticketOcrUi = {
         ...ticketOcrUi,
         status: "review",
@@ -4270,11 +4282,11 @@ async function peekClipboardForTicket() {
  * 解析粘贴的票务文本，成功则转入 Step 2A（ticket-confirm）。
  * 失败或没有识别到场次时只提示，不影响用户已经打的字（此时还没有任何文字输入）。
  */
-function handleCapturePaste(rawText) {
+function handleCapturePaste(rawText, options = {}) {
   if (!rawText || !rawText.trim()) return false;
   let result;
   try {
-    result = parseTicketText(rawText);
+    result = parseTicketText(rawText, options);
   } catch (_) {
     announce("解析失败，请检查粘贴内容");
     return false;
@@ -4861,6 +4873,8 @@ async function saveHistoryEventForm(form) {
       seat_count: locationType === "cinema" ? (target.viewing_context?.seat_count || 0) : 0,
       ticket_provider: locationType === "cinema" ? (target.viewing_context?.ticket_provider || null) : null,
       ticket_type: locationType === "cinema" ? (target.viewing_context?.ticket_type || null) : null,
+      language: locationType === "cinema" ? (String(data.get("language") || "").trim() || null) : null,
+      ticket_count: locationType === "cinema" ? countNum : null,
       event_types: eventTypes,
       bonus_note: eventTypes.includes("bonus_distribution") ? bonusNoteInput : null
     },
@@ -6319,11 +6333,13 @@ document.addEventListener("click", async (event) => {
   } else if (action === "parse-ticket-info") {
     const ticketText = document.querySelector("#capture-paste-input")?.value || "";
     if (pendingTicketOcrText !== null) pendingTicketOcrText = ticketText;
-    handleCapturePaste(ticketText);
+    handleCapturePaste(ticketText, pendingTicketOcrText !== null
+      ? { ocr: true, layout: pendingTicketOcrLayout }
+      : {});
   } else if (action === "reparse-ticket-ocr") {
     if (!pendingTicketOcrText?.trim()) return;
     ticketOcrUi.error = "";
-    if (!handleCapturePaste(pendingTicketOcrText)) {
+    if (!handleCapturePaste(pendingTicketOcrText, { ocr: true, layout: pendingTicketOcrLayout })) {
       ticketOcrUi.error = "修改后的文字仍未能识别出票务信息，当前卡片保留上一次解析结果。";
       render();
     }
@@ -6443,6 +6459,7 @@ document.addEventListener("click", async (event) => {
       format: ctx.format,
       formatNote: ctx.formatNote,
       is3D: ctx.is3D,
+      ticketCount: Math.max(1, Number(ctx.ticketCount) || 1),
       ticketPrice: Number(ctx.ticketAmount) > 0 ? {
         amount: Number(ctx.ticketAmount),
         currency: ctx.ticketCurrency === "CNY" ? "CNY" : "JPY",
@@ -6949,11 +6966,15 @@ document.addEventListener("input", (event) => {
   } else if (event.target.matches("[data-testid='recommendation-note']")) {
     updateRecord((record) => { record.recommendationNote = event.target.value; });
   } else if (event.target.id === "capture-paste-input") {
-    if (pendingTicketOcrText !== null) pendingTicketOcrText = event.target.value;
+    if (pendingTicketOcrText !== null) {
+      pendingTicketOcrText = event.target.value;
+      pendingTicketOcrLayout = null;
+    }
     const parseButton = document.querySelector("[data-testid='parse-ticket-info']");
     if (parseButton) parseButton.disabled = !event.target.value.trim();
   } else if (event.target.id === "ticket-ocr-review-text") {
     pendingTicketOcrText = event.target.value;
+    pendingTicketOcrLayout = null;
     const reparseButton = document.querySelector("[data-testid='reparse-ticket-ocr']");
     if (reparseButton) reparseButton.disabled = !event.target.value.trim();
   } else if (event.target.id === "capture-entry-work-title-input") {
@@ -7015,7 +7036,7 @@ document.addEventListener("input", (event) => {
     };
     const confirmButton = document.querySelector("[data-testid='confirm-ticket-capture']");
     if (confirmButton) confirmButton.disabled = selectedPendingEvents(ctx.pendingEvents).some((item) => !item.viewed_on || !item.location_type);
-  } else if (event.target.matches("[data-field='ticket-cinema-name'], [data-field='ticket-auditorium'], [data-field='ticket-version'], [data-field='ticket-format-note']")) {
+  } else if (event.target.matches("[data-field='ticket-cinema-name'], [data-field='ticket-auditorium'], [data-field='ticket-version'], [data-field='ticket-format-note'], [data-field='ticket-language']")) {
     const ctx = state.captureContext;
     const idx = Number(event.target.dataset.eventIndex);
     const pending = ctx?.pendingEvents?.[idx];
@@ -7024,7 +7045,8 @@ document.addEventListener("input", (event) => {
       "ticket-cinema-name": "cinema_name",
       "ticket-auditorium": "auditorium",
       "ticket-version": "version",
-      "ticket-format-note": "format_note"
+      "ticket-format-note": "format_note",
+      "ticket-language": "language"
     }[event.target.dataset.field];
     ctx.pendingEvents[idx] = { ...pending, viewing_context: { ...pending.viewing_context, [key]: event.target.value || null } };
   } else if (event.target.matches("[data-field='ticket-price-amount'], [data-field='ticket-price-count']")) {
@@ -7039,6 +7061,10 @@ document.addEventListener("input", (event) => {
     const amount = Number(amountInput?.value);
     ctx.pendingEvents[idx] = {
       ...pending,
+      viewing_context: {
+        ...pending.viewing_context,
+        ticket_count: Math.max(1, Number(countInput?.value) || 1)
+      },
       ticket_price: amount > 0 ? {
         amount,
         currency: currencyInput?.value === "CNY" ? "CNY" : "JPY",
@@ -7134,6 +7160,8 @@ document.addEventListener("change", async (event) => {
         seats: [],
         seat_count: 0,
         ticket_type: null,
+        language: null,
+        ticket_count: null,
         event_types: [],
         bonus_note: null
       }

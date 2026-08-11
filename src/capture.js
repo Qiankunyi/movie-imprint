@@ -261,6 +261,8 @@ export function buildPendingViewingEvent() {
       seat_count: 0,
       ticket_provider: null,
       ticket_type: null,
+      language: null,
+      ticket_count: null,
       event_types: [],
       bonus_note: null
     },
@@ -277,11 +279,11 @@ export function buildPendingViewingEvent() {
  *
  * @param {{ viewedOn: string, locationType: "home" | "cinema", cinemaName?: string|null,
  *   auditorium?: string|null, version?: string|null, format?: string|null,
- *   formatNote?: string|null, is3D?: boolean,
+ *   formatNote?: string|null, is3D?: boolean, language?: string|null, ticketCount?: number|null,
  *   eventTypes?: string[], bonusNote?: string|null }} input
  * @returns {object}
  */
-export function buildManualViewingEvent({ viewedOn, locationType, cinemaName = null, auditorium = null, version = null, format = null, formatNote = null, is3D = false, ticketPrice = null, eventTypes = [], bonusNote = null } = {}) {
+export function buildManualViewingEvent({ viewedOn, locationType, cinemaName = null, auditorium = null, version = null, format = null, formatNote = null, is3D = false, language = null, ticketCount = null, ticketPrice = null, eventTypes = [], bonusNote = null } = {}) {
   const id = newEventId();
   const isCinema = locationType === "cinema";
   const normalizedEventTypes = isCinema ? [...new Set(eventTypes)] : [];
@@ -318,6 +320,8 @@ export function buildManualViewingEvent({ viewedOn, locationType, cinemaName = n
       seat_count: 0,
       ticket_provider: null,
       ticket_type: null,
+      language: isCinema ? (language || null) : null,
+      ticket_count: isCinema && Number(ticketCount) > 0 ? Math.max(1, Number(ticketCount)) : null,
       event_types: normalizedEventTypes,
       bonus_note: isCinema ? syncBonusNote(normalizedEventTypes, bonusNote) : null
     },

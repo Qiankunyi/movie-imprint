@@ -1,7 +1,7 @@
 /**
  * 票务截图 OCR 适配层。
  *
- * 边界：这里只做 Image -> text，不理解电影、影院或场次。业务结构化始终由
+ * 边界：这里只做 Image -> text/layout，不理解电影、影院或场次。业务结构化始终由
  * src/ticket.js 的 parseTicketText() 完成。截图、Canvas 与 OCR 原文都不持久化。
  */
 
@@ -165,6 +165,60 @@ async function getWorker(language, createWorker) {
   return workerPromise;
 }
 
+function compactBbox(value) {
+  const bbox = value?.bbox || value;
+  const x0 = Number(bbox?.x0);
+  const y0 = Number(bbox?.y0);
+  const x1 = Number(bbox?.x1);
+  const y1 = Number(bbox?.y1);
+  return [x0, y0, x1, y1].every(Number.isFinite) ? { x0, y0, x1, y1 } : null;
+}
+
+function compactWord(word) {
+  const text = String(word?.text || "").trim();
+  const bbox = compactBbox(word);
+  return text && bbox ? { text, bbox, confidence: Number(word?.confidence) || null } : null;
+}
+
+function compactLine(line) {
+  const words = (line?.words || []).map(compactWord).filter(Boolean);
+  const text = String(line?.text || words.map((word) => word.text).join(" ")).trim();
+  const bbox = compactBbox(line);
+  return text && bbox ? { text, bbox, words } : null;
+}
+
+/**
+ * Tesseract v6+ 把详细布局放在 data.blocks 下。这里只保留 parser 需要的行、词和坐标，
+ * 不保留 Canvas、图片或完整引擎返回对象。
+ */
+function compactOcrLayout(data, fallbackWidth, fallbackHeight) {
+  const sourceBlocks = Array.isArray(data?.blocks) ? data.blocks : [];
+  const blocks = [];
+  const lines = [];
+  for (const block of sourceBlocks) {
+    let blockLines = [];
+    if (Array.isArray(block?.lines)) {
+      blockLines = block.lines.map(compactLine).filter(Boolean);
+    } else {
+      for (const paragraph of block?.paragraphs || []) {
+        blockLines.push(...(paragraph?.lines || []).map(compactLine).filter(Boolean));
+      }
+    }
+    lines.push(...blockLines);
+    blocks.push({
+      text: String(block?.text || blockLines.map((line) => line.text).join("\n")).trim(),
+      bbox: compactBbox(block),
+      lines: blockLines
+    });
+  }
+  return {
+    width: Number(data?.imageWidth) || Number(fallbackWidth) || null,
+    height: Number(data?.imageHeight) || Number(fallbackHeight) || null,
+    blocks,
+    lines
+  };
+}
+
 export async function recognizeTicketImage(file, options = {}) {
   const validation = validateTicketImage(file, options.maxBytes);
   if (!validation.ok) {
@@ -177,8 +231,15 @@ export async function recognizeTicketImage(file, options = {}) {
   activeProgressListener = options.onProgress || null;
   try {
     const worker = await getWorker(options.language, options.createWorker);
-    const result = await worker.recognize(prepared.source, { rotateAuto: true });
-    return String(result?.data?.text || "").replace(/\r\n?/g, "\n").trim();
+    const result = await worker.recognize(
+      prepared.source,
+      { rotateAuto: true },
+      { text: true, blocks: true }
+    );
+    return {
+      text: String(result?.data?.text || "").replace(/\r\n?/g, "\n").trim(),
+      layout: compactOcrLayout(result?.data, prepared.width, prepared.height)
+    };
   } finally {
     activeProgressListener = null;
     prepared.dispose?.();

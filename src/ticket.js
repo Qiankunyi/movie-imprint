@@ -18,6 +18,11 @@ import {
   normalizeCinemaFormat,
   splitVersionFromTitle
 } from "./event-types.js";
+import {
+  cleanOcrCinemaCandidate,
+  cleanOcrTitleCandidate,
+  normalizeOcrTicketInput
+} from "./ticket-normalize.js";
 
 // ─── 1. 敏感信息模式 ────────────────────────────────────────────────────────
 
@@ -281,9 +286,9 @@ function computeDurationMinutes(startIso, endIso) {
  * priority 越小越明确，例如「上映作品」优先于泛化的「作品」。
  */
 const TICKET_FIELD_DEFINITIONS = [
-  { key: "title", labels: [["上映作品", 0], ["作品名", 1], ["映画名", 1], ["タイトル", 1], ["作品", 2]] },
-  { key: "auditorium", labels: [["上映スクリーン", 0], ["上映劇場", 0], ["シアター名", 1], ["スクリーン名", 1]] },
-  { key: "cinema", labels: [["劇場名", 0], ["映画館", 1], ["劇場", 2]] },
+  { key: "title", labels: [["上映作品", 0], ["作品名", 1], ["映画名", 1], ["タイトル", 1], ["影片", 1], ["电影", 1], ["作品", 2]] },
+  { key: "auditorium", labels: [["上映スクリーン", 0], ["上映劇場", 0], ["シアター名", 1], ["スクリーン名", 1], ["影厅", 1], ["厅号", 1]] },
+  { key: "cinema", labels: [["劇場名", 0], ["映画館", 1], ["电影院", 1], ["影院", 1], ["影城", 1], ["劇場", 2]] },
   { key: "datetime", labels: [["日時", 0]] },
   { key: "date", labels: [["上映日", 0], ["観賞日", 1], ["鑑賞日", 1]] },
   { key: "time_range", labels: [["上映時間", 0]] },
@@ -292,6 +297,8 @@ const TICKET_FIELD_DEFINITIONS = [
   { key: "seat", labels: [["座席番号", 0], ["お座席", 1], ["席番", 1], ["座席", 2]] },
   { key: "ticket", labels: [["チケット", 0], ["券種", 1]] },
   { key: "format", labels: [["上映方式", 0], ["放映方式", 0], ["制式", 1]] },
+  { key: "language", labels: [["语言", 0], ["语种", 0], ["言語", 0]] },
+  { key: "quantity", labels: [["张数", 0], ["数量", 1], ["購入枚数", 1]] },
   { key: "price", labels: [["購入金額", 0], ["料金", 1], ["金額", 1], ["合計", 2]] }
 ];
 
@@ -342,12 +349,13 @@ function normalizeFormatCandidates(detailsCandidates) {
   };
 }
 
-function cleanCinemaField(value) {
+function cleanCinemaField(value, { ocr = false } = {}) {
   let cinema = String(value || "").trim();
   for (const candidate of extractCinemaFormatCandidates(cinema)) {
     const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     cinema = cinema.replace(new RegExp(`[ \\t　]*(?:【|\\[)?${escaped}(?:】|\\])?[ \\t　]*$`, "i"), "").trim();
   }
+  if (ocr) cinema = cleanOcrCinemaCandidate(cinema);
   return cinema || null;
 }
 
@@ -367,12 +375,13 @@ function parseTicketType(value) {
 function isLikelyCinemaLine(line) {
   const value = String(line || "").trim();
   if (!value || /[：:]/.test(value)) return false;
-  return /(?:电影院|电影城|影城|影院)(?:[\p{Script=Han}A-Za-z0-9·・&（）()\-]{0,24})$/u.test(value);
+  return /(?:电影院|电影城|国际影城|影城|影院|剧院|影业|Cinema|劇場|劇院|シネマ|MOVIX|TOHO|109シネマズ)/iu.test(value);
 }
 
-function isLikelyAuditoriumLine(line) {
+function extractAuditoriumCandidate(line) {
   const value = String(line || "").trim();
-  return /^(?=.{2,30}$)(?=.*\d)(?:IMAX|杜比|激光|巨幕|中国巨幕|VIP|普通|[\p{Script=Han}A-Za-z]*)?[\s　]*\d+[\s　]*(?:号)?[\s　]*(?:厅|館)$/iu.test(value);
+  const match = value.match(/(?:IMAX|杜比|激光|巨幕|中国巨幕|VIP|普通)?[\p{Script=Han}A-Za-z]*\d+[\s　]*(?:号)?[\s　]*(?:厅|館)/iu);
+  return match?.[0]?.replace(/[\s　]+/gu, "") || null;
 }
 
 function isLikelyChineseSeatLine(line) {
@@ -390,7 +399,7 @@ function isLikelyTicketMetadataLine(line) {
   return !value
     || Boolean(matchTicketFieldLine(value))
     || isLikelyCinemaLine(value)
-    || isLikelyAuditoriumLine(value)
+    || Boolean(extractAuditoriumCandidate(value))
     || isLikelyChineseSeatLine(value)
     || Boolean(extractUnlabeledFormat(value))
     || /^\d{4}[\/\-年]\d{1,2}[\/\-月]\d{1,2}[日]?/u.test(value)
@@ -398,6 +407,49 @@ function isLikelyTicketMetadataLine(line) {
     || /^(?:合计|合計)?[¥￥]?[\d,]+(?:\.\d+)?\s*(?:円|元|JPY|CNY)?$/iu.test(value)
     || /^https?:\/\//iu.test(value)
     || /REDACTED/u.test(value);
+}
+
+function extractViewingLanguage(segment) {
+  const labeled = pickTicketField(extractTicketFields(segment), "language");
+  const tokenPattern = /(国语|普通话|粤语|英语|英文|日语|日文|韩语|韩文|原声|中文|外语)/u;
+  if (labeled) return labeled.match(tokenPattern)?.[1] || null;
+  for (const line of String(segment || "").split(/\r?\n/)) {
+    const match = line.match(/(?:^|[\s　/／·])(国语|普通话|粤语|英语|英文|日语|日文|韩语|韩文|原声|中文|外语)(?=$|[\s　/／·]|[23]D|\d+\s*(?:张|枚))/u);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+function extractTicketQuantity(segment, seats, ticketPrice) {
+  const labeled = pickTicketField(extractTicketFields(segment), "quantity");
+  const explicit = (labeled || String(segment || "")).match(/(?:^|\s)(\d+)\s*(?:张|枚)(?:\s|$|[／/])/u);
+  if (explicit) return Math.max(1, Number(explicit[1]) || 1);
+  if (Number(ticketPrice?.count) > 0) return Number(ticketPrice.count);
+  if (seats.length) return seats.length;
+  return null;
+}
+
+function scoreTitleCandidate(line, index, { ocr = false } = {}) {
+  let value = String(line || "").trim();
+  if (ocr) value = cleanOcrTitleCandidate(value);
+  if (value.length < 2 || isLikelyTicketMetadataLine(value)) return null;
+  if (isLikelyCinemaLine(value)) return null;
+  if (/^(?:国语|普通话|粤语|英语|英文|日语|日文|韩语|韩文|原声|中文|外语)(?:\s|[23]D|\d+张|\d+枚|$)/iu.test(value)) return null;
+
+  const cjkCount = (value.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu) || []).length;
+  const letterCount = (value.match(/[\p{L}\p{N}]/gu) || []).length;
+  let score = Math.min(letterCount, 30) + Math.min(cjkCount, 16) * 1.5;
+  if (/[：:《》「」『』・·]/u.test(value)) score += 2;
+  if (letterCount / Math.max(value.length, 1) < 0.45) score -= 8;
+  score -= index * 0.05; // 仅作同分项；位置不再决定 title。
+  return { value, score };
+}
+
+function selectTitleCandidate(lines, options) {
+  return lines
+    .map((line, index) => scoreTitleCandidate(line, index, options))
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score)[0]?.value || null;
 }
 
 // ─── 4. 单段邮件字段解析 ─────────────────────────────────────────────────────
@@ -412,7 +464,7 @@ function isLikelyTicketMetadataLine(line) {
  * @param {string} segment 已脱敏的单段邮件文本
  * @returns {ScreeningDraft | null}
  */
-export function parseScreeningSegment(segment) {
+export function parseScreeningSegment(segment, options = {}) {
   const fields = extractTicketFields(segment);
   const ticketLines = String(segment || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 
@@ -432,10 +484,10 @@ export function parseScreeningSegment(segment) {
   }
   // 只有完全不存在明确作品字段时才 fallback；所有票务元数据行均不得成为标题。
   if (!rawTitle) {
-    const candidate = ticketLines.find((line) => line.length >= 2 && !isLikelyTicketMetadataLine(line));
-    rawTitle = candidate || null;
+    rawTitle = selectTitleCandidate(ticketLines, options);
   }
   if (!rawTitle) return null;
+  if (options.ocr) rawTitle = cleanOcrTitleCandidate(rawTitle);
 
   const {
     movieTitle,
@@ -490,17 +542,17 @@ export function parseScreeningSegment(segment) {
     /([^\n]*(?:シネマ|シアター)[^\n]*(?:京都|大阪|東京|名古屋|福岡|仙台|札幌)[^\n]*)/i
   ];
   const unlabeledCinemaLine = ticketLines.find(isLikelyCinemaLine) || null;
-  let cinemaName = cleanCinemaField(rawCinemaField || unlabeledCinemaLine);
+  let cinemaName = cleanCinemaField(rawCinemaField || unlabeledCinemaLine, options);
   if (!cinemaName) {
     for (const pattern of cinemaPatterns) {
       const m = segment.match(pattern);
-      if (m) { cinemaName = m[1].trim(); break; }
+      if (m) { cinemaName = cleanCinemaField(m[1], options); break; }
     }
   }
 
   // 「上映劇場」在 109 シネマズ等票据中表示具体影厅，不能与「劇場名」混用。
   const auditorium = pickTicketField(fields, "auditorium")
-    || ticketLines.find(isLikelyAuditoriumLine)
+    || ticketLines.map(extractAuditoriumCandidate).find(Boolean)
     || null;
 
   // 城市：从影院名推断
@@ -562,6 +614,8 @@ export function parseScreeningSegment(segment) {
   // ── 票价（R1 红线变更：不再脱敏，正常解析保留）────────────────────────────
   const ticketPrice = parseTicketPrice(segment);
   const ticketType = parseTicketType(pickTicketField(fields, "ticket"));
+  const language = extractViewingLanguage(segment);
+  const ticketQuantity = extractTicketQuantity(segment, seats, ticketPrice);
 
   return {
     movieTitle,
@@ -581,7 +635,9 @@ export function parseScreeningSegment(segment) {
     seatCount: seats.length,
     ticketProvider,
     ticketPrice,
-    ticketType
+    ticketType,
+    language,
+    ticketQuantity
   };
 }
 
@@ -607,6 +663,8 @@ export function parseScreeningSegment(segment) {
  * @property {string|null}   ticketProvider   票务提供商标识
  * @property {{amount:number,currency:"JPY"|"CNY",count?:number}|null} ticketPrice 票价（R1 起不再脱敏）
  * @property {string|null}   ticketType       票种
+ * @property {string|null}   language         放映语言
+ * @property {number|null}   ticketQuantity   张数（可独立于票价存在）
  */
 
 /**
@@ -621,18 +679,22 @@ export function parseScreeningSegment(segment) {
  * 解析用户粘贴的票务文本（可含多封邮件）
  *
  * @param {string} rawInput 用户粘贴的原始文本（不得传入 AI）
+ * @param {{ocr?:boolean,layout?:object|null}} [options] OCR 来源可携带临时布局信息
  * @returns {TicketParseResult}
  */
-export function parseTicketText(rawInput) {
+export function parseTicketText(rawInput, options = {}) {
+  const parserInput = options.ocr
+    ? normalizeOcrTicketInput(rawInput, options.layout).text
+    : rawInput;
   // 第一步：按邮件边界拆分
-  const segments = splitEmails(rawInput);
+  const segments = splitEmails(parserInput);
 
   // 第二步：每段独立脱敏（脱敏发生在解析之前，不返回脱敏后文本）
   const redactedSegments = segments.map(redactSensitiveInfo);
 
   // 第三步：逐段解析
   const screenings = redactedSegments
-    .map(parseScreeningSegment)
+    .map((segment) => parseScreeningSegment(segment, options))
     .filter(Boolean);
 
   // 第四步：按放映开始时间升序排列（无时间的排在最后）
@@ -697,6 +759,8 @@ export function draftViewingEvent(draft, workId, recordId = null) {
       seat_count: draft.seatCount,
       ticket_provider: draft.ticketProvider,
       ticket_type: draft.ticketType || null,
+      language: draft.language || null,
+      ticket_count: draft.ticketQuantity || null,
       event_types: draft.eventTypes || [],
       bonus_note: null   // 特典描述格式过于自由，R1 只建字段，留给 R2 确认卡手填
     },
