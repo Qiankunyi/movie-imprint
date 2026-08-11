@@ -52,8 +52,9 @@ import {
   hasDegradedSource,
   looksCJK,
   searchLocalWorks,
-  summarizeSearchSources
-} from "./work-search.js?v=4";
+  summarizeSearchSources,
+  uniqueBangumiLinkCandidate
+} from "./work-search.js?v=5";
 import {
   buildWorkView,
   findWorkById,
@@ -371,6 +372,7 @@ const state = {
   stillCandidates: { workId: null, status: "idle", items: [], error: null },
   tmdbStillLink: { workId: null, status: "idle", query: "", candidates: [], error: null },
   posterEditor: { workId: null, status: "idle", tmdbChoices: [], error: null },
+  bangumiPosterLink: { workId: null, status: "idle", candidates: [], error: null },
   fabOpen: false,             // R5 补丁 4：右下角 FAB 二级菜单是否展开
   fabClosing: false,          // R5 补丁 6：正在播收起动画（播完才从 DOM 移除）
   sidebarSkipEntryAnimation: false, // 由手势提交时渲染的抽屉不播入场动画（见 finishSidebarGesture）
@@ -1144,7 +1146,6 @@ function workHeroMarkup(work) {
     ${hasPoster
       ? `<img class="work-hero-img" src="${escapeHtml(src)}" alt="" />`
       : `<div class="work-hero-fallback" aria-hidden="true">${escapeHtml((work.title || "?").trim().charAt(0) || "?")}</div>`}
-    <span class="work-hero-edit" aria-hidden="true">${icon("edit")}</span>
   </button>`;
 }
 
@@ -2755,16 +2756,37 @@ function posterEditorOverlay(work) {
   const bangumiId = externalRefId(work, "bangumi");
   const tmdbId = externalRefId(work, "tmdb");
   const current = workPosterRef(work);
+  const bangumiLink = state.bangumiPosterLink.workId === work.id
+    ? state.bangumiPosterLink
+    : { status: "idle", candidates: [], error: null };
 
-  const bangumiBlock = bangumiId
-    ? posterChoiceButton(work, {
+  let bangumiBlock = "";
+  if (bangumiId) {
+    bangumiBlock = posterChoiceButton(work, {
         source: "bangumi",
         value: bangumiId,
         label: "Bangumi",
         src: posterUrlFor({ poster: { source: "bangumi", subject_id: Number(bangumiId) } }),
         testId: "poster-choice-bangumi"
-      })
-    : `<p class="poster-source-empty">未关联 Bangumi 条目</p>`;
+      });
+  } else if (bangumiLink.status === "loading") {
+    bangumiBlock = `<div class="poster-link-state"><span class="poster-link-spinner" aria-hidden="true"></span><span>正在按当前片名查找 Bangumi…</span></div>`;
+  } else if (bangumiLink.status === "error") {
+    bangumiBlock = `<p class="poster-source-empty error">${escapeHtml(bangumiLink.error || "暂时无法查找 Bangumi")}</p><button type="button" class="text-action" data-action="search-bangumi-poster-link">重试</button>`;
+  } else if (bangumiLink.status === "ready" && bangumiLink.candidates.length) {
+    bangumiBlock = `<div class="poster-link-candidates">${bangumiLink.candidates.map((candidate, index) => {
+      const year = /^\d{4}/.test(candidate.releaseDate || "") ? String(candidate.releaseDate).slice(0, 4) : "年份未知";
+      return `<button type="button" class="poster-link-candidate" data-action="link-bangumi-poster" data-index="${index}" data-testid="poster-link-bangumi-${index}">
+        <img src="${escapeHtml(posterUrlFor({ poster: { source: "bangumi", subject_id: Number(candidate.subjectId) } }))}" alt="" loading="lazy" />
+        <span><b>${escapeHtml(candidate.title || "未命名作品")}</b><small>${escapeHtml([year, candidate.originalTitle].filter(Boolean).join(" · "))}</small></span>
+        <span class="poster-link-action">关联</span>
+      </button>`;
+    }).join("")}</div>`;
+  } else {
+    bangumiBlock = `<button type="button" class="poster-link-start" data-action="search-bangumi-poster-link" data-testid="search-bangumi-poster-link">
+      <span>${icon("match")}</span><span><b>关联 Bangumi</b><small>按当前片名查找；唯一同名同年结果会直接关联</small></span>
+    </button>`;
+  }
 
   let tmdbBlock = "";
   if (!tmdbId) {
@@ -2797,7 +2819,7 @@ function posterEditorOverlay(work) {
       <p class="settings-note">自动海报按作品出品地区选择；你也可以随时改用下面任一版本。手动选择会保持不变，不会被资料刷新覆盖。</p>
       <section class="poster-source-section" aria-labelledby="poster-bangumi-title">
         <div class="poster-source-heading"><h3 id="poster-bangumi-title">Bangumi</h3><span>${bangumiId ? "1 张" : "未关联"}</span></div>
-        <div class="poster-choice-grid single">${bangumiBlock}</div>
+        <div class="${bangumiId ? "poster-choice-grid single" : "poster-link-shell"}">${bangumiBlock}</div>
       </section>
       <section class="poster-source-section" aria-labelledby="poster-tmdb-title">
         <div class="poster-source-heading"><h3 id="poster-tmdb-title">TMDB</h3><span>${tmdbId ? "英语 · 中文 · 日语" : "未关联"}</span></div>
@@ -4642,6 +4664,69 @@ async function updateCurrentWork(mutate) {
   return updated;
 }
 
+async function linkBangumiPosterCandidate(candidate) {
+  const work = findWorkById(state.works, state.currentWorkId);
+  const subjectId = Number(candidate?.subjectId);
+  if (!work || !Number.isInteger(subjectId) || subjectId <= 0) return;
+
+  const duplicate = findWorkByExternalRef(state.works, "bangumi", subjectId);
+  if (duplicate && duplicate.id !== work.id) {
+    state.bangumiPosterLink = {
+      workId: work.id,
+      status: "error",
+      candidates: [],
+      error: `这个 Bangumi 条目已经关联《${duplicate.title || "另一部作品"}》`
+    };
+    render();
+    return;
+  }
+
+  const updated = await updateCurrentWork((current) => ({
+    ...current,
+    external_refs: upsertExternalRef(current.external_refs, {
+      source: "bangumi",
+      id: subjectId,
+      url: candidate.url
+    }),
+    identity_status: "matched",
+    primary_source: current.primary_source || "bangumi"
+  }));
+  state.bangumiPosterLink = { workId: work.id, status: "idle", candidates: [], error: null };
+  if (updated) await syncBangumiDirectorsForWork(updated);
+  render();
+  showToast("已追加 Bangumi 关联");
+}
+
+async function searchBangumiForPosterLink() {
+  const work = findWorkById(state.works, state.currentWorkId);
+  if (!work || externalRefId(work, "bangumi")) return;
+  state.bangumiPosterLink = { workId: work.id, status: "loading", candidates: [], error: null };
+  render();
+  try {
+    const result = await fetchSearchSource(`/api/bangumi/search?q=${encodeURIComponent(work.title || "")}`);
+    if (result.state !== "ok") throw new Error(result.error || "Bangumi 暂时不可用");
+    const exact = uniqueBangumiLinkCandidate(work, result.candidates);
+    if (exact) {
+      await linkBangumiPosterCandidate(exact);
+      return;
+    }
+    state.bangumiPosterLink = {
+      workId: work.id,
+      status: result.candidates.length ? "ready" : "error",
+      candidates: result.candidates.slice(0, 5),
+      error: result.candidates.length ? null : "没有找到可关联的 Bangumi 条目"
+    };
+  } catch (error) {
+    state.bangumiPosterLink = {
+      workId: work.id,
+      status: "error",
+      candidates: [],
+      error: String(error.message || error)
+    };
+  }
+  if (state.overlay === "poster" && state.currentWorkId === work.id) render();
+}
+
 async function loadPosterChoices({ force = false } = {}) {
   const work = findWorkById(state.works, state.currentWorkId);
   if (!work) return;
@@ -5719,9 +5804,16 @@ document.addEventListener("click", async (event) => {
     const work = findWorkById(state.works, state.currentWorkId);
     if (!work) return;
     state.posterEditor = { workId: work.id, status: "idle", tmdbChoices: [], error: null };
+    state.bangumiPosterLink = { workId: work.id, status: "idle", candidates: [], error: null };
     state.overlay = "poster";
     render();
     void loadPosterChoices();
+  } else if (action === "search-bangumi-poster-link") {
+    void searchBangumiForPosterLink();
+  } else if (action === "link-bangumi-poster") {
+    const linkState = state.bangumiPosterLink.workId === state.currentWorkId ? state.bangumiPosterLink : null;
+    const candidate = linkState?.candidates?.[Number(trigger.dataset.index)];
+    if (candidate) await linkBangumiPosterCandidate(candidate);
   } else if (action === "reload-poster-choices") {
     void loadPosterChoices({ force: true });
   } else if (action === "select-poster") {

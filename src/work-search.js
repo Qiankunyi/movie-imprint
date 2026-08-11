@@ -319,3 +319,26 @@ export function countBySource(candidates) {
   }
   return counts;
 }
+
+/**
+ * 海报编辑器的「关联 Bangumi」可以在结果毫无歧义时一步完成：标题或别名精确命中，
+ * 且已知年份不冲突。只要出现两个同样可信的结果就返回 null，交给用户亲自确认。
+ */
+export function uniqueBangumiLinkCandidate(work, candidates) {
+  if (!work) return null;
+  const workNames = new Set([work.title, work.original_title, ...(work.aliases || [])]
+    .filter(Boolean)
+    .map((value) => normalizeTitle(value).toLowerCase()));
+  const workYear = Number(work.release_year) || null;
+  const matches = (Array.isArray(candidates) ? candidates : []).filter((candidate) => {
+    const names = [candidate?.title, candidate?.originalTitle]
+      .filter(Boolean)
+      .map((value) => normalizeTitle(value).toLowerCase());
+    if (!names.some((name) => workNames.has(name))) return false;
+    const candidateYear = /^\d{4}/.test(candidate?.releaseDate || "")
+      ? Number(String(candidate.releaseDate).slice(0, 4))
+      : null;
+    return !workYear || !candidateYear || workYear === candidateYear;
+  });
+  return matches.length === 1 ? matches[0] : null;
+}

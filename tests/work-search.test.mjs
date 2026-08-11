@@ -13,7 +13,8 @@ import {
   countBySource,
   hasDegradedSource,
   looksCJK,
-  tmdbCandidateToUnified
+  tmdbCandidateToUnified,
+  uniqueBangumiLinkCandidate
 } from "../src/work-search.js";
 
 const bgm = (id, title, extra = {}) => ({ subjectId: id, title, type: "anime", releaseDate: null, summary: null, ...extra });
@@ -274,4 +275,22 @@ test("补丁8：筛选不改变原数组，也不影响跨源疑似标记", () =
   assert.equal(onlyTmdb.length, 1);
   // 疑似标记是筛选前就打好的，筛掉另一条之后标记仍然在——用户切回全部还能看到对照
   assert.ok(onlyTmdb[0].possibleDuplicateOf);
+});
+
+test("海报关联：唯一同名同年 Bangumi 结果可以一键关联", () => {
+  const work = { title: "蜘蛛侠3", original_title: "Spider-Man 3", aliases: ["蜘蛛侠 3"], release_year: 2007 };
+  const candidates = [
+    bgm(1, "蜘蛛侠3", { originalTitle: "Spider-Man 3", releaseDate: "2007-05-01" }),
+    bgm(2, "蜘蛛侠：英雄无归", { releaseDate: "2021-12-17" })
+  ];
+  assert.equal(uniqueBangumiLinkCandidate(work, candidates)?.subjectId, 1);
+});
+
+test("海报关联：同名候选有歧义或年份冲突时必须让用户确认", () => {
+  const work = { title: "某片", aliases: [], release_year: 2007 };
+  assert.equal(uniqueBangumiLinkCandidate(work, [
+    bgm(1, "某片", { releaseDate: "2007-01-01" }),
+    bgm(2, "某片", { releaseDate: "2007-05-01" })
+  ]), null, "两个同样可信的结果不能擅自选一个");
+  assert.equal(uniqueBangumiLinkCandidate(work, [bgm(3, "某片", { releaseDate: "2017-01-01" })]), null);
 });
