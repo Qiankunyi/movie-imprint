@@ -42,6 +42,13 @@ import {
   reviseRawText,
   sourceRevisionIds
 } from "./imprint-v2.js?v=1";
+import {
+  GEMINI_ANALYSIS_MODES,
+  GEMINI_FAST_MODEL,
+  GEMINI_QUALITY_MODEL,
+  isRichAnalysisInput,
+  splitAnalysisTextIntoUnits
+} from "./ai-model-policy.js?v=1";
 import { formatBadge, eventBadges } from "./format-badge.js";
 import {
   enterShelf as routeEnterShelf,
@@ -326,6 +333,8 @@ const state = {
   recordingPreference: null,
   aiPreference: null,
   aiProviders: { active: null, providers: [] },
+  aiModelMode: "auto",       // 只作用于下一次整理，不与服务商偏好混在一起持久化
+  pendingAiAnalysis: null,    // { recordId, openDraftAfter }，模型选择浮层关闭后立即清空
   draft: null,
   activeRecordId: null,
   editingCardId: null,
@@ -1772,8 +1781,19 @@ function analysisDraftMarkup(record) {
   const draft = record.activeAnalysisDraft;
   if (!draft) return "";
   const emotions = (draft.emotions || []).map((emotion) => `<span>${escapeHtml(emotion.label)}</span>`).join("");
+  const metadata = draft.analysis_metadata || {};
+  const providerLabel = state.aiProviders.providers.find((provider) => provider.id === metadata.provider)?.label || metadata.provider;
+  const modeLabel = metadata.resolved_model_mode === "quality"
+    ? "深度整理"
+    : metadata.resolved_model_mode === "fast"
+      ? "Lite 整理"
+      : "服务默认模型";
+  const modelSummary = metadata.model
+    ? `<p class="analysis-model-summary" data-testid="analysis-model-summary">本次实际使用：${escapeHtml(providerLabel || "AI")} · ${escapeHtml(metadata.model)} · ${modeLabel}</p>`
+    : "";
   return `<section class="analysis-draft ${draft.stale ? "stale" : ""}" data-testid="analysis-draft">
     <div class="section-heading"><div><small>AI 整理草稿 · 尚未进入正式记录</small><h2>${draft.stale ? "这份草稿基于较早版本" : "这次整理出的电影印记"}</h2></div></div>
+    ${modelSummary}
     ${draft.stale ? `<p class="stale-note">源内容已经更新。你可以保留这份历史草稿，也可以重新整理；正式记录不会被覆盖。</p>` : ""}
     ${draft.attitude?.suggested ? `<p class="draft-attitude">总体态度建议：<b>${escapeHtml(attitudeLabel(draft.attitude.suggested))}</b></p>` : ""}
     ${emotions ? `<div class="emotion-suggestions">${emotions}</div>` : ""}
@@ -2244,7 +2264,7 @@ function settingsOverlay() {
       </div>
       <h3 class="settings-section-title">整理服务</h3>
       <div class="provider-options" data-testid="ai-provider-options">
-        ${state.aiProviders.providers.map((provider) => `<button type="button" data-action="select-ai-provider" data-provider="${provider.id}" class="provider-option ${state.aiPreference?.provider === provider.id ? "selected" : ""}" ${provider.configured ? "" : "disabled"} aria-pressed="${state.aiPreference?.provider === provider.id}"><span><b>${escapeHtml(provider.label)}</b><small>${provider.configured ? escapeHtml(provider.model) : "尚未配置密钥"}</small></span>${state.aiPreference?.provider === provider.id ? "✓" : ""}</button>`).join("")}
+        ${state.aiProviders.providers.map((provider) => `<button type="button" data-action="select-ai-provider" data-provider="${provider.id}" class="provider-option ${state.aiPreference?.provider === provider.id ? "selected" : ""}" ${provider.configured ? "" : "disabled"} aria-pressed="${state.aiPreference?.provider === provider.id}"><span><b>${escapeHtml(provider.label)}</b><small>${provider.configured ? (provider.id === "gemini" ? "已配置 · 模型在生成前选择" : escapeHtml(provider.model)) : "尚未配置密钥"}</small></span>${state.aiPreference?.provider === provider.id ? "✓" : ""}</button>`).join("")}
       </div>
       <h3 class="settings-section-title">云端同步</h3>
       ${syncSettingsSection()}
@@ -2371,6 +2391,71 @@ function interviewSummaryOverlay(record) {
       <button type="button" class="text-action" data-action="edit-interview">修改回答</button>
     </section>
   </div>`;
+}
+
+function activeAiProviderInfo() {
+  return state.aiProviders.providers.find((provider) => provider.id === state.aiPreference?.provider) || null;
+}
+
+function analysisInputStats(record) {
+  const sources = analysisRequestSources(record);
+  const texts = [sources.free_reflection?.text, ...(sources.self_interview?.answers || []).map((answer) => answer?.text)]
+    .filter((text) => typeof text === "string" && text.trim());
+  return {
+    totalCharacters: texts.reduce((sum, text) => sum + text.length, 0),
+    sourceUnitCount: texts.reduce((sum, text) => sum + splitAnalysisTextIntoUnits(text).length, 0)
+  };
+}
+
+function aiModelOverlay(record) {
+  const provider = activeAiProviderInfo();
+  const stats = analysisInputStats(record);
+  const richInput = isRichAnalysisInput(stats);
+  const selectedMode = state.aiModelMode || "auto";
+  const autoModel = richInput ? GEMINI_QUALITY_MODEL : GEMINI_FAST_MODEL;
+  const autoReason = richInput
+    ? `本次约 ${stats.totalCharacters} 字、${stats.sourceUnitCount} 个片段，将使用 3.6 Flash 深度整理。`
+    : `本次约 ${stats.totalCharacters} 字、${stats.sourceUnitCount} 个片段，将使用 Lite 快速整理。`;
+  const modeOptions = provider?.id === "gemini"
+    ? `<div class="ai-model-options" role="radiogroup" aria-label="本次整理模型">
+        ${GEMINI_ANALYSIS_MODES.map((mode) => {
+          const selected = selectedMode === mode.id;
+          const detail = mode.id === "auto"
+            ? autoReason
+            : `${mode.description} 模型：${mode.model}`;
+          return `<button type="button" class="ai-model-option ${selected ? "selected" : ""}" data-action="select-ai-model-mode" data-mode="${mode.id}" role="radio" aria-checked="${selected}">
+            <span><b>${escapeHtml(mode.label)}${mode.id === "auto" ? " · 推荐" : ""}</b><small>${escapeHtml(detail)}</small></span><i aria-hidden="true">${selected ? "✓" : ""}</i>
+          </button>`;
+        }).join("")}
+      </div>`
+    : `<div class="ai-provider-run-summary"><b>${escapeHtml(provider?.label || "当前整理服务")}</b><p>这个服务暂不提供逐次模型切换，本次将使用已配置模型：${escapeHtml(provider?.model || "服务默认模型")}</p></div>`;
+  const resolvedLabel = selectedMode === "quality"
+    ? "使用 3.6 Flash 开始整理"
+    : selectedMode === "fast"
+      ? "使用 Lite 开始整理"
+      : `自动选择并开始整理${provider?.id === "gemini" ? `（${richInput ? "3.6 Flash" : "Lite"}）` : ""}`;
+
+  return `<div class="overlay" data-testid="ai-model-sheet">
+    <button class="overlay-backdrop" type="button" data-action="cancel-ai-model" aria-label="取消本次整理"></button>
+    <section class="bottom-sheet ai-model-sheet" role="dialog" aria-modal="true" aria-labelledby="ai-model-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">只影响这一次</span><h2 id="ai-model-title">选择本次整理方式</h2></div><button class="icon-button" type="button" data-action="cancel-ai-model" aria-label="关闭">${icon("close")}</button></div>
+      <p class="ai-model-intro">服务商仍由偏好设置决定；这里仅选择这次生成电影印记所用的模型。</p>
+      ${modeOptions}
+      <button type="button" class="sheet-done ai-model-confirm" data-action="confirm-ai-model">${escapeHtml(resolvedLabel)}</button>
+      <p class="ai-model-footnote">整理会在后台继续。你可以离开当前页面，原始感想和采访回答不会被改写。</p>
+      ${provider?.id === "gemini" && selectedMode === "auto" ? `<span class="visually-hidden" data-testid="auto-resolved-model">${autoModel}</span>` : ""}
+    </section>
+  </div>`;
+}
+
+function openAiModelChooser(recordId, { openDraftAfter = false } = {}) {
+  const record = state.records.find((item) => item.id === recordId);
+  if (!record || record.analysis_status === "running") return;
+  state.aiModelMode = "auto";
+  state.pendingAiAnalysis = { recordId, openDraftAfter };
+  state.overlay = "ai-model";
+  render();
 }
 
 function cardEditorOverlay(record) {
@@ -3569,6 +3654,8 @@ function render() {
       ? interviewAllOverlay(record)
     : state.overlay === "interview-summary" && record
       ? interviewSummaryOverlay(record)
+    : state.overlay === "ai-model" && record
+      ? aiModelOverlay(record)
     : state.overlay === "settings"
       ? settingsOverlay()
     : state.overlay === "sidebar"
@@ -3796,9 +3883,9 @@ async function finishCompose() {
   void requestWorkMatch(record.id);
 }
 
-async function runAiAnalysis(recordId) {
+async function runAiAnalysis(recordId, { modelMode = null } = {}) {
   const record = state.records.find((item) => item.id === recordId);
-  if (!record || record.analysis_status === "running") return;
+  if (!record || record.analysis_status === "running") return false;
   record.analysis_status = "running";
   record.cardSuggestionStatus = "running";
   record.analysis_error = null;
@@ -3808,7 +3895,12 @@ async function runAiAnalysis(recordId) {
     const response = await apiFetch("/api/ai/analyze", {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ provider: state.aiPreference?.provider, title: currentWork(record)?.title || record.title, sources: analysisRequestSources(record) })
+      body: JSON.stringify({
+        provider: state.aiPreference?.provider,
+        model_mode: modelMode,
+        title: currentWork(record)?.title || record.title,
+        sources: analysisRequestSources(record)
+      })
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.message || "整理暂时没有完成");
@@ -3834,6 +3926,7 @@ async function runAiAnalysis(recordId) {
     record.updatedAt = new Date().toISOString();
     await db.put("records", record);
     renderPreservingScroll();
+    return true;
   } catch (error) {
     record.analysis_status = "failed";
     record.cardSuggestionStatus = "failed";
@@ -3841,6 +3934,7 @@ async function runAiAnalysis(recordId) {
     await db.put("records", record);
     renderPreservingScroll();
     announce("原文已保存，整理可以稍后重试");
+    return false;
   }
 }
 
@@ -3861,7 +3955,7 @@ async function requestAiCards(recordId) {
   } else if (record?.self_interview?.status === "in_progress") {
     await updateRecord((item) => { item.self_interview = completeSelfInterview(item.self_interview); });
   }
-  return runAiAnalysis(recordId);
+  openAiModelChooser(recordId, { openDraftAfter: true });
 }
 
 async function runRecommendationAnalysis(recordId) {
@@ -6549,9 +6643,7 @@ document.addEventListener("click", async (event) => {
     render();
   } else if (action === "skip-interview") {
     await updateRecord((record) => { record.self_interview = skipSelfInterview(record.self_interview); });
-    state.overlay = null;
-    renderPreservingScroll();
-    await runAiAnalysis(currentRecord()?.id);
+    openAiModelChooser(currentRecord()?.id);
   } else if (action === "close-interview") {
     if (state.overlay === "self-interview") await persistInterviewAnswer("answered");
     state.overlay = null;
@@ -6593,9 +6685,7 @@ document.addEventListener("click", async (event) => {
     render();
   } else if (action === "generate-from-interview") {
     await updateRecord((record) => { record.self_interview = completeSelfInterview(record.self_interview); });
-    state.overlay = null;
-    renderPreservingScroll();
-    await runAiAnalysis(currentRecord()?.id);
+    openAiModelChooser(currentRecord()?.id);
   } else if (action === "open-record") {
     openRecord(trigger.dataset.recordId);
   } else if (action === "go-home") {
@@ -6620,10 +6710,28 @@ document.addEventListener("click", async (event) => {
   } else if (action === "rematch-work") {
     await requestWorkMatch(currentRecord()?.id, { force: true });
   } else if (action === "retry-local-analysis") {
-    await runAiAnalysis(currentRecord()?.id);
+    openAiModelChooser(currentRecord()?.id);
   } else if (action === "request-ai-cards") {
     await requestAiCards(currentRecord()?.id);
-    if (state.view === "detail" && currentRecord()?.activeAnalysisDraft) {
+  } else if (action === "select-ai-model-mode") {
+    if (GEMINI_ANALYSIS_MODES.some((mode) => mode.id === trigger.dataset.mode)) {
+      state.aiModelMode = trigger.dataset.mode;
+      render();
+    }
+  } else if (action === "cancel-ai-model") {
+    state.pendingAiAnalysis = null;
+    state.overlay = null;
+    renderPreservingScroll();
+  } else if (action === "confirm-ai-model") {
+    const pending = state.pendingAiAnalysis;
+    if (!pending) return;
+    const provider = activeAiProviderInfo();
+    const modelMode = provider?.id === "gemini" ? state.aiModelMode : null;
+    state.pendingAiAnalysis = null;
+    state.overlay = null;
+    renderPreservingScroll();
+    const completed = await runAiAnalysis(pending.recordId, { modelMode });
+    if (completed && pending.openDraftAfter && state.view === "detail" && currentRecord()?.activeAnalysisDraft) {
       state.overlay = "analysis-draft";
       render();
     }

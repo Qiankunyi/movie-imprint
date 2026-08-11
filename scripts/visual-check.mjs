@@ -90,6 +90,11 @@ async function openDetailFabAction(page, testId) {
   await page.getByTestId(testId).click();
 }
 
+async function confirmAutoAiModel(page) {
+  await page.getByTestId("ai-model-sheet").waitFor();
+  await page.getByRole("button", { name: /自动选择并开始整理/ }).click();
+}
+
 async function mockBangumi(page) {
   await page.route("**/public/assets/sidebar-stills/manifest.js*", async (route) => {
     await route.fulfill({
@@ -108,7 +113,17 @@ async function mockBangumi(page) {
       body: JSON.stringify({
         active: "gemini",
         providers: [
-          { id: "gemini", label: "Gemini", configured: true, model: "gemini-test" },
+          {
+            id: "gemini",
+            label: "Gemini",
+            configured: true,
+            model: "gemini-3.6-flash",
+            model_modes: [
+              { id: "auto", label: "自动选择" },
+              { id: "fast", label: "Lite 快速整理", model: "gemini-3.5-flash-lite" },
+              { id: "quality", label: "3.6 Flash 深度整理", model: "gemini-3.6-flash" }
+            ]
+          },
           { id: "openai", label: "ChatGPT / OpenAI", configured: false, model: "gpt-test" },
           { id: "anthropic", label: "Claude", configured: false, model: "claude-test" },
           { id: "deepseek", label: "DeepSeek", configured: false, model: "deepseek-test" },
@@ -153,7 +168,16 @@ async function mockBangumi(page) {
           memory_cards: [{ temporary_id: cardId, card_id: cardId, memory_cluster_id: "cluster_test", type: "被击中的瞬间", title: "最先留下来的片段", content: excerpt, why_it_matters: null, related_emotions: ["感动"], is_core: true, order: 0, evidence, confidence: 0.9, provenance: "ai_suggested", origin: "ai_generated", status: "draft", user_modified: false, revision_history: [], analysis_id: analysisId }],
           warnings: []
         },
-        metadata: { provider: body.provider || "gemini", model: "gemini-test", prompt_version: "test-v2.1", schema_version: "2.1", input_hash: "test", usage: {} }
+        metadata: {
+          provider: body.provider || "gemini",
+          model: body.model_mode === "fast" ? "gemini-3.5-flash-lite" : "gemini-3.6-flash",
+          requested_model_mode: body.model_mode || "provider_default",
+          resolved_model_mode: body.model_mode === "fast" ? "fast" : "quality",
+          prompt_version: "test-v2.1",
+          schema_version: "2.1",
+          input_hash: "test",
+          usage: {}
+        }
       })
     });
   });
@@ -493,8 +517,17 @@ async function runFunctionalPath(browser) {
   await page.getByTestId("finish-record").click();
   await page.getByTestId("interview-invite").waitFor();
   await page.getByRole("button", { name: "直接生成电影印记", exact: true }).click();
+  await page.getByTestId("ai-model-sheet").waitFor();
+  if (await page.getByTestId("auto-resolved-model").textContent() !== "gemini-3.5-flash-lite") {
+    throw new Error("短感想的自动模式没有预判为 Lite");
+  }
+  await page.getByRole("radio", { name: /3\.6 Flash 深度整理/ }).click();
+  await page.getByRole("button", { name: "使用 3.6 Flash 开始整理", exact: true }).click();
   await openDetailFabAction(page, "detail-ai-draft");
   await page.getByTestId("analysis-draft").waitFor();
+  if (!((await page.getByTestId("analysis-model-summary").textContent()) || "").includes("gemini-3.6-flash")) {
+    throw new Error("AI 草稿没有展示生产实际使用的模型");
+  }
   await page.getByRole("button", { name: "确认这次电影印记", exact: true }).click();
   await openDetailFabAction(page, "detail-work-match");
   await page.getByTestId("work-match-panel").waitFor();
@@ -703,6 +736,7 @@ async function runFunctionalPath(browser) {
   await page.locator("[data-testid^='work-impression-']").first().click();
   await page.getByTestId("detail").waitFor();
   await openDetailFabAction(page, "detail-ai-draft");
+  await confirmAutoAiModel(page);
   await page.getByTestId("analysis-draft").waitFor();
   await page.getByRole("button", { name: "把建议加入正式记录", exact: true }).waitFor();
   await page.getByRole("button", { name: "用这次结果替换正式卡片", exact: true }).waitFor();
@@ -746,6 +780,7 @@ async function runFunctionalPath(browser) {
   if ((await canonicalTitle.innerText()) !== "《哆啦A梦：大雄与云之王国》") throw new Error("成品标题没有采用 Bangumi 标准中文名");
   if ((await canonicalTitle.locator("a").getAttribute("href")) !== "https://bangumi.tv/subject/451") throw new Error("成品标题没有链接到正式 Bangumi 条目");
   await openDetailFabAction(page, "detail-ai-draft");
+  await confirmAutoAiModel(page);
   await page.getByTestId("analysis-draft").waitFor();
   await page.getByRole("button", { name: "删除建议", exact: true }).waitFor();
   await page.getByRole("button", { name: "删除建议", exact: true }).click();
@@ -958,6 +993,7 @@ async function captureVariants(browser) {
       await page.getByTestId("finish-record").click();
       await page.getByTestId("interview-invite").waitFor();
       await page.getByRole("button", { name: "直接生成电影印记", exact: true }).click();
+      await confirmAutoAiModel(page);
       await openDetailFabAction(page, "detail-ai-draft");
       await page.getByTestId("analysis-draft").waitFor();
       await page.screenshot({ path: join(output, "detail.png") });

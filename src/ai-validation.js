@@ -14,6 +14,10 @@ function matchingEvidence(evidence, triggers = []) {
   return evidence.filter((item) => triggers.some((trigger) => item.excerpt.includes(trigger)));
 }
 
+function cardMatchesTriggerGroup(card, triggers = []) {
+  return (card.evidence || []).some((item) => triggers.some((trigger) => item.excerpt.includes(trigger)));
+}
+
 export function buildValidationSources(testCase) {
   return {
     free_reflection: {
@@ -101,6 +105,23 @@ export function evaluateAiValidationCase(testCase, analysis) {
       `evidence_coverage_${index + 1}`,
       evidence.some((item) => (!rule.sourceType || item.source_type === rule.sourceType)
         && rule.triggers.some((trigger) => item.excerpt.includes(trigger))),
+      null
+    ));
+  }
+
+
+  for (const [index, rule] of (expectation.sameCardEvidenceGroups || []).entries()) {
+    checks.push(check(
+      `same_card_memory_cluster_${index + 1}`,
+      cards.some((card) => rule.groups.every((group) => cardMatchesTriggerGroup(card, group))),
+      null
+    ));
+  }
+
+  for (const [index, rule] of (expectation.separateCardEvidenceGroups || []).entries()) {
+    checks.push(check(
+      `separate_memory_clusters_${index + 1}`,
+      !cards.some((card) => rule.groups.every((group) => cardMatchesTriggerGroup(card, group))),
       null
     ));
   }

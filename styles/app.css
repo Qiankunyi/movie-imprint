@@ -6157,9 +6157,85 @@ svg {
 .interview-invite-sheet,
 .interview-question-sheet,
 .interview-all-sheet,
-.interview-summary-sheet {
+.interview-summary-sheet,
+.ai-model-sheet {
   max-height: min(88vh, 760px);
   overflow-y: auto;
+}
+
+.ai-model-intro,
+.ai-model-footnote,
+.analysis-model-summary,
+.ai-provider-run-summary p {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+  line-height: 1.55;
+}
+
+.ai-model-options {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.ai-model-option {
+  display: flex;
+  min-height: 76px;
+  padding: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  text-align: left;
+  border: 1px solid var(--outline-soft);
+  border-radius: 14px;
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.ai-model-option > span {
+  display: grid;
+  gap: 4px;
+}
+
+.ai-model-option small {
+  color: var(--ink-soft);
+  font: var(--type-meta);
+  line-height: 1.45;
+}
+
+.ai-model-option > i {
+  min-width: 18px;
+  color: var(--accent-strong);
+  font-style: normal;
+}
+
+.ai-model-option.selected {
+  border: 2px solid var(--accent);
+  background: var(--accent-container);
+}
+
+.ai-model-confirm {
+  width: 100%;
+  margin-top: var(--space-4);
+}
+
+.ai-model-footnote {
+  margin-bottom: 0;
+  text-align: center;
+}
+
+.ai-provider-run-summary {
+  padding: var(--space-3);
+  margin: var(--space-4) 0;
+  border: 1px solid var(--outline-soft);
+  border-radius: 14px;
+  background: var(--surface-high);
+}
+
+.analysis-model-summary {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface-high);
 }
 
 .interview-question-sheet textarea,

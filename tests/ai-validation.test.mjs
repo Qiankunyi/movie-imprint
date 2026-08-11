@@ -98,3 +98,40 @@ test("双源回归门要求保留自由感想独有记忆并聚类重复内容",
   assert.equal(failing.checks.find((item) => item.code === "cross_source_memory_clusters").passed, false);
   assert.equal(failing.checks.find((item) => item.code === "evidence_coverage_1").passed, false);
 });
+
+test("质量回归门同时检查应该合并与应该拆分的记忆", () => {
+  const testCase = {
+    id: "cluster_gate",
+    rawText: "早先的失去让我心疼。后来亲手接住让我泪目。我也想在现实里被爱。",
+    expect: {
+      attitudes: ["like"],
+      minCards: 2,
+      sameCardEvidenceGroups: [{ groups: [["早先的失去"], ["后来亲手接住"]] }],
+      separateCardEvidenceGroups: [{ groups: [["后来亲手接住"], ["现实里被爱"]] }]
+    }
+  };
+  const evidence = (excerpt) => ({
+    source_type: "free_reflection",
+    source_id: "cluster_gate_reflection",
+    source_revision_id: "cluster_gate_reflection_rev_1",
+    question_id: "",
+    excerpt
+  });
+  const analysis = {
+    source_revision_ids: ["cluster_gate_reflection_rev_1"],
+    attitude: { suggested: "like", evidence: [] },
+    emotions: [],
+    memory_cards: [
+      { evidence: [evidence("早先的失去让我心疼"), evidence("后来亲手接住让我泪目")] },
+      { evidence: [evidence("我也想在现实里被爱")] }
+    ],
+    warnings: []
+  };
+  assert.equal(evaluateAiValidationCase(testCase, analysis).passed, true);
+
+  const overMerged = structuredClone(analysis);
+  overMerged.memory_cards = [{ evidence: analysis.memory_cards.flatMap((card) => card.evidence) }];
+  const result = evaluateAiValidationCase(testCase, overMerged);
+  assert.equal(result.passed, false);
+  assert.equal(result.checks.find((item) => item.code === "separate_memory_clusters_1").passed, false);
+});

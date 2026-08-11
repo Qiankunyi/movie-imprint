@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AI_SYSTEM_PROMPT, validateAiAnalysis, validateAiRecommendation } from "../src/ai.js";
-import { listAiProviders, requestAiAnalysis, requestAiRecommendation } from "../src/ai-providers.js";
+import { buildMemorySourceUnits, listAiProviders, requestAiAnalysis, requestAiRecommendation } from "../src/ai-providers.js";
+import { GEMINI_FAST_MODEL, GEMINI_QUALITY_MODEL, normalizeAnalysisModelMode } from "../src/ai-model-policy.js";
 
 const rawText = "#测试电影\n我很喜欢雨中的车站，也被最后的告别感动。";
 const providerOutput = {
@@ -89,7 +90,71 @@ test("供应商列表只暴露配置状态而不暴露密钥", () => {
   const result = listAiProviders({ GEMINI_API_KEY: "secret", AI_PROVIDER: "gemini" });
   assert.equal(result.active, "gemini");
   assert.equal(result.providers.find((item) => item.id === "gemini").configured, true);
+  assert.equal(result.providers.find((item) => item.id === "gemini").model, GEMINI_QUALITY_MODEL);
   assert.equal(JSON.stringify(result).includes("secret"), false);
+  assert.deepEqual(
+    result.providers.find((item) => item.id === "gemini").model_modes.map((mode) => mode.id),
+    ["auto", "fast", "quality"]
+  );
+});
+
+test("Gemini 本次整理模型只接受白名单策略", () => {
+  assert.equal(normalizeAnalysisModelMode("AUTO"), "auto");
+  assert.equal(normalizeAnalysisModelMode(null), null);
+  assert.throws(() => normalizeAnalysisModelMode("gemini-arbitrary-model"), /unsupported_ai_model_mode/);
+});
+
+test("Gemini 自动模式按输入密度选择 Lite 或 3.6 Flash，并记录实际模型", async () => {
+  const requestedUrls = [];
+  const fetchImpl = async (url) => {
+    requestedUrls.push(url);
+    return new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(providerOutput) }] } }]
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const env = { GEMINI_API_KEY: "secret", GEMINI_MODEL: "gemini-operator-default", AI_MEMORY_COVERAGE_MODE: "off" };
+  const short = await requestAiAnalysis({
+    provider: "gemini",
+    modelMode: "auto",
+    title: "短感想",
+    rawText,
+    env,
+    fetchImpl
+  });
+  const rich = await requestAiAnalysis({
+    provider: "gemini",
+    modelMode: "auto",
+    title: "多碎片感想",
+    rawText: `${rawText}\n片段二。\n片段三。\n片段四。\n片段五。\n片段六。`,
+    env,
+    fetchImpl
+  });
+
+  assert.match(requestedUrls[0], new RegExp(`${GEMINI_FAST_MODEL}:generateContent$`));
+  assert.match(requestedUrls[1], new RegExp(`${GEMINI_QUALITY_MODEL}:generateContent$`));
+  assert.equal(short.metadata.requested_model_mode, "auto");
+  assert.equal(short.metadata.resolved_model_mode, "fast");
+  assert.equal(short.metadata.model, GEMINI_FAST_MODEL);
+  assert.equal(rich.metadata.resolved_model_mode, "quality");
+  assert.equal(rich.metadata.model, GEMINI_QUALITY_MODEL);
+});
+
+test("Gemini 手动深度模式覆盖运维默认模型，但旧请求仍兼容 GEMINI_MODEL", async () => {
+  const requestedUrls = [];
+  const fetchImpl = async (url) => {
+    requestedUrls.push(url);
+    return new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(providerOutput) }] } }]
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const env = { GEMINI_API_KEY: "secret", GEMINI_MODEL: "gemini-operator-default", AI_MEMORY_COVERAGE_MODE: "off" };
+  const selected = await requestAiAnalysis({ provider: "gemini", modelMode: "quality", title: "测试电影", rawText, env, fetchImpl });
+  const legacy = await requestAiAnalysis({ provider: "gemini", title: "测试电影", rawText, env, fetchImpl });
+
+  assert.match(requestedUrls[0], new RegExp(`${GEMINI_QUALITY_MODEL}:generateContent$`));
+  assert.match(requestedUrls[1], /gemini-operator-default:generateContent$/);
+  assert.equal(selected.metadata.model_selection_reason, "user_selected");
+  assert.equal(legacy.metadata.resolved_model_mode, "provider_default");
 });
 
 test("Gemini 适配器把结果转换为统一结构", async () => {
@@ -112,6 +177,130 @@ test("Gemini 适配器把结果转换为统一结构", async () => {
   assert.equal(request.options.headers["x-goog-api-key"], "secret");
   assert.equal(result.metadata.provider, "gemini");
   assert.equal(result.analysis.memory_cards.length, 1);
+});
+
+test("高密度碎片先逐条发现候选，再完整覆盖到最终卡片", async () => {
+  const denseText = [
+    "雨中站台的告别让我很感动。",
+    "蓝色自动贩卖机让我想起自己没打出的那通电话。",
+    "演员最后抬眼的表演让我一直记得。",
+    "他们随后走进了车站。",
+    "那段配乐让我第一次意识到自己真的舍不得。",
+    "片尾字幕是白色的。",
+    "我希望多年后还能记住那个拥抱。",
+    "普通的转场之后故事继续发展。"
+  ].join("\n");
+  const evidence = (excerpt, explanation = "原文明确支持这个候选") => ({
+    source_type: "free_reflection",
+    source_id: "legacy_free_reflection",
+    source_revision_id: "legacy_revision",
+    question_id: "",
+    excerpt,
+    basis: "explicit",
+    voice: "user",
+    claim_mode: "direct_feeling",
+    explanation,
+    confidence: 0.9
+  });
+  const candidateOutput = {
+    candidate_memories: [
+      { candidate_id: "candidate_1", summary: "雨中站台的告别", why_it_matters: "让我很感动", evidence: [evidence("雨中站台的告别让我很感动。")], confidence: 0.9 },
+      { candidate_id: "candidate_2", summary: "自动贩卖机带来的个人联想", why_it_matters: "想起没打出的电话", evidence: [evidence("蓝色自动贩卖机让我想起自己没打出的那通电话。")], confidence: 0.9 },
+      { candidate_id: "candidate_3", summary: "表演与配乐留下的舍不得", why_it_matters: "表演和配乐分别留下来", evidence: [evidence("演员最后抬眼的表演让我一直记得。"), evidence("那段配乐让我第一次意识到自己真的舍不得。")], confidence: 0.9 },
+      { candidate_id: "candidate_4", summary: "想长期记住那个拥抱", why_it_matters: "用户明确希望长期记住", evidence: [evidence("我希望多年后还能记住那个拥抱。")], confidence: 0.95 }
+    ],
+    unit_coverage: [
+      { unit_id: "unit_1", outcome: "candidate", candidate_ids: ["candidate_1"], reason: "" },
+      { unit_id: "unit_2", outcome: "candidate", candidate_ids: ["candidate_2"], reason: "" },
+      { unit_id: "unit_3", outcome: "candidate", candidate_ids: ["candidate_3"], reason: "" },
+      { unit_id: "unit_4", outcome: "discarded", candidate_ids: [], reason: "普通剧情复述" },
+      { unit_id: "unit_5", outcome: "candidate", candidate_ids: ["candidate_3"], reason: "" },
+      { unit_id: "unit_6", outcome: "discarded", candidate_ids: [], reason: "公共低信息细节" },
+      { unit_id: "unit_7", outcome: "candidate", candidate_ids: ["candidate_4"], reason: "" },
+      { unit_id: "unit_8", outcome: "discarded", candidate_ids: [], reason: "普通剧情复述" }
+    ],
+    warnings: []
+  };
+  const cards = candidateOutput.candidate_memories.map((candidate, index) => ({
+    temporary_id: `memory_${index + 1}`,
+    memory_cluster_id: `cluster_${index + 1}`,
+    candidate_ids: [candidate.candidate_id],
+    type: index === 2 ? "真人表演" : "场景",
+    title: candidate.summary,
+    content: candidate.summary,
+    why_it_matters: candidate.why_it_matters,
+    related_emotion_tag_ids: [],
+    is_core_suggestion: index === 3,
+    evidence: candidate.evidence,
+    confidence: candidate.confidence
+  }));
+  const finalOutput = {
+    attitude: { suggested: "like", alternative: "none", evidence: [evidence("我希望多年后还能记住那个拥抱。")], confidence: 0.9 },
+    emotions: [],
+    memory_cards: cards,
+    warnings: []
+  };
+  const clusterOutput = {
+    memory_clusters: candidateOutput.candidate_memories.map((candidate, index) => ({
+      memory_cluster_id: `cluster_${index + 1}`,
+      candidate_ids: [candidate.candidate_id],
+      organizing_summary: candidate.summary,
+      card_focus: candidate.summary,
+      why_it_matters: candidate.why_it_matters,
+      confidence: candidate.confidence
+    })),
+    discarded_candidates: [],
+    warnings: []
+  };
+  const qualityOutput = { memory_cards: cards, warnings: [] };
+  const requestBodies = [];
+  const fetchImpl = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    requestBodies.push(body);
+    const output = requestBodies.length === 2
+      ? candidateOutput
+      : requestBodies.length === 3
+        ? clusterOutput
+        : requestBodies.length === 4
+          ? finalOutput
+          : qualityOutput;
+    const responseText = requestBodies.length === 1 ? '{"candidate_memories":' : JSON.stringify(output);
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: responseText }] } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  const result = await requestAiAnalysis({
+    provider: "gemini",
+    title: "高密度碎片测试",
+    rawText: denseText,
+    env: { GEMINI_API_KEY: "secret", GEMINI_MODEL: "gemini-test", AI_MEMORY_COVERAGE_MODE: "always" },
+    fetchImpl
+  });
+  const discoveryInput = JSON.parse(requestBodies[0].contents[0].parts[0].text);
+  const clusterInput = JSON.parse(requestBodies[2].contents[0].parts[0].text);
+  const finalInput = JSON.parse(requestBodies[3].contents[0].parts[0].text);
+  const qualityInput = JSON.parse(requestBodies[4].contents[0].parts[0].text);
+  assert.equal(discoveryInput.source_units.length, 8);
+  assert.equal(clusterInput.candidate_memories.length, 4);
+  assert.equal(finalInput.approved_memory_clusters.length, 4);
+  assert.equal(qualityInput.draft_memory_cards.length, 4);
+  assert.equal(result.analysis.memory_cards.length, 4);
+  assert.equal(result.metadata.analysis_strategy, "candidate_cluster_coverage");
+  assert.equal(result.metadata.candidate_memory_count, 4);
+  assert.equal(result.metadata.memory_cluster_count, 4);
+  assert.equal(result.metadata.discovery_pass_count, 2);
+});
+
+test("源片段拆分完整保留长文本，不做静默截断", () => {
+  const text = `${"很长的一句感想。".repeat(100)}最后仍然保留。`;
+  const units = buildMemorySourceUnits({
+    free_reflection: { source_type: "free_reflection", source_id: "r", source_revision_id: "rev", text },
+    self_interview: { answers: [] }
+  });
+  assert.equal(units.map((unit) => unit.text).join(""), text);
+  assert.ok(units.length > 1);
+  assert.ok(units.every((unit) => unit.text.length <= 600));
 });
 
 test("双源请求发送完整自由感想并记录输入与 Evidence 来源诊断", async () => {
@@ -174,7 +363,7 @@ test("双源请求发送完整自由感想并记录输入与 Evidence 来源诊�
     provider: "gemini",
     title: "双源测试电影",
     sources: dualSources,
-    env: { GEMINI_API_KEY: "secret", GEMINI_MODEL: "gemini-test" },
+    env: { GEMINI_API_KEY: "secret", GEMINI_MODEL: "gemini-test", AI_MEMORY_COVERAGE_MODE: "off" },
     fetchImpl
   });
   const sentInput = JSON.parse(sentBody.contents[0].parts[0].text);

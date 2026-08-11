@@ -1,14 +1,14 @@
 import { CARD_TYPES, EMOTION_TAGS, createId } from "./domain.js";
 
 export const AI_SCHEMA_VERSION = "2.1";
-export const AI_PROMPT_VERSION = "movie-imprint-v2.1-p0.2";
+export const AI_PROMPT_VERSION = "movie-imprint-v2.1-p0.3";
 export const AI_ATTITUDES = ["dislike", "neutral", "like", "love", "mixed", "none"];
 export const AI_EVIDENCE_BASIS = ["explicit", "inferred"];
 export const AI_EVIDENCE_VOICES = ["user", "quoted_other", "source_metadata"];
 export const AI_CLAIM_MODES = ["direct_feeling", "observation", "interpretation", "reported_statement"];
 export const AI_RECOMMENDATION_FIELDS = ["audiences", "reasons", "cautions", "noReasons", "issueTypes", "positives"];
 
-const evidenceSchema = {
+export const AI_EVIDENCE_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -27,8 +27,8 @@ const evidenceSchema = {
 };
 
 const recommendationEvidenceSchema = {
-  ...evidenceSchema,
-  properties: Object.fromEntries(Object.entries(evidenceSchema.properties)
+  ...AI_EVIDENCE_SCHEMA,
+  properties: Object.fromEntries(Object.entries(AI_EVIDENCE_SCHEMA.properties)
     .filter(([key]) => !["source_type", "source_id", "source_revision_id", "question_id"].includes(key))),
   required: ["excerpt", "basis", "voice", "claim_mode", "explanation", "confidence"]
 };
@@ -43,7 +43,7 @@ export const AI_ANALYSIS_SCHEMA = {
       properties: {
         suggested: { type: "string", enum: AI_ATTITUDES },
         alternative: { type: "string", enum: AI_ATTITUDES },
-        evidence: { type: "array", maxItems: 3, items: evidenceSchema },
+        evidence: { type: "array", maxItems: 3, items: AI_EVIDENCE_SCHEMA },
         confidence: { type: "number", minimum: 0, maximum: 1 }
       },
       required: ["suggested", "alternative", "evidence", "confidence"]
@@ -56,7 +56,7 @@ export const AI_ANALYSIS_SCHEMA = {
         additionalProperties: false,
         properties: {
           label: { type: "string", enum: EMOTION_TAGS },
-          evidence: { type: "array", minItems: 1, maxItems: 2, items: evidenceSchema },
+          evidence: { type: "array", minItems: 1, maxItems: 2, items: AI_EVIDENCE_SCHEMA },
           confidence: { type: "number", minimum: 0, maximum: 1 }
         },
         required: ["label", "evidence", "confidence"]
@@ -76,7 +76,7 @@ export const AI_ANALYSIS_SCHEMA = {
           why_it_matters: { type: "string" },
           related_emotion_tag_ids: { type: "array", items: { type: "string", enum: EMOTION_TAGS } },
           is_core_suggestion: { type: "boolean" },
-          evidence: { type: "array", minItems: 1, maxItems: 3, items: evidenceSchema },
+          evidence: { type: "array", minItems: 1, maxItems: 3, items: AI_EVIDENCE_SCHEMA },
           confidence: { type: "number", minimum: 0, maximum: 1 }
         },
         required: ["temporary_id", "memory_cluster_id", "type", "title", "content", "why_it_matters", "related_emotion_tag_ids", "is_core_suggestion", "evidence", "confidence"]
@@ -85,6 +85,115 @@ export const AI_ANALYSIS_SCHEMA = {
     warnings: { type: "array", maxItems: 5, items: { type: "string" } }
   },
   required: ["attitude", "emotions", "memory_cards", "warnings"]
+};
+
+// 高密度输入先做一次“候选发现”。这不是给用户看的推理过程，只是一份可验证的
+// 覆盖清单：每个输入片段必须明确进入候选，或明确标记为未达到卡片化门槛。
+export const AI_MEMORY_DISCOVERY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    candidate_memories: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          candidate_id: { type: "string" },
+          summary: { type: "string" },
+          why_it_matters: { type: "string" },
+          evidence: { type: "array", minItems: 1, maxItems: 3, items: AI_EVIDENCE_SCHEMA },
+          confidence: { type: "number", minimum: 0, maximum: 1 }
+        },
+        required: ["candidate_id", "summary", "why_it_matters", "evidence", "confidence"]
+      }
+    },
+    unit_coverage: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          unit_id: { type: "string" },
+          outcome: { type: "string", enum: ["candidate", "discarded"] },
+          candidate_ids: { type: "array", items: { type: "string" } },
+          reason: { type: "string" }
+        },
+        required: ["unit_id", "outcome", "candidate_ids", "reason"]
+      }
+    },
+    warnings: { type: "array", maxItems: 5, items: { type: "string" } }
+  },
+  required: ["candidate_memories", "unit_coverage", "warnings"]
+};
+
+export const AI_MEMORY_CLUSTER_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    memory_clusters: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          memory_cluster_id: { type: "string" },
+          candidate_ids: { type: "array", minItems: 1, items: { type: "string" } },
+          organizing_summary: { type: "string" },
+          card_focus: { type: "string" },
+          why_it_matters: { type: "string" },
+          confidence: { type: "number", minimum: 0, maximum: 1 }
+        },
+        required: ["memory_cluster_id", "candidate_ids", "organizing_summary", "card_focus", "why_it_matters", "confidence"]
+      }
+    },
+    discarded_candidates: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          candidate_id: { type: "string" },
+          reason: { type: "string" }
+        },
+        required: ["candidate_id", "reason"]
+      }
+    },
+    warnings: { type: "array", maxItems: 5, items: { type: "string" } }
+  },
+  required: ["memory_clusters", "discarded_candidates", "warnings"]
+};
+
+const coveredCardSchema = {
+  ...AI_ANALYSIS_SCHEMA.properties.memory_cards.items,
+  properties: {
+    ...AI_ANALYSIS_SCHEMA.properties.memory_cards.items.properties,
+    candidate_ids: {
+      type: "array",
+      minItems: 1,
+      items: { type: "string" },
+      description: "这张卡片覆盖的候选记忆 ID；每个候选必须且只能出现在一张卡片中"
+    }
+  },
+  required: [...AI_ANALYSIS_SCHEMA.properties.memory_cards.items.required, "candidate_ids"]
+};
+
+export const AI_COVERED_ANALYSIS_SCHEMA = {
+  ...AI_ANALYSIS_SCHEMA,
+  properties: {
+    ...AI_ANALYSIS_SCHEMA.properties,
+    memory_cards: { type: "array", items: coveredCardSchema }
+  }
+};
+
+export const AI_CARD_QUALITY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    memory_cards: { type: "array", items: coveredCardSchema },
+    warnings: { type: "array", maxItems: 5, items: { type: "string" } }
+  },
+  required: ["memory_cards", "warnings"]
 };
 
 export const AI_RECOMMENDATION_SCHEMA = {
@@ -125,6 +234,58 @@ export const AI_SYSTEM_PROMPT = `你是私人电影记忆的保守整理器。�
 9. 原始资料没有总体态度时 suggested 使用 none；没有备选时 alternative 使用 none；why_it_matters 没有充分依据时使用空字符串。最多建议一张核心记忆，也可以不建议核心。
 10. 态度标准：dislike 是总体排斥；neutral 是没有明显喜欢或排斥；like 是总体愿意记作喜欢；love 是被强烈击中或想长期保留；mixed 只用于喜欢与不喜欢真正彼此交织、前四项都不能概括的情况。局部遗憾不会自动把 like／love 降为 mixed。
 11. 输出必须是符合所给 JSON Schema 的 JSON，不输出推理过程。`;
+
+export const AI_MEMORY_DISCOVERY_PROMPT = `你负责私人电影记忆整理的第一阶段：完整发现候选记忆。输入已经被无损拆成带 unit_id 的原始片段；片段文字仍然是用户原话。
+
+硬规则：
+1. 必须逐一检查每个 source_unit，并让每个 unit_id 在 unit_coverage 中恰好出现一次。不得因为片段很多就只处理最显眼的前几条，也不得只处理输入开头或结尾。
+2. 先发现“用户为什么会长期记住它”，再建立候选。至少有一种强信号才进入 candidate_memories：明确强调、明显情绪、解释为什么在意、个人联想／人生联想／现场记忆，或多个片段共同支持同一记忆。
+3. 普通剧情复述、公共元数据、低信息量感叹、用户未认同的他人观点可以 discarded。reason 只写简短的产品判断，不输出思维过程。
+4. 相同对象与相同原因、同一因果链、重复表达优先合并成一个候选；同一场景中的独立维度、方向不同的情绪、作品内容与个人联想应拆成独立候选。一个 unit 可以支持多个候选，多个 unit 也可以支持同一候选。
+5. 不为数量制造候选，也不因为候选已经很多就提高门槛。候选数量只由独立且达到门槛的真实内容决定。
+6. candidate_id 使用本批次内唯一的 candidate_1、candidate_2……；summary 像更有条理的用户本人，不写影评腔，不补充外部事实；why_it_matters 无原文依据时使用空字符串。
+7. 每个候选必须有逐字存在于原始片段的 Evidence。source_type/source_id/source_revision_id/question_id 从输入原样复制；excerpt 不得改写、跨行拼接或混入采访问题。
+8. unit_coverage 的 outcome=candidate 时 candidate_ids 至少一个且都真实存在；outcome=discarded 时 candidate_ids 必须为空数组并给出简短 reason。
+9. 只输出符合 JSON Schema 的结构化结果，不输出私有推理过程。`;
+
+export const AI_MEMORY_CLUSTER_PROMPT = `你负责私人电影记忆整理的第二阶段：把已经完整打捞出的候选内容进行全局规整。目标不是把每条碎片变成卡片，而是像把散落物品归位一样，让用户清楚看见自己的记忆脉络。
+
+硬规则：
+1. 必须全局比较每个 candidate。每个 candidate_id 必须且只能出现一次：要么进入一个 memory_cluster，要么进入 discarded_candidates 并给出明确的卡片化门槛理由；不得静默遗漏。
+2. 围绕“用户为什么记住它”聚类，而不是按人物名、关键词或卡片类型机械分组。同一对象与同一原因、同一情感弧、前后构成补偿／转变／因果链、同一段关系带来的多次表达，应合并成一条更完整清晰的记忆。
+3. 不要把仅仅同属某人物或同属搞笑片段、情怀片段的无关内容装进宽泛大杂烩。作品内容与个人联想、同场景中的表演与配乐、方向不同且各有依据的情绪，应保持独立。
+3a. 每个 cluster 必须能用一个主要记忆原因和一个清晰 card_focus 说完。仅仅都围绕同一主角，不足以合并：亲人离世带来的重看变化、爱情／友情上的牺牲、用户对自己现实关系的渴望、观影后的元反思，通常是不同记忆。若 organizing_summary 需要不断使用“以及／同时／不仅……也……”串联不同意义，应拆分。
+3b. 聚类后逐簇检查 Evidence 是否能在最多三条短引用内支持卡片的主要内容与 why_it_matters；若需要更多互不相干的引用才能解释，说明聚类过宽，应拆分。多条候选确实构成同一连续情感弧时不机械拆开。
+4. 本阶段正式执行卡片化门槛。普通剧情复述、公共元数据、孤立且低信息量的笑点或台词可以丢弃；但明确情绪、重看后的变化、价值判断、关系意义、个人经历／渴望／人生联想不得因为候选很多而被忽略。
+5. organizing_summary 说明整理后这一簇完整留下了什么；card_focus 说明应以什么角度写成一张卡。文字像更有条理的用户本人，不使用模板化影评腔，不补充外部事实。
+6. why_it_matters 只依据候选和原始资料；没有充分依据时用空字符串。memory_cluster_id 使用 cluster_1、cluster_2……且唯一。
+7. 数量没有上限也没有下限。既不能一条候选一张卡，也不能为了简洁只留最重要的几条。完整性、独立性和真实门槛同时优先。
+8. 只输出符合 JSON Schema 的结构化结果，不输出私有推理过程。`;
+
+export const AI_COVERED_SYSTEM_PROMPT = `${AI_SYSTEM_PROMPT}
+
+本次输入额外包含已经逐片段审计并完成全局规整的 approved_memory_clusters。请完成第三阶段：为每个已批准记忆簇选择类型并写成高质量卡片。
+
+覆盖规则：
+1. approved_memory_clusters 中每个 memory_cluster_id 必须生成且只生成一张 memory_card；memory_card 的 memory_cluster_id 与 candidate_ids 必须逐字复制对应簇，不得静默遗漏、拆开或重新聚类。
+2. 第二阶段已经完成合并／拆分与门槛判断。这里专注于把 organizing_summary、card_focus、原始 sources 和候选 Evidence 写成清晰、有条理、读完能产生新整理感的卡片，不要退回逐条摘抄。
+3. 不得因为记忆簇很多、输出较长或只想保留“最重要的几张”而再次淘汰。卡片没有产品级数量上限。
+4. temporary_id 在本次输出中必须唯一；memory_cluster_id 使用对应簇的原值。
+5. 卡片的事实、感受和意义必须由原始 sources 与候选 Evidence 支持。organizing_summary 只是整理线索，不是新的用户原话；Evidence 仍必须逐字引用原始 sources。
+6. 若 approved_memory_clusters 为空，memory_cards 必须为空；不得制造卡片。
+7. 输出前自检每个 cluster 是否恰好生成一张卡、candidate_ids 是否与簇完全一致，但不要输出检查过程。`;
+
+export const AI_CARD_QUALITY_PROMPT = `你是私人电影记忆卡片的最终质量编辑。输入包含用户原始 sources、已批准的 memory_clusters 和上一阶段 draft_memory_cards。你只负责校对并重写卡片，不新增、删除、合并或拆分记忆簇。
+
+质量规则：
+1. 每个 memory_cluster_id 必须且只能保留一张卡；candidate_ids、memory_cluster_id 必须与对应 approved cluster 完全一致。
+2. 逐句核对 title、content、why_it_matters。只保留原始 sources 或候选 Evidence 能支持的事实、感受、关系和意义；删除来源没有出现的地点、动作背景、剧情因果、角色经历与公共知识。不得用模型记忆补全电影。
+3. 卡片应让碎片变得清晰：围绕 cluster 的一个 card_focus，把相关片段整理成一条有开头、变化或落点的完整记忆；不要只是罗列引用，也不要写成概括整部电影的宽泛总结。
+4. 忠实保留用户的主观强度、口语个性、重看变化和不确定性。避免“崇高、宿命、命运、深层、极大、经典悲剧、自我救赎、情感内核”等原文没有的影评腔或价值升级。
+5. 作品内容与用户个人联想只能在 cluster 已明确把它们视为同一因果记忆时连接；不得擅自把多个独立感受写成一个宏大人生结论。
+6. why_it_matters 没有明确依据时使用空字符串；有依据时写用户为什么在意，不写作品客观价值判断。
+7. Evidence 逐字引用原始 sources，最多三条；最多一张卡 is_core_suggestion=true，也可以没有。
+8. 只输出符合 JSON Schema 的 memory_cards 与 warnings，不输出校对过程。`;
 
 export const AI_RECOMMENDATION_PROMPT = `你只负责在用户已经亲自作出推荐选择后，从本次原始感想中整理对应的条件。你绝不能评价、推断、改变或重新输出用户选择的“会／看对象／不会”。
 
@@ -369,6 +530,66 @@ export function parseProviderJson(value) {
   const trimmed = value.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   if (!trimmed) throw new Error("empty_ai_response");
   return JSON.parse(trimmed);
+}
+
+export function validateMemoryDiscovery(sourceInput, sourceUnits, value) {
+  const sourceContext = normalizeAnalysisSources(sourceInput);
+  const output = parseProviderJson(value);
+  if (!output || typeof output !== "object") throw new Error("invalid_memory_discovery");
+  if (!Array.isArray(sourceUnits) || !sourceUnits.length) throw new Error("invalid_memory_discovery_units");
+  if (!Array.isArray(output.candidate_memories)) throw new Error("invalid_memory_candidates");
+
+  const candidateIds = new Set();
+  const candidateMemories = output.candidate_memories.map((candidate, index) => {
+    assertString(candidate?.candidate_id, `candidate_${index}_id`, 100);
+    assertString(candidate?.summary, `candidate_${index}_summary`, 240);
+    assertString(candidate?.why_it_matters, `candidate_${index}_why`, 300);
+    const candidateId = candidate.candidate_id.trim();
+    if (!candidateId || candidateIds.has(candidateId)) throw new Error(`invalid_candidate_identity:${index}`);
+    if (!candidate.summary.trim()) throw new Error(`empty_memory_candidate:${index}`);
+    candidateIds.add(candidateId);
+    const confidence = Number(candidate.confidence);
+    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new Error(`invalid_candidate_confidence:${index}`);
+    const evidenceResult = validateEvidence(sourceContext, candidate.evidence, `candidate_${index}`);
+    if (!evidenceResult.kept.length) throw new Error(`candidate_without_evidence:${candidateId}`);
+    return {
+      candidate_id: candidateId,
+      summary: candidate.summary.trim(),
+      why_it_matters: candidate.why_it_matters.trim(),
+      evidence: evidenceResult.kept,
+      confidence
+    };
+  });
+
+  if (!Array.isArray(output.unit_coverage)) throw new Error("invalid_memory_unit_coverage");
+  const expectedUnitIds = new Set(sourceUnits.map((unit) => unit.unit_id));
+  const seenUnitIds = new Set();
+  const referencedCandidateIds = new Set();
+  const unitCoverage = output.unit_coverage.map((entry, index) => {
+    assertString(entry?.unit_id, `coverage_${index}_unit_id`, 100);
+    assertString(entry?.reason, `coverage_${index}_reason`, 240);
+    const unitId = entry.unit_id.trim();
+    if (!expectedUnitIds.has(unitId) || seenUnitIds.has(unitId)) throw new Error(`invalid_memory_unit_coverage:${unitId}`);
+    seenUnitIds.add(unitId);
+    if (!new Set(["candidate", "discarded"]).has(entry.outcome) || !Array.isArray(entry.candidate_ids)) {
+      throw new Error(`invalid_memory_unit_outcome:${unitId}`);
+    }
+    const ids = [...new Set(entry.candidate_ids.map((id) => String(id).trim()).filter(Boolean))];
+    if (ids.some((id) => !candidateIds.has(id))) throw new Error(`unknown_memory_candidate:${unitId}`);
+    if (entry.outcome === "candidate" && !ids.length) throw new Error(`unmapped_memory_unit:${unitId}`);
+    if (entry.outcome === "discarded" && (ids.length || !entry.reason.trim())) throw new Error(`invalid_discarded_memory_unit:${unitId}`);
+    for (const id of ids) referencedCandidateIds.add(id);
+    return { unit_id: unitId, outcome: entry.outcome, candidate_ids: ids, reason: entry.reason.trim() };
+  });
+  if (seenUnitIds.size !== expectedUnitIds.size) throw new Error("incomplete_memory_unit_coverage");
+  if ([...candidateIds].some((id) => !referencedCandidateIds.has(id))) throw new Error("unreferenced_memory_candidate");
+
+  if (!Array.isArray(output.warnings) || output.warnings.length > 5) throw new Error("invalid_memory_discovery_warnings");
+  const warnings = output.warnings.map((warning, index) => {
+    assertString(warning, `memory_discovery_warning_${index}`, 160);
+    return warning.trim();
+  }).filter(Boolean);
+  return { candidate_memories: candidateMemories, unit_coverage: unitCoverage, warnings };
 }
 
 export function validateAiAnalysis(sourceInput, value) {

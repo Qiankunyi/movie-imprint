@@ -33,7 +33,16 @@ for (const testCase of validationCases) {
       diagnostics: {
         source_character_counts: response.metadata.source_character_counts,
         evidence_source_counts: response.metadata.evidence_source_counts,
-        model_response_characters: response.metadata.model_response_characters
+        model_response_characters: response.metadata.model_response_characters,
+        analysis_strategy: response.metadata.analysis_strategy,
+        source_unit_count: response.metadata.source_unit_count,
+        candidate_memory_count: response.metadata.candidate_memory_count,
+        memory_cluster_count: response.metadata.memory_cluster_count,
+        discarded_candidate_count: response.metadata.discarded_candidate_count,
+        discovery_pass_count: response.metadata.discovery_pass_count,
+        cluster_repair_count: response.metadata.cluster_repair_count,
+        coverage_repair_count: response.metadata.coverage_repair_count,
+        quality_repair_count: response.metadata.quality_repair_count
       },
       error: null
     });

@@ -20,6 +20,7 @@ export async function onRequest(context) {
   try {
     const result = await requestAiAnalysis({
       provider: typeof body.provider === "string" ? body.provider : null,
+      modelMode: typeof body.model_mode === "string" ? body.model_mode : null,
       title: typeof body.title === "string" ? body.title.slice(0, 160) : "",
       rawText,
       sources,
@@ -35,7 +36,7 @@ export async function onRequest(context) {
       }
     });
   } catch (error) {
-    const invalid = ["invalid_json", "request_too_large", "invalid_ai_input", "unsupported_ai_provider"].includes(error.message);
+    const invalid = ["invalid_json", "request_too_large", "invalid_ai_input", "unsupported_ai_provider", "unsupported_ai_model_mode"].includes(error.message);
     const notConfigured = error.message === "ai_provider_not_configured";
     return jsonResponse(
       invalid ? 400 : notConfigured ? 503 : 502,
