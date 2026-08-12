@@ -19,7 +19,13 @@
  *
  * 3. 片单是用户自定义的主题列表（参考豆瓣），与系列正交：系列描述"作品客观上
  *    属于哪个系列"，片单描述"我出于自己的用途把哪些作品归在一起"。同一部作品
- *    可以属于多个片单，但只属于一个系列。
+ *    可以属于多个片单，**也可以属于多个系列**。
+ *
+ *    最后这半句是后来修正的。R5 最初写的是"只属于一个系列"，实现上靠
+ *    `assignWorkToSeries` 归入新系列前先移出旧系列来保证。用户反馈这不成立：
+ *    《蜘蛛侠：英雄归来》既在「蜘蛛侠（MCU）」里，也在「蜘蛛侠」这个大系列里。
+ *    大系列套子系列、重启、跨制片方共用角色——一部电影同时处在多条系列谱系里
+ *    是常态，不是例外。系列归属因此是多选，不是单选。
  */
 
 // ─── 上映日：地区 + 日期 ──────────────────────────────────────────────────────
@@ -361,8 +367,34 @@ export function orderedSeriesMembers(series, works) {
   return (series?.member_ids || []).map((id) => byId.get(id)).filter(Boolean);
 }
 
+/**
+ * 一部作品所属的**全部**系列，按系列标题排序，保证 UI 上的顺序稳定。
+ *
+ * 为什么是多个（用户反馈）：《蜘蛛侠：英雄归来》既属于「蜘蛛侠（MCU）」，也属于
+ * 「蜘蛛侠」这个大系列——同一部电影同时处在若干个真实存在的系列谱系里是常态，
+ * 重启、跨制片方、大系列套子系列都会这样。原来的实现把它当单选题：
+ * `assignWorkToSeries` 每次归入前先把作品从旧系列里移出去，于是"加入第二个系列"
+ * 实际表现为"换了一个系列"。
+ *
+ * 数据结构本来就支持多归属（成员关系存在 series.member_ids 上，作品身上没有
+ * series_id 字段），限制只存在于查询与写入这两处代码里。
+ *
+ * @param {object[]} seriesList
+ * @param {string} workId
+ * @returns {object[]}
+ */
+export function findAllSeriesForWork(seriesList, workId) {
+  return (Array.isArray(seriesList) ? seriesList : [])
+    .filter((series) => (series.member_ids || []).includes(workId))
+    .sort((a, b) => String(a.title || "").localeCompare(String(b.title || ""), "zh-CN"));
+}
+
+/**
+ * 兼容旧调用：返回所属系列中的第一个。
+ * @deprecated 一部作品可以属于多个系列，新代码一律用 findAllSeriesForWork。
+ */
 export function findSeriesForWork(seriesList, workId) {
-  return (Array.isArray(seriesList) ? seriesList : []).find((series) => (series.member_ids || []).includes(workId)) || null;
+  return findAllSeriesForWork(seriesList, workId)[0] || null;
 }
 
 // ─── 片单 ─────────────────────────────────────────────────────────────────────

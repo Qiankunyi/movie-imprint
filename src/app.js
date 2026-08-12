@@ -108,7 +108,7 @@ import {
   moveCollectionEntry,
   updateCollectionEntryReason,
   createSeries,
-  findSeriesForWork,
+  findAllSeriesForWork,
   moveWorkInSeries,
   normalizeReleaseDates,
   orderedSeriesMembers,
@@ -126,7 +126,7 @@ import {
   setSeriesRelation,
   updateSeriesMember,
   taglineFromSummary
-} from "./library.js?v=4";
+} from "./library.js?v=5";
 import {
   captureTransition,
   toggleEventType,
@@ -466,6 +466,9 @@ let sceneTitleMatchTimer = null;
 const icons = {
   back: '<path d="m15 5-7 7 7 7"/>',
   close: '<path d="m7 7 10 10M17 7 7 17"/>',
+  // 多选态的勾。系列归入是多选（一部片可以同时在若干个系列里），需要一个
+  // 和单选高亮不同的、明确的"已选中"记号。
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.3"/><path d="m15.2 15.2 4.4 4.4"/>',
   ticket: '<path d="M4 7.5A2.5 2.5 0 0 0 6.5 10 2.5 2.5 0 0 0 4 12.5V17h16v-4.5a2.5 2.5 0 0 0 0-5V3H4z"/><path d="M13 5.5v1M13 9.5v1M13 13.5v1"/>',
@@ -1256,16 +1259,23 @@ function taglineRow(work) {
 // 带边框内边距的 chip，两者文字起点自然差了一截。现在两行用同一个网格
 // （`.work-relation-row` 固定的标签列 + 值列），值也统一成同一种 chip，视觉上严格对齐。
 
-/** R5：所属系列 + 系列内位置。点进去是系列页。 */
+/**
+ * R5：所属系列 + 系列内位置。点进去是系列页。
+ *
+ * 一部作品可以同时属于多个系列，所以这里全部列出，每个各自带自己的位次——
+ * 《蜘蛛侠：英雄归来》在「蜘蛛侠（MCU）」里是第 2 部，在「蜘蛛侠」大系列里
+ * 可能是第 6 部，合并成一个数字是错的。
+ */
 function seriesRow(work) {
-  const series = findSeriesForWork(state.series, work.id);
-  const details = series ? seriesMemberDetails(series, work.id) : null;
-  const value = series
-    ? `<span class="collection-chip" data-testid="current-series">
-        ${escapeHtml(series.title)}${details?.relation === "crossover"
-          ? `<span class="work-relation-index">关联作品</span>`
-          : details?.seriesOrder ? `<span class="work-relation-index">第 ${details.seriesOrder} 部</span>` : ""}
-      </span>`
+  const seriesList = findAllSeriesForWork(state.series, work.id);
+  const value = seriesList.length
+    ? seriesList.map((series) => {
+      const details = seriesMemberDetails(series, work.id);
+      const position = details?.relation === "crossover"
+        ? `<span class="work-relation-index">关联作品</span>`
+        : details?.seriesOrder ? `<span class="work-relation-index">第 ${details.seriesOrder} 部</span>` : "";
+      return `<span class="collection-chip" data-testid="current-series">${escapeHtml(series.title)}${position}</span>`;
+    }).join("")
     : `<span class="archive-empty-value" aria-hidden="true">—</span>`;
   return `<button type="button" class="work-relation-row archive-pressable" data-action="edit-series" data-testid="edit-series" aria-label="系列信息">
     <span class="work-relation-label">系列</span>
@@ -2225,7 +2235,9 @@ function deleteWorkOverlay(work) {
     impact.collections.length ? `从 ${impact.collections.length} 个片单中移除` : null,
     impact.reasons.length ? `${impact.reasons.length} 条加入理由` : null,
     impact.publications.length ? `${impact.publications.length} 条外部发表引用` : null,
-    impact.series ? `退出系列《${impact.series.title}》` : null
+    impact.seriesList.length
+      ? `退出 ${impact.seriesList.length} 个系列（${impact.seriesList.map((series) => `《${series.title}》`).join("、")}）`
+      : null
   ].filter(Boolean);
 
   return `<div class="overlay" data-testid="delete-work">
@@ -3102,12 +3114,26 @@ function taglineEditorOverlay(work) {
  * 关系（前作/续作/外传…）在系列页上连线，不在这里，避免这个面板变成大杂烩。
  */
 function seriesEditorOverlay(work) {
-  const current = findSeriesForWork(state.series, work.id);
-  const options = state.series.map((series) => {
+  // 多选：一部作品可以同时属于若干个系列（「蜘蛛侠（MCU）」+「蜘蛛侠」大系列）。
+  const joined = findAllSeriesForWork(state.series, work.id);
+  const joinedIds = new Set(joined.map((series) => series.id));
+
+  const rows = state.series.map((series) => {
     const counts = seriesMemberCounts(series);
-    return `<button type="button" class="series-option ${current?.id === series.id ? "selected" : ""}" data-action="assign-series" data-series-id="${escapeHtml(series.id)}" data-testid="assign-series-${escapeHtml(series.id)}">
-      <span class="series-option-title">${escapeHtml(series.title)}</span>
-      <span class="series-option-count">${counts.core} 部主系列${counts.crossover ? ` · ${counts.crossover} 部关联` : ""}</span>
+    const selected = joinedIds.has(series.id);
+    const details = selected ? seriesMemberDetails(series, work.id) : null;
+    const position = details?.relation === "crossover"
+      ? "关联作品"
+      : details?.seriesOrder ? `第 ${details.seriesOrder} 部` : "";
+    return `<button type="button" class="series-option ${selected ? "selected" : ""}"
+      role="checkbox" aria-checked="${selected}"
+      data-action="toggle-series" data-series-id="${escapeHtml(series.id)}"
+      data-testid="assign-series-${escapeHtml(series.id)}">
+      <span class="series-option-check" aria-hidden="true">${selected ? icon("check") : ""}</span>
+      <span class="series-option-body">
+        <span class="series-option-title">${escapeHtml(series.title)}${position ? `<span class="series-option-position">${position}</span>` : ""}</span>
+        <span class="series-option-count">${counts.core} 部主系列${counts.crossover ? ` · ${counts.crossover} 部关联` : ""}</span>
+      </span>
     </button>`;
   }).join("");
 
@@ -3116,14 +3142,25 @@ function seriesEditorOverlay(work) {
     <section class="bottom-sheet series-editor" role="dialog" aria-modal="true" aria-labelledby="series-editor-title">
       <div class="sheet-handle" aria-hidden="true"></div>
       <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="series-editor-title">归入系列</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
-      ${current ? `<div class="series-current-actions">
-        <button type="button" class="text-action" data-action="open-series" data-series-id="${escapeHtml(current.id)}" data-testid="open-series">查看系列档案</button>
-        <button type="button" class="text-action danger" data-action="leave-series" data-testid="leave-series">移出《${escapeHtml(current.title)}》</button>
+      <p class="settings-note">可以同时归入多个系列——《蜘蛛侠：英雄归来》既属于「蜘蛛侠（MCU）」，也属于「蜘蛛侠」这个大系列。再点一次可以取消。</p>
+
+      ${joined.length ? `<div class="series-joined" data-testid="series-joined">
+        <h3 class="sheet-section-title">已归入 ${joined.length} 个系列</h3>
+        <div class="series-joined-list">${joined.map((series) => `<span class="collection-chip">
+          ${escapeHtml(series.title)}
+          <button type="button" class="chip-link" data-action="open-series" data-series-id="${escapeHtml(series.id)}" data-testid="open-series">查看</button>
+        </span>`).join("")}</div>
       </div>` : ""}
-      <div class="series-options">${options || `<p class="work-section-empty">还没有任何系列</p>`}</div>
-      <form id="series-form">
-        <label><span>新建系列</span><input type="text" name="title" maxlength="60" placeholder="例如：蜘蛛侠" data-testid="series-title-input" /></label>
-        <button class="sheet-done" type="submit">新建并归入</button>
+
+      <div class="series-pick">
+        <h3 class="sheet-section-title">全部系列</h3>
+        <div class="series-options">${rows || `<p class="work-section-empty">还没有任何系列，在下面新建一个</p>`}</div>
+      </div>
+
+      <form id="series-form" class="series-create-form">
+        <h3 class="sheet-section-title">新建系列</h3>
+        <label><span>系列名称</span><input type="text" name="title" maxlength="60" placeholder="例如：蜘蛛侠" data-testid="series-title-input" required /></label>
+        <button class="sheet-done" type="submit">新建</button>
       </form>
     </section>
   </div>`;
@@ -3431,13 +3468,13 @@ function entryMenuOverlay(collection) {
 function createCollectionOverlay() {
   return `<div class="overlay" data-testid="create-collection">
     <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
-    <section class="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="create-collection-title">
+    <section class="bottom-sheet collection-create-sheet" role="dialog" aria-modal="true" aria-labelledby="create-collection-title">
       <div class="sheet-handle" aria-hidden="true"></div>
       <div class="sheet-title-row"><div><span class="sheet-kicker">候场片单</span><h2 id="create-collection-title">新建片单</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
       <form id="collection-create-form">
         <label><span>标题</span><input type="text" name="title" maxlength="60" placeholder="例如：Michael Keaton 补片" data-testid="new-collection-input" required /></label>
         <label><span>描述（可选）</span><input type="text" name="description" maxlength="120" placeholder="例如：重看《英雄归来》之后想补的" data-testid="new-collection-description" /></label>
-        <button class="sheet-done" type="submit">创建</button>
+        <button class="sheet-done" type="submit">新建</button>
       </form>
     </section>
   </div>`;
@@ -5390,7 +5427,12 @@ function workDeletionImpact(work) {
     collectionEntries(collection).filter((entry) => ids.has(entry.work_id) && entry.reason).map((entry) => entry.reason)
   );
   const publications = state.currentWorkPublications.filter((item) => ids.has(item.work_id));
-  return { records, events, collections, reasons, publications, series: findSeriesForWork(state.series, work.id) };
+  // seriesList 是数组：一部作品可以同时属于多个系列，删除时必须全部退出，
+  // 只处理第一个会把它永远留在其余系列的 member_ids 里，变成指向已删作品的死引用。
+  const seriesList = state.series.filter((series) =>
+    (series.member_ids || []).some((memberId) => ids.has(memberId))
+  );
+  return { records, events, collections, reasons, publications, seriesList };
 }
 
 /**
@@ -5420,8 +5462,8 @@ async function performWorkDeletion() {
     await persistCollection(next);
   }
 
-  if (impact.series) {
-    let next = impact.series;
+  for (const series of impact.seriesList) {
+    let next = series;
     for (const id of ids) next = removeWorkFromSeries(next, id);
     await persistSeries(next);
   }
@@ -5816,26 +5858,32 @@ async function persistCollection(collection) {
  * 归入系列。一部作品只能属于一个系列，所以先从原系列移出再加入新系列——
  * 否则同一部作品会同时出现在两个系列的成员表里，顺序与关系都会失去意义。
  */
-async function assignWorkToSeries(seriesId) {
+/**
+ * 归入 / 移出一个系列。**不再动其他系列。**
+ *
+ * 旧实现（用户反馈的 bug）：归入新系列前会先 removeWorkFromSeries(previous)，
+ * 于是《蜘蛛侠：英雄归来》加进「蜘蛛侠」大系列的那一刻，就被踢出了「蜘蛛侠（MCU）」——
+ * 看起来像"换系列"，用户想要的是"两个都属于"。系列归属是多选题。
+ *
+ * 浮层保持打开，这样可以连续勾好几个，和片单那边的 toggleWorkInCollection 一致。
+ */
+async function toggleWorkInSeries(seriesId) {
   const workId = state.currentWorkId;
   const target = state.series.find((item) => item.id === seriesId);
   if (!workId || !target) return;
-  const previous = findSeriesForWork(state.series, workId);
-  if (previous && previous.id !== target.id) await persistSeries(removeWorkFromSeries(previous, workId));
-  await persistSeries(addWorkToSeries(target, workId));
-  state.overlay = null;
+  const isIn = (target.member_ids || []).includes(workId);
+  await persistSeries(isIn ? removeWorkFromSeries(target, workId) : addWorkToSeries(target, workId));
   renderPreservingScroll();
-  announce(`已归入《${target.title}》`);
+  announce(isIn ? `已移出《${target.title}》` : `已归入《${target.title}》`);
 }
 
-async function leaveCurrentSeries() {
+async function leaveSeries(seriesId) {
   const workId = state.currentWorkId;
-  const previous = workId ? findSeriesForWork(state.series, workId) : null;
-  if (!previous) return;
-  await persistSeries(removeWorkFromSeries(previous, workId));
-  state.overlay = null;
+  const series = state.series.find((item) => item.id === seriesId);
+  if (!workId || !series) return;
+  await persistSeries(removeWorkFromSeries(series, workId));
   renderPreservingScroll();
-  announce(`已移出《${previous.title}》`);
+  announce(`已移出《${series.title}》`);
 }
 
 async function moveSeriesMember(workId, direction) {
@@ -6194,10 +6242,10 @@ document.addEventListener("click", async (event) => {
   } else if (action === "edit-series") {
     state.overlay = "series";
     render();
-  } else if (action === "assign-series") {
-    await assignWorkToSeries(trigger.dataset.seriesId);
+  } else if (action === "toggle-series") {
+    await toggleWorkInSeries(trigger.dataset.seriesId);
   } else if (action === "leave-series") {
-    await leaveCurrentSeries();
+    await leaveSeries(trigger.dataset.seriesId);
   } else if (action === "open-series") {
     openSeries(trigger.dataset.seriesId);
   } else if (action === "close-series") {
@@ -7589,7 +7637,14 @@ document.addEventListener("submit", async (event) => {
     const existing = state.series.find((item) => item.title === title);
     const series = existing || createSeries({ title });
     if (!existing) await persistSeries(series);
-    await assignWorkToSeries(series.id);
+    // 新建的系列直接归入；如果这个同名系列已经归入过了，toggle 会把它取消——
+    // 那不是用户点「新建」时想要的，所以这里只在还没归入时才动。
+    if (!(series.member_ids || []).includes(state.currentWorkId)) {
+      await toggleWorkInSeries(series.id);
+    }
+    // 浮层保持打开，方便接着勾别的系列或再建一个
+    event.target.reset();
+    renderPreservingScroll();
     return;
   }
 

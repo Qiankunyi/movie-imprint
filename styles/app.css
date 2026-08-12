@@ -5075,16 +5075,52 @@ svg {
   width: 100%;
 }
 
+/* 系列归属是**多选**（一部片可以同时在「蜘蛛侠（MCU）」和「蜘蛛侠」大系列里），
+   所以每一行左侧留一个固定的勾选位。用留位而不是"选中才出现图标"，是为了让
+   选中与未选中两种状态下文字起点在同一条竖线上，列表不会因为勾的出现而错位。 */
 .series-option {
-  display: flex;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
   gap: var(--space-3);
   align-items: center;
-  justify-content: space-between;
   padding: var(--space-3);
   text-align: left;
   border: 1.5px solid var(--outline-soft);
   border-radius: var(--radius-card);
   background: var(--surface);
+}
+
+.series-option-check {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1.5px solid var(--outline-soft);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.series-option-check svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: var(--on-accent);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.series-option.selected .series-option-check {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.series-option-body {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
 }
 
 .series-option.selected {
@@ -5093,6 +5129,10 @@ svg {
 }
 
 .series-option-title {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
   color: var(--ink);
   font: var(--type-label);
 }
@@ -5101,10 +5141,72 @@ svg {
   color: var(--accent-strong);
 }
 
+/* 该作品在这个系列里的位次。每个系列各算各的——同一部片在子系列里是第 2 部、
+   在大系列里可能是第 6 部，所以它必须跟着系列名走，不能提到行外面去。 */
+.series-option-position {
+  flex: 0 0 auto;
+  padding: 1px var(--space-2);
+  border-radius: 999px;
+  background: var(--surface-sunken, rgba(0, 0, 0, .05));
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
 .series-option-count {
   flex: 0 0 auto;
   color: var(--ink-soft);
   font: var(--type-meta);
+}
+
+/* 弹窗内的分区标题。系列弹窗现在分「已归入 / 全部系列 / 新建系列」三块，
+   沿用上映日期弹窗那套"说明文字 + 分区"的结构，不另造视觉语言。 */
+.sheet-section-title {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-soft);
+  font: var(--type-meta);
+}
+
+.series-joined {
+  margin-bottom: var(--space-4);
+}
+
+.series-joined-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.series-joined-list .collection-chip {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.chip-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  font: var(--type-meta);
+  text-decoration: underline;
+}
+
+.series-pick {
+  margin-bottom: var(--space-4);
+}
+
+/* 「新建」按钮右下角对齐，与上映日期弹窗的「添加」一致。
+   原来它靠左，和同类弹窗的主操作位置不统一。 */
+.series-create-form,
+.collection-create-sheet form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.series-editor .sheet-done,
+.collection-create-sheet .sheet-done {
+  display: block;
+  margin: var(--space-4) 0 0 auto;
 }
 
 .text-action.danger {
