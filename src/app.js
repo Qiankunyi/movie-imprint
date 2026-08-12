@@ -3200,10 +3200,20 @@ function seriesMemberEditorOverlay(series) {
 /** R5：片单归属编辑。多选——一部作品可以同时属于多个片单。 */
 function collectionsEditorOverlay(work) {
   const mine = new Set(collectionsForWork(state.collections, work.id).map((item) => item.id));
+  // 片单和系列一样是多选，所以共用 .series-option 那套结构：
+  // 左侧固定勾选位 + 右侧 .series-option-body。
+  // 这里**必须**带上 check / body 两层——.series-option 是两列网格，
+  // 少一层的话标题会掉进 22px 宽的勾选列里，被挤成一列竖排的字。
   const options = state.collections.map((collection) => `<div class="series-option-row">
-    <button type="button" class="series-option ${mine.has(collection.id) ? "selected" : ""}" data-action="toggle-collection" data-collection-id="${escapeHtml(collection.id)}" data-testid="toggle-collection-${escapeHtml(collection.id)}">
-      <span class="series-option-title">${escapeHtml(collection.title)}</span>
-      <span class="series-option-count">${collectionEntries(collection).length} 部</span>
+    <button type="button" class="series-option ${mine.has(collection.id) ? "selected" : ""}"
+      role="checkbox" aria-checked="${mine.has(collection.id)}"
+      data-action="toggle-collection" data-collection-id="${escapeHtml(collection.id)}"
+      data-testid="toggle-collection-${escapeHtml(collection.id)}">
+      <span class="series-option-check" aria-hidden="true">${mine.has(collection.id) ? icon("check") : ""}</span>
+      <span class="series-option-body">
+        <span class="series-option-title">${escapeHtml(collection.title)}</span>
+        <span class="series-option-count">${collectionEntries(collection).length} 部</span>
+      </span>
     </button>
     ${mine.has(collection.id) ? `<button type="button" class="icon-button small" data-action="open-collection" data-collection-id="${escapeHtml(collection.id)}" aria-label="打开《${escapeHtml(collection.title)}》片单">${icon("chevron")}</button>` : ""}
   </div>`).join("");
@@ -3215,9 +3225,10 @@ function collectionsEditorOverlay(work) {
       <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "")}》</span><h2 id="collections-editor-title">加入片单</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
       <p class="settings-note">片单是你自己定义的主题列表——和「系列」不同，它不描述作品客观上的归属，只描述你想怎么把它们放在一起。</p>
       <div class="series-options">${options || `<p class="work-section-empty">还没有任何片单</p>`}</div>
-      <form id="collection-form">
-        <label><span>新建片单</span><input type="text" name="title" maxlength="60" placeholder="例如：一个人在影院哭过的" data-testid="collection-title-input" /></label>
-        <button class="sheet-done" type="submit">新建并加入</button>
+      <form id="collection-form" class="series-create-form">
+        <h3 class="sheet-section-title">新建片单</h3>
+        <label><span>片单名称</span><input type="text" name="title" maxlength="60" placeholder="例如：一个人在影院哭过的" data-testid="collection-title-input" required /></label>
+        <button class="sheet-done" type="submit">新建</button>
       </form>
     </section>
   </div>`;
@@ -7654,6 +7665,8 @@ document.addEventListener("submit", async (event) => {
     if (!title || !state.currentWorkId) return;
     const collection = addWorkToCollection(createCollection({ title }), state.currentWorkId);
     await persistCollection(collection);
+    // 浮层保持打开、输入框清空，方便接着建下一个或勾别的片单（与系列那边一致）
+    event.target.reset();
     renderPreservingScroll();
     announce(`已新建片单《${title}》并加入`);
     return;

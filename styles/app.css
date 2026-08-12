@@ -5075,12 +5075,16 @@ svg {
   width: 100%;
 }
 
-/* 系列归属是**多选**（一部片可以同时在「蜘蛛侠（MCU）」和「蜘蛛侠」大系列里），
+/* 系列归属与片单都是**多选**（一部片可以同时在「蜘蛛侠（MCU）」和「蜘蛛侠」大系列里），
    所以每一行左侧留一个固定的勾选位。用留位而不是"选中才出现图标"，是为了让
-   选中与未选中两种状态下文字起点在同一条竖线上，列表不会因为勾的出现而错位。 */
+   选中与未选中两种状态下文字起点在同一条竖线上，列表不会因为勾的出现而错位。
+
+   这里用 flex 而不是 grid 是有原因的：曾经写成 `grid-template-columns: 22px minmax(0,1fr)`，
+   而片单弹窗复用了同一个 class 却没有勾选那一层，于是标题被自动放进了 22px 宽的
+   第一列——整个片单名被挤成一列竖排的字，一个片单占掉大半屏。flex 没有这个隐患：
+   少一个子元素时剩下的会自然铺开，不会被塞进一个固定宽度的槽里。 */
 .series-option {
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
+  display: flex;
   gap: var(--space-3);
   align-items: center;
   padding: var(--space-3);
@@ -5092,6 +5096,7 @@ svg {
 
 .series-option-check {
   display: grid;
+  flex: 0 0 22px;
   place-items: center;
   width: 22px;
   height: 22px;
@@ -5117,10 +5122,11 @@ svg {
 
 .series-option-body {
   display: flex;
+  flex: 1 1 auto;
   gap: var(--space-2);
   align-items: center;
   justify-content: space-between;
-  min-width: 0;
+  min-width: 0;   /* 没有这条，长片单名会把这一行撑出卡片 */
 }
 
 .series-option.selected {
