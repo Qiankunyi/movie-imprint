@@ -7,6 +7,7 @@ const root = resolve(import.meta.dirname, "..");
 const port = 4174;
 const baseUrl = `http://127.0.0.1:${port}`;
 const testOnly = process.argv.includes("--test-only");
+const archiveOnly = process.argv.includes("--archive-only");
 // R3：壁纸已移除，这张图现在只是 /api/bangumi/image 的模拟响应体（用于海报请求 mock），
 // 文件本身与展示无关，保留原路径即可。
 const mockPosterImage = await readFile(join(root, "docs", "design", "mockups", "assets", "cinema-memory-hero-v1.png"));
@@ -88,6 +89,12 @@ async function openSettings(page) {
 async function openDetailFabAction(page, testId) {
   if (!(await page.getByTestId(testId).count())) await page.getByTestId("fab-toggle").click();
   await page.getByTestId(testId).click();
+}
+
+async function openWorkAction(page, action) {
+  if (!(await page.getByTestId("open-work-actions").count())) await page.getByTestId("fab-toggle").click();
+  await page.getByTestId("open-work-actions").click();
+  await page.getByTestId("work-actions-sheet").locator(`[data-action="${action}"]`).click();
 }
 
 async function confirmAutoAiModel(page) {
@@ -338,7 +345,7 @@ async function runArchiveUiPath(browser) {
 
   // Bangumi 已关联的 Work 可从剧照入口追加 TMDB，且不会改写原关联/主来源。
   await page.getByTestId("shelf-item-work_bangumi").click();
-  await page.getByTestId("add-first-still").click();
+  await openWorkAction(page, "edit-stills");
   await page.locator("#tmdb-still-link-form").getByRole("button", { name: "搜索", exact: true }).click();
   await page.getByTestId("tmdb-still-link-0").waitFor();
   await page.getByTestId("tmdb-still-link-0").click();
@@ -381,15 +388,18 @@ async function runArchiveUiPath(browser) {
   for (const forbidden of ["编辑", "管理", "添加系列", "私人剧照", "主展示图", "真人电影"]) {
     if (browseText.includes(forbidden)) throw new Error(`作品浏览态仍显示操作或后台文字：${forbidden}`);
   }
-  for (const testId of ["edit-tagline", "edit-release-dates", "edit-series", "edit-collections"]) {
-    const entry = page.getByTestId(testId);
-    if (!await entry.count() || !await entry.evaluate((element) => element.classList.contains("archive-pressable"))) {
-      throw new Error(`作品信息区没有统一的内容点击入口：${testId}`);
-    }
+  if (await page.locator(".work-facts [data-action], .work-stills-heading, .work-still-arrow, [data-still-dot]").count()) {
+    throw new Error("作品浏览态仍有剧照或资料编辑控件");
   }
-  if (!await page.getByTestId("add-first-still").isVisible()) throw new Error("剧照空状态没有显示");
+  if (await page.getByTestId("work-stills").count()) throw new Error("没有剧照时仍显示空 Hero");
+  await page.getByTestId("fab-toggle").click();
+  if (!await page.getByTestId("open-work-actions").isVisible()) throw new Error("作品编辑入口没有收拢到 FAB");
+  await page.getByTestId("open-work-actions").click();
+  for (const action of ["edit-poster", "edit-stills", "edit-tagline", "edit-work-type", "edit-release-dates", "edit-work-tags", "edit-series", "edit-collections"]) {
+    if (!await page.getByTestId("work-actions-sheet").locator(`[data-action="${action}"]`).isVisible()) throw new Error(`作品操作中心缺少 ${action}`);
+  }
+  await page.getByTestId("work-actions-sheet").locator('[data-action="edit-stills"]').click();
 
-  await page.getByTestId("add-first-still").click();
   await page.getByTestId("tmdb-still-0").waitFor();
   if (await page.locator(".tmdb-still-candidate").count() !== 4) throw new Error("TMDB 候选没有完整展示");
   const urls = [
@@ -409,19 +419,47 @@ async function runArchiveUiPath(browser) {
 
   const track = page.getByTestId("work-stills-track");
   if (await track.locator(".work-still").count() !== 4) throw new Error("作品页没有展示 4 张已保存剧照");
-  if ((await page.locator(".work-stills-section").innerText()).includes("主展示图")) throw new Error("剧照浏览态仍显示主展示图标识");
-  if (await page.locator("[data-still-dot]").count() !== 4) throw new Error("多图分页指示数量不正确");
+  if ((await page.getByTestId("work-stills").innerText()).includes("主展示图")) throw new Error("剧照浏览态仍显示主展示图标识");
+  if (await page.locator("[data-still-dot], .work-still-arrow, .work-stills-heading").count()) throw new Error("沉浸式 Hero 仍显示轮播控件");
   await page.waitForFunction(() => document.querySelectorAll(".work-still.image-failed").length === 1);
-  await track.evaluate((element) => element.scrollTo({ left: element.clientWidth, behavior: "instant" }));
-  await page.waitForTimeout(100);
-  if (!await page.locator("[data-still-dot='1']").evaluate((dot) => dot.classList.contains("active"))) throw new Error("横向滑动后分页指示没有更新");
+  await page.evaluate(() => scrollTo(0, 0));
+  if (!testOnly) {
+    const archiveOutput = join(root, "artifacts", "screenshots", "archive-ui");
+    await mkdir(archiveOutput, { recursive: true });
+    await page.screenshot({ path: join(archiveOutput, "work-hero-mobile.png"), fullPage: true });
+  }
+  const trackBox = await track.boundingBox();
+  const initialScroll = await track.evaluate((element) => element.scrollLeft);
+  await page.mouse.move(trackBox.x + trackBox.width * 0.78, trackBox.y + trackBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(trackBox.x + trackBox.width * 0.12, trackBox.y + trackBox.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(600);
+  const scrollMetrics = await track.evaluate((element) => ({
+    left: element.scrollLeft,
+    width: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    count: element.children.length
+  }));
+  const snappedIndex = Math.round(scrollMetrics.left / scrollMetrics.width);
+  const snapped = Math.abs(scrollMetrics.left - snappedIndex * scrollMetrics.width) <= 3;
+  const advanced = scrollMetrics.left > initialScroll + 20 || snappedIndex === scrollMetrics.count - 1;
+  if (!snapped || !advanced) throw new Error(`Hero 鼠标拖动没有向前吸附：${JSON.stringify({ initialScroll, ...scrollMetrics })}`);
+  const heroStyle = await page.getByTestId("work-stills").evaluate((element) => ({
+    width: element.getBoundingClientRect().width,
+    height: element.getBoundingClientRect().height,
+    radius: getComputedStyle(element).borderRadius
+  }));
+  if (Math.abs(heroStyle.width - viewport.width) > 1 || heroStyle.height < viewport.width * 0.55 || heroStyle.height > viewport.width * 0.7 || heroStyle.radius !== "0px") {
+    throw new Error(`手机 Hero 尺寸或圆角不符合沉浸式布局：${JSON.stringify(heroStyle)}`);
+  }
 
   await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight));
   await page.waitForTimeout(100);
   const fabBox = await page.getByTestId("fab-toggle").boundingBox();
-  const historyBox = await page.getByTestId("work-history").boundingBox();
-  if (!fabBox || !historyBox || historyBox.y + historyBox.height > fabBox.y - 4) {
-    throw new Error(`页面滚到底时 FAB 遮挡最后内容：fab=${JSON.stringify(fabBox)} history=${JSON.stringify(historyBox)}`);
+  const lastSectionBox = await page.getByTestId("external-publications").boundingBox();
+  if (!fabBox || !lastSectionBox || lastSectionBox.y + lastSectionBox.height > fabBox.y - 4) {
+    throw new Error(`页面滚到底时 FAB 遮挡最后内容：fab=${JSON.stringify(fabBox)} section=${JSON.stringify(lastSectionBox)}`);
   }
 
   await page.getByTestId("fab-toggle").click();
@@ -432,9 +470,13 @@ async function runArchiveUiPath(browser) {
 
   await page.setViewportSize({ width: 1024, height: 800 });
   const contentWidth = await page.locator(".work-content").evaluate((element) => element.getBoundingClientRect().width);
-  if (contentWidth > 681 || await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw new Error("PC Web 作品页响应式溢出");
-  await page.locator(".work-stills-shell").hover();
-  if (!await page.locator(".work-still-arrow.next").isVisible()) throw new Error("桌面端悬停时没有剧照箭头辅助");
+  const desktopHeroWidth = await page.getByTestId("work-stills").evaluate((element) => element.getBoundingClientRect().width);
+  if (contentWidth > 721 || desktopHeroWidth > 961 || await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw new Error("PC Web 作品页响应式溢出");
+  if (await page.locator(".work-still-arrow, [data-still-dot]").count()) throw new Error("桌面 Hero 仍有永久轮播控件");
+  if (!testOnly) {
+    const archiveOutput = join(root, "artifacts", "screenshots", "archive-ui");
+    await page.screenshot({ path: join(archiveOutput, "work-hero-desktop.png"), fullPage: true });
+  }
 
   // 片单详情只保留 FAB 内的添加入口，不再在页面顶部重复放大按钮。
   await page.getByTestId("fab-toggle").click();
@@ -446,7 +488,7 @@ async function runArchiveUiPath(browser) {
   await page.getByTestId("fab-toggle").click();
   await page.getByTestId("open-create-collection").click();
   await page.getByTestId("new-collection-input").fill("FAB 入口回归片单");
-  await page.locator("#collection-create-form").getByRole("button", { name: "创建", exact: true }).click();
+  await page.locator("#collection-create-form").getByRole("button", { name: "新建", exact: true }).click();
   await page.getByRole("button", { name: /FAB 入口回归片单/ }).click();
   if (await page.locator(".collection-add-button").count()) throw new Error("片单详情仍保留顶部大号添加作品按钮");
   await page.getByTestId("fab-toggle").click();
@@ -1039,11 +1081,11 @@ try {
     executablePath: process.env.BROWSER_PATH || "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
   });
   try {
-    await runFunctionalPath(browser);
-    await runSeriesPath(browser);
-    await runOfflinePosterPath(browser);
+    if (!archiveOnly) await runFunctionalPath(browser);
+    if (!archiveOnly) await runSeriesPath(browser);
+    if (!archiveOnly) await runOfflinePosterPath(browser);
     await runArchiveUiPath(browser);
-    if (!testOnly) await captureVariants(browser);
+    if (!testOnly && !archiveOnly) await captureVariants(browser);
   } finally {
     await browser.close();
   }

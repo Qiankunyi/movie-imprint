@@ -867,8 +867,7 @@ function fabActionsFor() {
       themeItem,
       { action: "start-viewing-capture", icon: "ticket", label: "记录这次观看", testId: "work-start-record-fab" },
       ...(workWatched ? [{ action: "open-supplement", icon: "edit", label: "补充旧感想", testId: "open-supplement-fab" }] : []),
-      { action: "refresh-work-metadata", icon: "match", label: "刷新作品资料", testId: "refresh-work-metadata" },
-      { action: "open-delete-work", icon: "trash", label: "删除这部作品", testId: "open-delete-work" },
+      { action: "open-work-actions", icon: "more", label: "编辑与管理", testId: "open-work-actions" },
       { action: "close-work", icon: "back", label: "返回私人影库", testId: "work-back" }
     ];
   }
@@ -1200,7 +1199,36 @@ function workMetaLine(work) {
   const year = releaseYearOf(work);
   return `<div class="work-meta-line">
     ${year ? `<span>${escapeHtml(String(year))}</span>` : ""}
-    <button type="button" class="work-type-chip icon-only" data-action="edit-work-type" data-testid="edit-work-type" aria-label="编辑作品类型">${icon("edit")}</button>
+  </div>`;
+}
+
+function workActionsOverlay(work) {
+  return `<div class="overlay" data-testid="work-actions-sheet">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet work-actions-sheet" role="dialog" aria-modal="true" aria-labelledby="work-actions-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "未命名作品")}》</span><h2 id="work-actions-title">编辑与管理</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <h3 class="settings-section-title">视觉与简介</h3>
+      <div class="settings-actions">
+        <button type="button" data-action="edit-poster"><span><b>选择海报</b><small>Bangumi、TMDB 或手动上传</small></span>${icon("chevron")}</button>
+        <button type="button" data-action="edit-stills"><span><b>管理剧照</b><small>添加、排序或更换顶部主剧照</small></span>${icon("chevron")}</button>
+        <button type="button" data-action="edit-tagline"><span><b>一句话简介</b><small>保留这部作品最重要的一句话</small></span>${icon("chevron")}</button>
+      </div>
+      <h3 class="settings-section-title">作品资料</h3>
+      <div class="settings-actions">
+        <button type="button" data-action="edit-work-type"><span><b>作品类型</b><small>动画、真人、活动或其他</small></span>${icon("chevron")}</button>
+        <button type="button" data-action="edit-release-dates"><span><b>上映信息</b><small>维护不同地区的上映日期</small></span>${icon("chevron")}</button>
+        <button type="button" data-action="edit-work-tags"><span><b>作品标签</b><small>整理导演与自定义标签</small></span>${icon("chevron")}</button>
+        <button type="button" data-action="edit-series"><span><b>管理系列</b><small>设置系列关系与作品位置</small></span>${icon("chevron")}</button>
+        <button type="button" data-action="edit-collections"><span><b>管理片单</b><small>调整这部作品所在的片单</small></span>${icon("chevron")}</button>
+        <button type="button" data-action="open-external-publications-manager"><span><b>外部发表</b><small>添加或管理其他平台的内容引用</small></span>${icon("chevron")}</button>
+      </div>
+      <h3 class="settings-section-title">其他</h3>
+      <div class="settings-actions work-actions-secondary">
+        <button type="button" data-action="refresh-work-metadata"><span><b>刷新作品资料</b><small>从已关联的数据来源重新获取</small></span>${icon("match")}</button>
+        <button type="button" class="danger" data-action="open-delete-work"><span><b>删除这部作品</b><small>进入删除确认</small></span>${icon("trash")}</button>
+      </div>
+    </section>
   </div>`;
 }
 
@@ -1236,23 +1264,19 @@ function releaseDateRow(work) {
       ${unknown ? `<span class="release-chip-hint">待认领</span>` : ""}
     </span>`;
   }).join("");
-  return `<button type="button" class="work-relation-row work-release-row archive-pressable" data-action="edit-release-dates" data-testid="edit-release-dates" aria-label="上映信息">
+  return `<div class="work-relation-row work-release-row" data-testid="work-release-dates" aria-label="上映信息">
     <span class="work-relation-label">上映</span>
     <span class="work-relation-values">${chips || `<span class="archive-empty-value" aria-hidden="true">—</span>`}</span>
-  </button>`;
+  </div>`;
 }
 
 /** R5：一句话简介。抓取优先 → AI 兜底 → 手动可改，三种来源在 UI 上要能分辨。 */
 function taglineRow(work) {
   const tagline = work.tagline;
-  if (!tagline?.text) {
-    return `<button type="button" class="work-tagline archive-pressable empty" data-action="edit-tagline" data-testid="edit-tagline" aria-label="补充一句话简介">
-      <span class="work-tagline-placeholder" aria-hidden="true">—</span>
-    </button>`;
-  }
-  return `<button type="button" class="work-tagline archive-pressable" data-action="edit-tagline" data-testid="edit-tagline" aria-label="一句话简介">
+  if (!tagline?.text) return "";
+  return `<div class="work-tagline" data-testid="work-tagline" aria-label="一句话简介">
     <span class="work-tagline-text">${escapeHtml(tagline.text)}</span>
-  </button>`;
+  </div>`;
 }
 
 // 用户反馈：系列和片单两行"上下没对齐"。原因是系列那行的值是纯文本、片单那行的值是
@@ -1277,51 +1301,33 @@ function seriesRow(work) {
       return `<span class="collection-chip" data-testid="current-series">${escapeHtml(series.title)}${position}</span>`;
     }).join("")
     : `<span class="archive-empty-value" aria-hidden="true">—</span>`;
-  return `<button type="button" class="work-relation-row archive-pressable" data-action="edit-series" data-testid="edit-series" aria-label="系列信息">
+  return `<div class="work-relation-row" data-testid="work-series" aria-label="系列信息">
     <span class="work-relation-label">系列</span>
     <span class="work-relation-values">${value}</span>
-  </button>`;
+  </div>`;
 }
 
 /** R5：片单归属。一部作品可以同时在多个片单里，所以这里是一排 chip 而不是单值。 */
 function collectionsRow(work) {
   const mine = collectionsForWork(state.collections, work.id);
   const chips = mine.map((collection) => `<span class="collection-chip" data-testid="work-collection-${escapeHtml(collection.id)}">${escapeHtml(collection.title)}</span>`).join("");
-  return `<button type="button" class="work-relation-row archive-pressable" data-action="edit-collections" data-testid="edit-collections" aria-label="片单信息">
+  return `<div class="work-relation-row" data-testid="work-collections" aria-label="片单信息">
     <span class="work-relation-label">片单</span>
     <span class="work-relation-values">${chips || `<span class="archive-empty-value" aria-hidden="true">—</span>`}</span>
-  </button>`;
+  </div>`;
 }
 
 function workStillsMarkup(work) {
   const stills = normalizeWorkStills(work.stills);
-  const heading = `<div class="work-stills-heading" aria-label="剧照">
-    <span class="work-stills-marker" aria-hidden="true">${icon("photo")}</span>
-    ${stills.length ? `<button type="button" class="section-icon-action archive-pressable" data-action="edit-stills" data-testid="edit-stills" aria-label="管理剧照">${icon("edit")}</button>` : ""}
-  </div>`;
-
-  if (!stills.length) {
-    return `<section class="work-section work-stills-section empty" data-testid="work-stills">
-      ${heading}
-      <button type="button" class="work-stills-empty archive-pressable" data-action="edit-stills" data-testid="add-first-still" aria-label="添加剧照">
-        <span class="work-stills-empty-icon" aria-hidden="true">＋</span>
-      </button>
-    </section>`;
-  }
+  if (!stills.length) return "";
 
   const slides = stills.map((still, index) => `<figure class="work-still" data-still-index="${index}">
     <img class="work-still-img resilient-image" src="${escapeHtml(stillUrlFor(still))}" alt="《${escapeHtml(work.title || "")}》保存的剧照 ${index + 1}" loading="${index ? "lazy" : "eager"}" referrerpolicy="no-referrer" />
     <span class="image-fallback">${icon("photo")}<small>这张图片暂时无法显示</small></span>
   </figure>`).join("");
-  const dots = stills.length > 1 ? `<div class="work-still-pagination" aria-label="剧照分页">${stills.map((_, index) => `<span class="${index === 0 ? "active" : ""}" data-still-dot="${index}" aria-current="${index === 0 ? "true" : "false"}"></span>`).join("")}</div>` : "";
-
-  return `<section class="work-section work-stills-section" data-testid="work-stills">
-    ${heading}
-    <div class="work-stills-shell">
-      <div class="work-stills-track" data-testid="work-stills-track">${slides}</div>
-      ${stills.length > 1 ? `<button type="button" class="work-still-arrow previous" data-action="scroll-stills" data-direction="previous" aria-label="上一张剧照">‹</button><button type="button" class="work-still-arrow next" data-action="scroll-stills" data-direction="next" aria-label="下一张剧照">›</button>` : ""}
-    </div>
-    ${dots}
+  return `<section class="work-cinematic-hero ${stills.length > 1 ? "is-carousel" : "is-single"}" data-testid="work-stills" aria-label="《${escapeHtml(work.title || "")}》剧照">
+    <div class="work-stills-track" data-testid="work-stills-track" data-slide-count="${stills.length}">${slides}</div>
+    <div class="work-hero-gradient" aria-hidden="true"></div>
   </section>`;
 }
 
@@ -1374,6 +1380,7 @@ function workHistoryRow(item, index) {
     : "";
 
   return `<article class="work-history-row" data-testid="work-history-row">
+    <button type="button" class="work-history-open" data-action="edit-history-event" data-event-id="${escapeHtml(item.id)}" aria-label="查看并编辑第 ${index + 1} 次观影"></button>
     <div class="work-history-index" aria-hidden="true">${index + 1}</div>
     <div class="work-history-body">
       <div class="work-history-top">
@@ -1381,7 +1388,6 @@ function workHistoryRow(item, index) {
           <span class="work-history-date">${escapeHtml(dateLabel)}</span>
           ${relationLabel ? `<span class="work-history-relation">${relationLabel}</span>` : ""}
         </div>
-        <button type="button" class="icon-button" data-action="edit-history-event" data-event-id="${escapeHtml(item.id)}" aria-label="编辑这次观影" data-testid="edit-history-${escapeHtml(item.id)}">${icon("edit")}</button>
       </div>
       <div class="work-history-location">${escapeHtml(locationLabel)}</div>
       ${metaBits.length ? `<div class="work-history-meta">${metaBits.map(escapeHtml).join(" · ")}</div>` : ""}
@@ -1444,10 +1450,6 @@ function externalPublicationItem(publication) {
   return `<article class="external-publication" data-testid="external-publication-${escapeHtml(publication.id)}">
     <div class="external-publication-heading">
       <div><strong>${escapeHtml(publicationPlatformLabel(publication.platform))}</strong>${publication.published_at ? `<time datetime="${escapeHtml(publication.published_at)}">${escapeHtml(formatShortDate(publication.published_at))}</time>` : ""}</div>
-      <div class="external-publication-actions">
-        <button type="button" data-action="edit-external-publication" data-publication-id="${escapeHtml(publication.id)}">编辑</button>
-        <button type="button" class="danger" data-action="remove-external-publication" data-publication-id="${escapeHtml(publication.id)}">从作品中移除</button>
-      </div>
     </div>
     ${viewingLabel ? `<span class="external-publication-viewing-label">${escapeHtml(viewingLabel)}</span>` : ""}
     ${preview}
@@ -1461,12 +1463,28 @@ function externalPublicationsMarkup(publications) {
   return `<section class="work-section external-publications-section" data-testid="external-publications">
     <div class="external-publications-title-row">
       <div><h2 class="work-section-title">外部发表</h2><p>已公开发布在其他平台的内容引用</p></div>
-      <button type="button" class="archive-pressable external-publication-add" data-action="add-external-publication" data-testid="add-external-publication">＋ 添加</button>
     </div>
     ${sorted.length
       ? `<div class="external-publications-list">${sorted.map(externalPublicationItem).join("")}</div>`
       : `<p class="work-section-empty">还没有关联外部发表。</p>`}
   </section>`;
+}
+
+function externalPublicationsManagerOverlay(work) {
+  const publications = sortExternalPublications(state.currentWorkPublications);
+  return `<div class="overlay" data-testid="external-publications-manager">
+    <button class="overlay-backdrop" type="button" data-action="close-overlay" aria-label="关闭"></button>
+    <section class="bottom-sheet external-publications-manager" role="dialog" aria-modal="true" aria-labelledby="external-publications-manager-title">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-title-row"><div><span class="sheet-kicker">《${escapeHtml(work.title || "未命名作品")}》</span><h2 id="external-publications-manager-title">管理外部发表</h2></div><button class="icon-button" type="button" data-action="close-overlay" aria-label="关闭">${icon("close")}</button></div>
+      <button type="button" class="sheet-done" data-action="add-external-publication" data-testid="add-external-publication">添加外部发表</button>
+      ${publications.length ? `<div class="external-publication-manager-list">${publications.map((publication) => `<div class="external-publication-manager-row">
+        <span><b>${escapeHtml(publication.title || publicationPlatformLabel(publication.platform))}</b><small>${escapeHtml(publicationPlatformLabel(publication.platform))}${publication.published_at ? ` · ${escapeHtml(formatShortDate(publication.published_at))}` : ""}</small></span>
+        <button type="button" class="icon-button small" data-action="edit-external-publication" data-publication-id="${escapeHtml(publication.id)}" aria-label="编辑">${icon("edit")}</button>
+        <button type="button" class="icon-button small danger" data-action="remove-external-publication" data-publication-id="${escapeHtml(publication.id)}" aria-label="移除">${icon("trash")}</button>
+      </div>`).join("")}</div>` : `<p class="work-section-empty">还没有关联外部发表。</p>`}
+    </section>
+  </div>`;
 }
 
 function tagChipMarkup(tag, { removable = false } = {}) {
@@ -1479,9 +1497,9 @@ function tagChipMarkup(tag, { removable = false } = {}) {
 
 function workTagsRow(work) {
   const tags = tagsForTarget(state.tags, state.tagAssignments, "work", work.id);
+  if (!tags.length) return "";
   return `<section class="work-tags" data-testid="work-tags" aria-label="作品标签">
     <div class="work-tag-list">${tags.map((tag) => tagChipMarkup(tag)).join("")}</div>
-    <button type="button" class="work-tag-edit" data-action="edit-work-tags" aria-label="${escapeHtml(tags.length ? tt("edit") : tt("add"))}">${tags.length ? icon("edit") : "＋"}</button>
   </section>`;
 }
 
@@ -1494,8 +1512,10 @@ function renderWork() {
   // （补充记录本来就是"对已经看过的这部片再补一段感想"）。
   const watched = isWorkWatched(work.id);
   const wantedIn = collectionsForWork(state.collections, work.id);
-  return `<main class="work-view" data-testid="work">
-    <div class="work-panel" data-testid="work-panel">
+  const hasStills = normalizeWorkStills(work.stills).length > 0;
+  return `<main class="work-view ${hasStills ? "has-cinematic-hero" : ""}" data-testid="work">
+    ${workStillsMarkup(work)}
+    <div class="work-panel ${hasStills ? "has-stills" : ""}" data-testid="work-panel">
       <div class="work-poster-col">${workHeroMarkup(work)}${view.latestAttitude ? `<div class="work-latest-attitude" aria-label="最新个人态度：${escapeHtml(attitudeLabel(view.latestAttitude))}" data-testid="work-latest-attitude">${attitudeIcon(view.latestAttitude)}</div>` : ""}</div>
       <div class="work-info-col">
         <h1 class="work-title">《${escapeHtml(work.title || "未命名作品")}》</h1>
@@ -1510,7 +1530,6 @@ function renderWork() {
         ${seriesRow(work)}
         ${collectionsRow(work)}
       </section>
-      ${workStillsMarkup(work)}
       <section class="work-section" data-testid="work-history">
         <h2 class="work-section-title">观影履历</h2>
         ${view.history.length
@@ -3728,6 +3747,10 @@ function render() {
         ? historyEventEditorOverlay(editingHistoryEvent)
       : state.overlay === "external-publication" && currentWorkForOverlay
         ? externalPublicationEditorOverlay(currentWorkForOverlay)
+      : state.overlay === "external-publications-manager" && currentWorkForOverlay
+        ? externalPublicationsManagerOverlay(currentWorkForOverlay)
+      : state.overlay === "work-actions" && currentWorkForOverlay
+        ? workActionsOverlay(currentWorkForOverlay)
       : state.overlay === "release-dates" && currentWorkForOverlay
         ? releaseDateEditorOverlay(currentWorkForOverlay)
       : state.overlay === "poster" && currentWorkForOverlay
@@ -3771,7 +3794,10 @@ function render() {
   if (base !== lastBaseHtml) {
     app.innerHTML = base;
     lastBaseHtml = base;
-    requestAnimationFrame(hydrateExternalPublicationEmbeds);
+    requestAnimationFrame(() => {
+      hydrateExternalPublicationEmbeds();
+      hydrateWorkHeroCarousel();
+    });
   }
   const fab = fabMenu();
   if (fab !== lastFabHtml) {
@@ -6103,21 +6129,89 @@ document.addEventListener("error", (event) => {
   image.closest(".work-still, .still-manager-preview, .tmdb-still-preview, .sidebar-artwork")?.classList.add("image-failed");
 }, true);
 
-let stillScrollFrame = null;
-document.addEventListener("scroll", (event) => {
-  const track = event.target;
-  if (!(track instanceof HTMLElement) || !track.classList.contains("work-stills-track")) return;
-  cancelAnimationFrame(stillScrollFrame);
-  stillScrollFrame = requestAnimationFrame(() => {
-    const count = track.querySelectorAll(".work-still").length;
-    const index = Math.max(0, Math.min(count - 1, Math.round(track.scrollLeft / Math.max(1, track.clientWidth))));
-    track.closest(".work-stills-section")?.querySelectorAll("[data-still-dot]").forEach((dot, dotIndex) => {
-      const active = dotIndex === index;
-      dot.classList.toggle("active", active);
-      dot.setAttribute("aria-current", String(active));
-    });
-  });
+const WORK_HERO_AUTOPLAY_MS = 7000;
+const WORK_HERO_RESUME_MS = 12000;
+let workHeroAutoplayTimer = null;
+let workHeroResumeTimer = null;
+let activeWorkHeroTrack = null;
+let workHeroDrag = null;
+
+function clearWorkHeroTimers() {
+  clearTimeout(workHeroAutoplayTimer);
+  clearTimeout(workHeroResumeTimer);
+  workHeroAutoplayTimer = null;
+  workHeroResumeTimer = null;
+}
+
+function workHeroCanAutoplay(track) {
+  return track instanceof HTMLElement
+    && track.isConnected
+    && Number(track.dataset.slideCount) > 1
+    && !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    && !document.hidden;
+}
+
+function scheduleWorkHeroAutoplay(track, delay = WORK_HERO_AUTOPLAY_MS) {
+  clearTimeout(workHeroAutoplayTimer);
+  if (!workHeroCanAutoplay(track)) return;
+  workHeroAutoplayTimer = setTimeout(() => {
+    if (!workHeroCanAutoplay(track)) return;
+    const count = Number(track.dataset.slideCount);
+    const current = Math.max(0, Math.min(count - 1, Math.round(track.scrollLeft / Math.max(1, track.clientWidth))));
+    track.scrollTo({ left: ((current + 1) % count) * track.clientWidth, behavior: "smooth" });
+    scheduleWorkHeroAutoplay(track);
+  }, delay);
+}
+
+function pauseWorkHeroAutoplay(track) {
+  if (track !== activeWorkHeroTrack || Number(track?.dataset.slideCount) <= 1) return;
+  clearWorkHeroTimers();
+  workHeroResumeTimer = setTimeout(() => scheduleWorkHeroAutoplay(track), WORK_HERO_RESUME_MS);
+}
+
+function hydrateWorkHeroCarousel() {
+  clearWorkHeroTimers();
+  activeWorkHeroTrack = document.querySelector(".work-cinematic-hero.is-carousel .work-stills-track");
+  if (activeWorkHeroTrack) scheduleWorkHeroAutoplay(activeWorkHeroTrack);
+}
+
+document.addEventListener("pointerdown", (event) => {
+  const track = event.target.closest?.(".work-cinematic-hero.is-carousel .work-stills-track");
+  if (!(track instanceof HTMLElement)) return;
+  pauseWorkHeroAutoplay(track);
+  if (event.pointerType !== "mouse") return;
+  workHeroDrag = { track, pointerId: event.pointerId, startX: event.clientX, startScroll: track.scrollLeft };
+  track.classList.add("is-dragging");
+  track.setPointerCapture(event.pointerId);
 }, true);
+
+document.addEventListener("pointermove", (event) => {
+  if (!workHeroDrag || workHeroDrag.pointerId !== event.pointerId) return;
+  const distance = event.clientX - workHeroDrag.startX;
+  if (Math.abs(distance) > 3) event.preventDefault();
+  workHeroDrag.track.scrollLeft = workHeroDrag.startScroll - distance;
+}, { capture: true, passive: false });
+
+function finishWorkHeroDrag(event) {
+  if (!workHeroDrag || workHeroDrag.pointerId !== event.pointerId) return;
+  const { track } = workHeroDrag;
+  track.classList.remove("is-dragging");
+  const index = Math.round(track.scrollLeft / Math.max(1, track.clientWidth));
+  track.scrollTo({ left: index * track.clientWidth, behavior: "smooth" });
+  workHeroDrag = null;
+}
+
+document.addEventListener("pointerup", finishWorkHeroDrag, true);
+document.addEventListener("pointercancel", finishWorkHeroDrag, true);
+document.addEventListener("wheel", (event) => {
+  const track = event.target.closest?.(".work-cinematic-hero.is-carousel .work-stills-track");
+  if (track instanceof HTMLElement) pauseWorkHeroAutoplay(track);
+}, { capture: true, passive: true });
+document.addEventListener("visibilitychange", () => {
+  if (!activeWorkHeroTrack) return;
+  if (document.hidden) clearWorkHeroTimers();
+  else scheduleWorkHeroAutoplay(activeWorkHeroTrack);
+});
 
 document.addEventListener("click", async (event) => {
   const trigger = event.target.closest("[data-action]");
@@ -6208,6 +6302,12 @@ document.addEventListener("click", async (event) => {
     state.currentWorkPublications = state.currentWorkPublications.filter((item) => item.id !== publication.id);
     renderPreservingScroll();
     notify("已从作品中移除外部发表");
+  } else if (action === "open-work-actions") {
+    state.overlay = "work-actions";
+    render();
+  } else if (action === "open-external-publications-manager") {
+    state.overlay = "external-publications-manager";
+    render();
   } else if (action === "clear-relation-lock") {
     await updateHistoryEvent(trigger.dataset.eventId, (event) => {
       event.relation_locked = false;
@@ -6333,9 +6433,6 @@ document.addEventListener("click", async (event) => {
     await updateCurrentWork((work) => ({ ...work, stills: setPrimaryWorkStill(work.stills, trigger.dataset.stillId) }));
     render();
     showToast("已设为主展示图");
-  } else if (action === "scroll-stills") {
-    const track = trigger.closest(".work-stills-shell")?.querySelector(".work-stills-track");
-    if (track) track.scrollBy({ left: (trigger.dataset.direction === "previous" ? -1 : 1) * track.clientWidth, behavior: "smooth" });
   } else if (action === "toggle-collection") {
     await toggleWorkInCollection(trigger.dataset.collectionId);
   } else if (action === "remove-from-collection") {
