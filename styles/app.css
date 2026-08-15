@@ -6928,6 +6928,7 @@ svg {
 
 .work-info-col {
   padding-top: clamp(4px, 1.6vw, 14px);
+  container-type: inline-size;
 }
 
 .work-title {
@@ -6936,7 +6937,17 @@ svg {
   font-weight: 720;
   line-height: 1.18;
   letter-spacing: -0.025em;
-  text-wrap: balance;
+  text-wrap: pretty;
+}
+
+.work-title.is-compact {
+  font-size: clamp(21px, 5.4vw, 34px);
+}
+
+@container (min-width: 220px) {
+  .work-title.is-compact {
+    white-space: nowrap;
+  }
 }
 
 .work-meta-line {
@@ -6973,6 +6984,10 @@ svg {
   min-height: 58px;
   padding: 13px 0;
   border-bottom: 1px solid var(--outline-soft);
+}
+
+.work-facts > :last-child {
+  border-bottom: 0;
 }
 
 .work-facts .work-tags {

@@ -1506,6 +1506,8 @@ function workTagsRow(work) {
 function renderWork() {
   const work = findWorkById(state.works, state.currentWorkId);
   if (!work) return renderShelf();
+  const displayTitle = work.title || "未命名作品";
+  const compactCjkTitle = /[\u3400-\u9fff]/u.test(displayTitle) && Array.from(displayTitle).length <= 11;
   const view = buildWorkView(work, recordsForWork(work), state.currentWorkEvents);
   // R6：作品可能是"观影前从片单加进来的"，此时没有任何 Record / ViewingEvent。
   // 这一档的文案与主按钮都要换——「补充记录」在还没看过的作品上语义不成立
@@ -1518,7 +1520,7 @@ function renderWork() {
     <div class="work-panel ${hasStills ? "has-stills" : ""}" data-testid="work-panel">
       <div class="work-poster-col">${workHeroMarkup(work)}${view.latestAttitude ? `<div class="work-latest-attitude" aria-label="最新个人态度：${escapeHtml(attitudeLabel(view.latestAttitude))}" data-testid="work-latest-attitude">${attitudeIcon(view.latestAttitude)}</div>` : ""}</div>
       <div class="work-info-col">
-        <h1 class="work-title">《${escapeHtml(work.title || "未命名作品")}》</h1>
+        <h1 class="work-title ${compactCjkTitle ? "is-compact" : ""}">《${escapeHtml(displayTitle)}》</h1>
         ${workMetaLine(work)}
         ${taglineRow(work)}
       </div>

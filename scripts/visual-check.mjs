@@ -309,6 +309,7 @@ async function runArchiveUiPath(browser) {
     });
     const works = [
       { id: "work_archive", title: "这是一个足够长用来验证两行网格整齐的电影标题", work_type: "live_action_film", aliases: [], release_year: 2026, release_dates: { entries: [] }, external_refs: [{ source: "tmdb", id: "123" }], primary_source: "tmdb", poster: null, stills: [], genres: [], related_refs: [], tagline: { text: "一段真正属于档案正文的简介。", source: "manual", updated_at: new Date().toISOString() }, identity_status: "matched", merged_from: [], first_recorded_at: new Date().toISOString(), match: { status: "confirmed", candidates: [] } },
+      { id: "work_compact", title: "蜘蛛侠：英雄无归", work_type: "live_action_film", aliases: [], release_year: 2021, release_dates: { entries: [] }, external_refs: [], poster: null, stills: [], genres: [], related_refs: [], tagline: { text: "身份曝光后，彼得·帕克只想回到原来的生活。", source: "manual", updated_at: new Date().toISOString() }, identity_status: "local_only", merged_from: [], first_recorded_at: new Date().toISOString(), match: { status: "idle", candidates: [] } },
       { id: "work_short", title: "短片名", work_type: "live_action_film", aliases: [], release_year: 2025, release_dates: { entries: [] }, external_refs: [], poster: null, stills: [], genres: [], related_refs: [], tagline: null, identity_status: "local_only", merged_from: [], first_recorded_at: new Date().toISOString(), match: { status: "idle", candidates: [] } },
       { id: "work_bangumi", title: "Bangumi 补绑测试片", work_type: "animation_film", aliases: [], release_year: 2014, release_dates: { entries: [] }, external_refs: [{ source: "bangumi", id: "451", url: "https://bangumi.tv/subject/451" }], primary_source: "bangumi", poster: { source: "bangumi", subject_id: 451 }, stills: [], genres: [], related_refs: [], tagline: null, identity_status: "matched", merged_from: [], first_recorded_at: new Date().toISOString(), match: { status: "confirmed", candidates: [] } }
     ];
@@ -381,6 +382,28 @@ async function runArchiveUiPath(browser) {
   if (titleStyle.align !== "center" || titleStyle.height < 35 || titleStyle.lines !== "2") {
     throw new Error(`影库长标题没有固定两行居中：${JSON.stringify(titleStyle)}`);
   }
+
+  await page.getByTestId("shelf-item-work_compact").click();
+  const compactTitleStyle = await page.locator(".work-title").evaluate((element) => ({
+    whiteSpace: getComputedStyle(element).whiteSpace,
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    height: element.getBoundingClientRect().height,
+    lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight)
+  }));
+  if (compactTitleStyle.whiteSpace !== "nowrap" || compactTitleStyle.scrollWidth > compactTitleStyle.clientWidth + 1 || compactTitleStyle.height > compactTitleStyle.lineHeight + 2) {
+    throw new Error(`中等长度中文片名没有保持单行：${JSON.stringify(compactTitleStyle)}`);
+  }
+  const dividerStyle = await page.evaluate(() => ({
+    factsLast: getComputedStyle(document.querySelector(".work-facts > :last-child")).borderBottomWidth,
+    historyTop: getComputedStyle(document.querySelector("[data-testid='work-history']")).borderTopWidth
+  }));
+  if (dividerStyle.factsLast !== "0px" || dividerStyle.historyTop !== "1px") {
+    throw new Error(`片单与观影履历之间不是单条分割线：${JSON.stringify(dividerStyle)}`);
+  }
+  await page.getByTestId("fab-toggle").click();
+  await page.getByTestId("work-back").click();
+
   await page.getByTestId("shelf-item-work_archive").click();
   await page.getByTestId("work").waitFor();
   if (await page.getByTestId("work-start-record").count()) throw new Error("作品页仍有重复的底部长条记录按钮");
