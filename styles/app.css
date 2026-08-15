@@ -3788,10 +3788,6 @@ svg {
   display: flex;
   gap: var(--space-3);
   padding: var(--space-3) 0;
-  border-top: 1px solid var(--outline-soft);
-}
-
-.work-history-row:first-child {
   border-top: 0;
 }
 
