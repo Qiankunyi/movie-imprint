@@ -208,6 +208,17 @@ import {
   exportMarkdown,
   exportTXT
 } from "./export.js?v=5";
+import {
+  SHARE_CARD_ATTITUDES,
+  SHARE_CARD_RECOMMENDATIONS,
+  changeShareCardLanguage,
+  createShareCardDraft,
+  dateLinesForDraft,
+  isShareCardLiked,
+  isShareCardRecommended,
+  localizedTagLabel,
+  shareCardCopy
+} from "./share-card.js?v=1";
 
 const app = document.querySelector("#app");
 // 浮层与 FAB 各自有独立的挂载点（见 index.html 的注释）：只有它们变化时不去动 #app，
@@ -217,6 +228,7 @@ const fabRoot = document.querySelector("#fab-root");
 const liveRegion = document.querySelector("#live-region");
 const toastRegion = document.querySelector("#toast-region");
 const activeDraftId = "active";
+const SHARE_CARD_PROFILE_KEY = "movie-imprint-share-card-profile-v1";
 
 // --- 访问密码封装 ---
 // 部署到 Cloudflare 后，如果配置了 ACCESS_PASSWORD 环境变量，
@@ -399,7 +411,8 @@ const state = {
   fabOpen: false,             // R5 补丁 4：右下角 FAB 二级菜单是否展开
   fabClosing: false,          // R5 补丁 6：正在播收起动画（播完才从 DOM 移除）
   sidebarSkipEntryAnimation: false, // 由手势提交时渲染的抽屉不播入场动画（见 finishSidebarGesture）
-  sidebarArtworkPath: selectDailySidebarStill(SIDEBAR_STILLS)
+  sidebarArtworkPath: selectDailySidebarStill(SIDEBAR_STILLS),
+  shareCardDraft: null          // V1：只活在内存里；关闭即丢弃，不写回 Work / Record / ViewingEvent
 };
 
 let toastTimer = null;
@@ -710,6 +723,22 @@ async function loadState() {
     await hydrateRecordViewingEvents(targetId, { renderAfter: false });
     return;
   }
+  if (location.hash.startsWith("#work=")) {
+    const workId = decodeURIComponent(location.hash.slice(6));
+    const work = findWorkById(state.works, workId);
+    if (work) {
+      const ids = new Set([work.id, ...(work.merged_from || [])]);
+      state.view = "work";
+      state.currentWorkId = work.id;
+      [state.currentWorkEvents, state.currentWorkPublications] = await Promise.all([
+        fetchWorkEvents(work.id),
+        db.getAll("externalPublications")
+          .then((items) => sortExternalPublications(items.filter((item) => ids.has(item.work_id))))
+          .catch(() => [])
+      ]);
+      return;
+    }
+  }
   if (location.hash.startsWith("#series=")) {
     const seriesId = decodeURIComponent(location.hash.slice(8));
     if (state.series.some((item) => item.id === seriesId)) {
@@ -867,6 +896,7 @@ function fabActionsFor() {
       themeItem,
       { action: "start-viewing-capture", icon: "ticket", label: "记录这次观看", testId: "work-start-record-fab" },
       ...(workWatched ? [{ action: "open-supplement", icon: "edit", label: "补充旧感想", testId: "open-supplement-fab" }] : []),
+      { action: "open-share-card", icon: "share", label: "作品态度分享卡", testId: "open-share-card" },
       { action: "open-work-actions", icon: "more", label: "编辑与管理", testId: "open-work-actions" },
       { action: "close-work", icon: "back", label: "返回私人影库", testId: "work-back" }
     ];
@@ -1230,6 +1260,183 @@ function workActionsOverlay(work) {
       </div>
     </section>
   </div>`;
+}
+
+function shareCardProfile() {
+  try {
+    const profile = JSON.parse(localStorage.getItem(SHARE_CARD_PROFILE_KEY) || "{}");
+    return { nickname: String(profile.nickname || ""), avatar: profile.avatar || null };
+  } catch (_) {
+    return { nickname: "", avatar: null };
+  }
+}
+
+function persistShareCardProfile(draft) {
+  if (!draft) return;
+  try {
+    localStorage.setItem(SHARE_CARD_PROFILE_KEY, JSON.stringify({ nickname: draft.nickname || "", avatar: draft.avatar || null }));
+  } catch (_) { /* 图片过大时仍可继续本次编辑，只是不记住 */ }
+}
+
+function shareCardExtraTags(records) {
+  const found = [];
+  for (const record of records) {
+    for (const tag of tagsForTarget(state.tags, state.tagAssignments, "viewing", record.id)) {
+      found.push({ id: tag.id, label: displayTagName(tag, tagLocale) });
+    }
+  }
+  return found;
+}
+
+function openShareCardEditor() {
+  const work = findWorkById(state.works, state.currentWorkId);
+  if (!work) return;
+  const records = recordsForWork(work);
+  const language = tagLocale.startsWith("ja") ? "ja" : tagLocale.startsWith("en") ? "en" : "zh";
+  state.shareCardDraft = createShareCardDraft({
+    work,
+    records,
+    viewingEvents: state.currentWorkEvents,
+    language,
+    profile: shareCardProfile(),
+    extraTags: shareCardExtraTags(records)
+  });
+  state.overlay = "share-card";
+  render();
+}
+
+function recommendationIconMarkup(variant = "b") {
+  if (variant === "c") {
+    return `<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7 16h7M18 9l7-4v22l-7-4z"/><path d="M14 12v8l4 3V9z"/></svg>`;
+  }
+  return `<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6 18v-4l14-6v16z"/><path d="M9.5 18.5 12 25h4l-2.2-8"/>${variant === "b" ? `<path class="recommend-waves" d="M24 12c1.2 1.1 1.8 2.4 1.8 4S25.2 18.9 24 20M27 9c2 1.9 3 4.2 3 7s-1 5.1-3 7"/>` : ""}</svg>`;
+}
+
+function shareHeartMarkup(filled) {
+  return `<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 27S5 21 5 12.5C5 8.8 7.7 6 11.2 6c2.1 0 3.8 1 4.8 2.7C17 7 18.7 6 20.8 6 24.3 6 27 8.8 27 12.5 27 21 16 27 16 27Z"/></svg>`;
+}
+
+function shareCardSceneMarkup(draft) {
+  const selected = draft.selectedStillIds
+    .map((id) => draft.stills.find((still) => still.id === id))
+    .filter(Boolean)
+    .slice(0, draft.stillMode === "double" ? 2 : 1);
+  if (!selected.length) return `<div class="share-card-scene-empty" aria-hidden="true"><span>MI</span></div>`;
+  return selected.map((still, index) => `<div class="share-card-scene scene-${index + 1}"><img class="resilient-image share-card-still" src="${escapeHtml(shareDraftStillUrl(still, "original"))}" alt="" /></div>`).join("");
+}
+
+function shareDraftStillUrl(still, size = "w1280") {
+  return still?.source === "upload" ? String(still.data_url || "") : stillUrlFor(still, size);
+}
+
+function shareCardDateMarkup(draft) {
+  const lines = dateLinesForDraft(draft);
+  if (!lines.length) return "";
+  return `<div class="share-card-date">${lines.map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>`;
+}
+
+function shareCardPreviewMarkup(work, draft, { mini = false } = {}) {
+  const copy = shareCardCopy(draft.language);
+  const tags = [...draft.tags]
+    .filter((tag) => tag.selected)
+    .sort((a, b) => a.order - b.order);
+  const poster = draft.posterOverride || posterUrlFor(work);
+  const titleLength = Array.from(draft.title || "").length;
+  const titleClass = titleLength > 42 ? "is-very-long" : titleLength > 24 ? "is-long" : "";
+  const recommended = isShareCardRecommended(draft.recommendation);
+  const liked = isShareCardLiked(draft.attitude);
+  return `<article class="share-card-canvas ${draft.stillMode === "double" ? "is-double" : "is-single"} ${mini ? "is-mini" : ""}" data-testid="share-card-preview" aria-label="作品态度分享卡预览">
+    <div class="share-card-scenes">${shareCardSceneMarkup(draft)}</div>
+    <div class="share-card-readability" aria-hidden="true"></div>
+    <header class="share-card-user-row">
+      ${(draft.avatar || draft.nickname) ? `<div class="share-card-user">${draft.avatar ? `<img src="${escapeHtml(draft.avatar)}" alt="" />` : ""}${draft.nickname ? `<strong>${escapeHtml(draft.nickname)}</strong>` : ""}</div>` : ""}
+      ${shareCardDateMarkup(draft)}
+    </header>
+    <div class="share-card-poster-cluster">
+      <div class="share-card-poster">${poster ? `<img class="resilient-image" src="${escapeHtml(poster)}" alt="" />` : `<span>${escapeHtml((draft.title || "?").trim().charAt(0) || "?")}</span>`}</div>
+      ${tags.length ? `<div class="share-card-tags">${tags.map((tag) => `<span>${escapeHtml(localizedTagLabel(tag, draft.language))}</span>`).join("")}</div>` : ""}
+    </div>
+    <div class="share-card-attitudes" role="group" aria-label="当前作品态度">
+      ${SHARE_CARD_ATTITUDES.map((value, index) => `<div class="share-card-attitude ${draft.attitude === value ? "selected" : ""} ${index === 4 ? "special" : ""}"><i>${attitudeIcon(value)}</i><span>${escapeHtml(copy.attitudes[value])}</span></div>`).join("")}
+    </div>
+    <footer class="share-card-bottom">
+      <div class="share-card-title-pill ${titleClass}">${icon("search")}<strong>${escapeHtml(draft.title || "—")}</strong></div>
+      <div class="share-card-heart ${liked ? "active" : ""}">${shareHeartMarkup(liked)}</div>
+      <div class="share-card-recommend ${recommended ? "active" : ""} variant-${escapeHtml(draft.recommendationIcon)}">${recommendationIconMarkup(draft.recommendationIcon)}</div>
+    </footer>
+  </article>`;
+}
+
+function shareCardIconCandidates(draft) {
+  return [
+    ["a", "A · 极简"],
+    ["b", "B · 微声波"],
+    ["c", "C · 抽象传播"]
+  ].map(([value, label]) => `<button type="button" class="share-icon-candidate ${draft.recommendationIcon === value ? "selected" : ""}" data-action="set-share-icon" data-value="${value}" aria-pressed="${draft.recommendationIcon === value}">
+    <span class="share-icon-candidate-row"><i>${icon("search")}</i><b>Title</b><i class="heart-mini">${shareHeartMarkup(true)}</i><i class="recommend-mini">${recommendationIconMarkup(value)}</i></span>
+    <small>${label}</small>
+  </button>`).join("");
+}
+
+function shareCardEditorOverlay(work) {
+  const draft = state.shareCardDraft;
+  if (!draft) return "";
+  const copy = shareCardCopy(draft.language);
+  const orderedTags = [...draft.tags].sort((a, b) => a.order - b.order);
+  const selectedStillIds = new Set(draft.selectedStillIds);
+  return `<div class="share-card-editor" data-testid="share-card-editor">
+    <header class="share-card-editor-header">
+      <div><span>WORK ATTITUDE CARD · V1</span><h2>作品态度分享卡</h2></div>
+      <button class="icon-button" type="button" data-action="close-share-card" aria-label="关闭并丢弃临时编辑">${icon("close")}</button>
+    </header>
+    <div class="share-card-editor-body">
+      <section class="share-card-preview-stage">
+        <div class="share-card-preview-frame">${shareCardPreviewMarkup(work, draft)}</div>
+        <p>3:4 · 临时编辑不会修改作品资料</p>
+      </section>
+      <aside class="share-card-controls" aria-label="分享卡编辑项">
+        <section class="share-control-section compact">
+          <h3>语言与标题</h3>
+          <div class="share-segmented" role="group" aria-label="语言">${[["zh", "中文"], ["ja", "日本語"], ["en", "English"]].map(([value, label]) => `<button type="button" class="${draft.language === value ? "selected" : ""}" data-action="set-share-language" data-value="${value}" aria-pressed="${draft.language === value}">${label}</button>`).join("")}</div>
+          <label class="share-field"><span>作品标题</span><input id="share-card-title-input" value="${escapeHtml(draft.title)}" maxlength="120" /></label>
+        </section>
+        <section class="share-control-section">
+          <h3>剧照布局</h3>
+          <div class="share-segmented"><button type="button" class="${draft.stillMode === "single" ? "selected" : ""}" data-action="set-share-still-mode" data-value="single">单图</button><button type="button" class="${draft.stillMode === "double" ? "selected" : ""}" data-action="set-share-still-mode" data-value="double" ${draft.stills.length < 2 ? "disabled" : ""}>双图</button></div>
+          ${draft.stills.length ? `<div class="share-still-choices">${draft.stills.map((still, index) => `<button type="button" class="${selectedStillIds.has(still.id) ? "selected" : ""}" data-action="select-share-still" data-still-id="${escapeHtml(still.id)}"><img src="${escapeHtml(shareDraftStillUrl(still, "w500"))}" alt="剧照 ${index + 1}" /><span>${selectedStillIds.has(still.id) ? "已选" : `剧照 ${index + 1}`}</span></button>`).join("")}</div>` : `<p class="share-empty-note">这部作品还没有保存剧照，卡片会使用安静的占位背景。</p>`}
+          <div class="share-upload-row"><label for="share-card-stills-input">${icon("photo")}<span>临时加入剧照</span></label><input class="sr-only" id="share-card-stills-input" type="file" multiple accept="image/jpeg,image/png,image/webp" />${draft.stills.some((still) => still.source === "upload") ? `<button type="button" data-action="clear-share-temp-stills">清除临时剧照</button>` : ""}</div>
+        </section>
+        <section class="share-control-section">
+          <h3>用户信息与素材</h3>
+          <label class="share-field"><span>昵称</span><input id="share-card-nickname-input" value="${escapeHtml(draft.nickname)}" maxlength="80" placeholder="留空则不显示" /></label>
+          <div class="share-upload-row"><label for="share-card-avatar-input">${icon("photo")}<span>临时头像</span></label><input class="sr-only" id="share-card-avatar-input" type="file" accept="image/jpeg,image/png,image/webp" />${draft.avatar ? `<button type="button" data-action="remove-share-avatar">移除头像</button>` : ""}</div>
+          <div class="share-upload-row"><label for="share-card-poster-input">${icon("photo")}<span>临时海报</span></label><input class="sr-only" id="share-card-poster-input" type="file" accept="image/jpeg,image/png,image/webp" />${draft.posterOverride ? `<button type="button" data-action="reset-share-poster">恢复作品海报</button>` : ""}</div>
+          <label class="share-toggle"><input type="checkbox" id="share-card-date-toggle" ${draft.showDate ? "checked" : ""} ${draft.firstDate ? "" : "disabled"} /><span>显示观影日期</span></label>
+        </section>
+        <section class="share-control-section">
+          <h3>态度与推荐</h3>
+          <div class="share-attitude-editor">${SHARE_CARD_ATTITUDES.map((value) => `<button type="button" class="${draft.attitude === value ? "selected" : ""}" data-action="set-share-attitude" data-value="${value}">${attitudeIcon(value)}<span>${escapeHtml(copy.attitudes[value])}</span></button>`).join("")}</div>
+          <div class="share-recommend-editor">${SHARE_CARD_RECOMMENDATIONS.map((value) => { const key = value || "none"; return `<button type="button" class="${draft.recommendation === value ? "selected" : ""}" data-action="set-share-recommendation" data-value="${value || ""}">${escapeHtml(copy.recommendation[key])}</button>`; }).join("")}</div>
+          <p class="share-control-hint">爱心由态度自动推导；推荐与喜欢保持独立。</p>
+        </section>
+        <section class="share-control-section">
+          <h3>Recommendation Icon · 完整底栏对比</h3>
+          <div class="share-icon-candidates">${shareCardIconCandidates(draft)}</div>
+        </section>
+        <section class="share-control-section">
+          <h3>观影标签</h3>
+          <div class="share-temp-tag-add"><input id="share-card-tag-input" maxlength="30" placeholder="本次分享临时添加标签" /><button type="button" data-action="add-share-tag">添加</button></div>
+          ${orderedTags.length ? `<div class="share-tag-editor">${orderedTags.map((tag, index) => `<div><label><input type="checkbox" data-share-tag-id="${escapeHtml(tag.id)}" ${tag.selected ? "checked" : ""} /><span>${escapeHtml(localizedTagLabel(tag, draft.language))}</span></label><button type="button" data-action="move-share-tag" data-tag-id="${escapeHtml(tag.id)}" data-direction="up" ${index === 0 ? "disabled" : ""} aria-label="上移">↑</button><button type="button" data-action="move-share-tag" data-tag-id="${escapeHtml(tag.id)}" data-direction="down" ${index === orderedTags.length - 1 ? "disabled" : ""} aria-label="下移">↓</button></div>`).join("")}</div>` : `<p class="share-empty-note">当前观影记录没有可显示的制式或活动标签。</p>`}
+        </section>
+      </aside>
+    </div>
+  </div>`;
+}
+
+function refreshShareCardPreview() {
+  const work = findWorkById(state.works, state.currentWorkId);
+  const frame = document.querySelector(".share-card-preview-frame");
+  if (work && frame && state.shareCardDraft) frame.innerHTML = shareCardPreviewMarkup(work, state.shareCardDraft);
 }
 
 function workTypeEditorOverlay(work) {
@@ -3729,6 +3936,8 @@ function render() {
       ? settingsOverlay()
     : state.overlay === "sidebar"
       ? sidebarDrawer()
+    : state.overlay === "share-card" && currentWorkForOverlay && state.shareCardDraft
+      ? shareCardEditorOverlay(currentWorkForOverlay)
     : state.overlay === "attitude" && record
       ? attitudeOverlay(record)
       : state.overlay === "work-split" && state.workSplitPrompt
@@ -6254,6 +6463,92 @@ document.addEventListener("click", async (event) => {
     if (workId) openWork(workId);
   } else if (action === "close-work") {
     closeWork();
+  } else if (action === "open-share-card") {
+    openShareCardEditor();
+  } else if (action === "close-share-card") {
+    persistShareCardProfile(state.shareCardDraft);
+    state.shareCardDraft = null;
+    state.overlay = null;
+    render();
+  } else if (action === "set-share-language") {
+    state.shareCardDraft = changeShareCardLanguage(state.shareCardDraft, trigger.dataset.value);
+    render();
+  } else if (action === "set-share-still-mode") {
+    const draft = state.shareCardDraft;
+    if (!draft) return;
+    const next = trigger.dataset.value === "double" && draft.stills.length > 1 ? "double" : "single";
+    draft.stillMode = next;
+    const needed = next === "double" ? 2 : 1;
+    const selected = draft.selectedStillIds.filter((id) => draft.stills.some((still) => still.id === id));
+    for (const still of draft.stills) if (selected.length < needed && !selected.includes(still.id)) selected.push(still.id);
+    draft.selectedStillIds = selected.slice(0, needed);
+    render();
+  } else if (action === "select-share-still") {
+    const draft = state.shareCardDraft;
+    const id = trigger.dataset.stillId;
+    if (!draft || !draft.stills.some((still) => still.id === id)) return;
+    if (draft.stillMode === "single") draft.selectedStillIds = [id];
+    else if (!draft.selectedStillIds.includes(id)) {
+      draft.selectedStillIds = [...draft.selectedStillIds.slice(-1), id];
+    }
+    render();
+  } else if (action === "set-share-attitude") {
+    if (state.shareCardDraft && SHARE_CARD_ATTITUDES.includes(trigger.dataset.value)) {
+      state.shareCardDraft.attitude = trigger.dataset.value;
+      render();
+    }
+  } else if (action === "set-share-recommendation") {
+    if (state.shareCardDraft) {
+      const value = trigger.dataset.value || null;
+      if (SHARE_CARD_RECOMMENDATIONS.includes(value)) state.shareCardDraft.recommendation = value;
+      render();
+    }
+  } else if (action === "set-share-icon") {
+    if (state.shareCardDraft && ["a", "b", "c"].includes(trigger.dataset.value)) {
+      state.shareCardDraft.recommendationIcon = trigger.dataset.value;
+      render();
+    }
+  } else if (action === "move-share-tag") {
+    const draft = state.shareCardDraft;
+    if (!draft) return;
+    const ordered = [...draft.tags].sort((a, b) => a.order - b.order);
+    const index = ordered.findIndex((tag) => tag.id === trigger.dataset.tagId);
+    const next = trigger.dataset.direction === "up" ? index - 1 : index + 1;
+    if (index >= 0 && next >= 0 && next < ordered.length) {
+      [ordered[index], ordered[next]] = [ordered[next], ordered[index]];
+      ordered.forEach((tag, order) => { tag.order = order; });
+      render();
+    }
+  } else if (action === "add-share-tag") {
+    const draft = state.shareCardDraft;
+    const input = document.querySelector("#share-card-tag-input");
+    const label = String(input?.value || "").trim();
+    if (draft && label && !draft.tags.some((tag) => tag.label.toLocaleLowerCase("und") === label.toLocaleLowerCase("und"))) {
+      draft.tags.push({ id: `custom:${Date.now()}`, label, localizeKey: null, selected: true, order: draft.tags.length });
+      render();
+    }
+  } else if (action === "remove-share-avatar") {
+    if (state.shareCardDraft) {
+      state.shareCardDraft.avatar = null;
+      persistShareCardProfile(state.shareCardDraft);
+      render();
+    }
+  } else if (action === "reset-share-poster") {
+    if (state.shareCardDraft) {
+      state.shareCardDraft.posterOverride = null;
+      render();
+    }
+  } else if (action === "clear-share-temp-stills") {
+    const draft = state.shareCardDraft;
+    if (draft) {
+      draft.stills = draft.stills.filter((still) => still.source !== "upload");
+      const available = new Set(draft.stills.map((still) => still.id));
+      draft.selectedStillIds = draft.selectedStillIds.filter((id) => available.has(id));
+      const needed = draft.stills.length > 1 && draft.stillMode === "double" ? 2 : 1;
+      for (const still of draft.stills) if (draft.selectedStillIds.length < needed && !draft.selectedStillIds.includes(still.id)) draft.selectedStillIds.push(still.id);
+      if (draft.stills.length < 2) draft.stillMode = "single";
+      render();
+    }
   } else if (action === "edit-work-tags") {
     state.overlay = "work-tags";
     render();
@@ -7192,6 +7487,21 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("input", (event) => {
+  if (event.target.id === "share-card-title-input") {
+    if (state.shareCardDraft) {
+      state.shareCardDraft.title = event.target.value;
+      refreshShareCardPreview();
+    }
+    return;
+  }
+  if (event.target.id === "share-card-nickname-input") {
+    if (state.shareCardDraft) {
+      state.shareCardDraft.nickname = event.target.value;
+      persistShareCardProfile(state.shareCardDraft);
+      refreshShareCardPreview();
+    }
+    return;
+  }
   if (event.target.id === "tag-search-input") {
     state.tagSearchQuery = event.target.value;
     if (event.isComposing || imeComposing) return;
@@ -7380,6 +7690,53 @@ document.addEventListener("error", (event) => {
 }, true);
 
 document.addEventListener("change", async (event) => {
+  if (["share-card-avatar-input", "share-card-poster-input", "share-card-stills-input"].includes(event.target.id)) {
+    const inputId = event.target.id;
+    const files = [...(event.target.files || [])];
+    event.target.value = "";
+    if (!files.length || !state.shareCardDraft) return;
+    try {
+      if (inputId === "share-card-stills-input") {
+        const added = [];
+        for (const [index, file] of files.slice(0, 2).entries()) {
+          added.push({
+            id: `share_still_${Date.now()}_${index}`,
+            source: "upload",
+            data_url: await optimizePosterUpload(file),
+            filename: String(file.name || `still-${index + 1}`).slice(0, 120)
+          });
+        }
+        state.shareCardDraft.stills = [...state.shareCardDraft.stills.filter((still) => still.source !== "upload"), ...added];
+        state.shareCardDraft.selectedStillIds = added.map((still) => still.id);
+        state.shareCardDraft.stillMode = added.length > 1 ? "double" : "single";
+      } else {
+        const dataUrl = await optimizePosterUpload(files[0]);
+        if (inputId === "share-card-avatar-input") {
+        state.shareCardDraft.avatar = dataUrl;
+        persistShareCardProfile(state.shareCardDraft);
+        } else {
+          state.shareCardDraft.posterOverride = dataUrl;
+        }
+      }
+      render();
+    } catch (error) {
+      showToast(error.message || "图片读取失败");
+    }
+    return;
+  } else if (event.target.id === "share-card-date-toggle") {
+    if (state.shareCardDraft) {
+      state.shareCardDraft.showDate = event.target.checked;
+      refreshShareCardPreview();
+    }
+    return;
+  } else if (event.target.matches("[data-share-tag-id]")) {
+    const tag = state.shareCardDraft?.tags.find((item) => item.id === event.target.dataset.shareTagId);
+    if (tag) {
+      tag.selected = event.target.checked;
+      refreshShareCardPreview();
+    }
+    return;
+  }
   if (event.target.id === "ticket-ocr-input") {
     const [file] = event.target.files || [];
     event.target.value = "";
